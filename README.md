@@ -4,6 +4,35 @@
 презентации, записи обучения и т.д.). Полностью локальный — данные не покидают
 сервер. Рассчитан на **Mac Studio M3, 96 ГБ** (Apple Silicon / Metal).
 
+## Деплой из GitHub на чистый сервер (GPU)
+
+На чистом Linux-сервере с драйвером NVIDIA одной командой:
+
+```bash
+sudo -E REPO=https://github.com/USER/rag-chatbot.git ADMIN_TOKEN='пароль' bash deploy.sh
+```
+
+или, скачав скрипт прямо из репозитория:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/USER/rag-chatbot/main/deploy.sh \
+  | sudo -E REPO=https://github.com/USER/rag-chatbot.git ADMIN_TOKEN='пароль' bash
+```
+
+`deploy.sh` клонирует репозиторий в `/opt/rag` и запускает полную GPU-установку
+(Docker + NVIDIA toolkit, vLLM + Qdrant, Python-окружение, systemd-сервис
+`rag-api`). После старта откройте `http://<ip>:8000` → раздел «Администратор» и
+настройте папку с документами, модель и т.д. прямо в веб-панели.
+
+Обновление до нового релиза (git pull + перезапуск):
+
+```bash
+sudo bash /opt/rag/update.sh            # с переиндексацией: sudo REINDEX=1 bash /opt/rag/update.sh
+```
+
+Для локального запуска на **Mac Studio** (Apple Silicon) деплой из GitHub не нужен —
+см. раздел установки ниже (`setup.sh`).
+
 ## Как это устроено (архитектура)
 
 Классический **RAG** (Retrieval-Augmented Generation): мы не дообучаем модель, а
