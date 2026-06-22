@@ -25,7 +25,8 @@ nvidia-smi -L
 # ----- 1. системные пакеты --------------------------------------------------
 log "Устанавливаю базовые пакеты..."
 apt-get update -y
-apt-get install -y python3.11 python3.11-venv python3-pip ffmpeg curl ca-certificates gnupg
+apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg
+PYBIN="$(command -v python3.11 || command -v python3.12 || command -v python3.10 || command -v python3)"
 
 # ----- 2. Docker + Compose --------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
@@ -70,7 +71,7 @@ done
 # ----- 6. Python-окружение приложения --------------------------------------
 log "Ставлю Python-зависимости (torch ${TORCH_CUDA} + RAG)..."
 cd "${ROOT_DIR}"
-python3.11 -m venv .venv
+"${PYBIN}" -m venv .venv
 # shellcheck disable=SC1091
 source .venv/bin/activate
 pip install --upgrade pip wheel

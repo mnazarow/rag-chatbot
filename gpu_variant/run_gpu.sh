@@ -29,7 +29,10 @@ nvidia-smi -L
 # ----- 1. системные пакеты + Docker + NVIDIA toolkit ------------------------
 log "Системные пакеты..."
 apt-get update -y
-apt-get install -y python3.11 python3.11-venv python3-pip ffmpeg curl ca-certificates gnupg
+# системный python3 (3.10–3.12 подходят) + venv + pip; версия-специфичный пакет не требуется
+apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg
+PYBIN="$(command -v python3.11 || command -v python3.12 || command -v python3.10 || command -v python3)"
+log "Использую интерпретатор: ${PYBIN} ($(${PYBIN} --version 2>&1))"
 command -v docker >/dev/null || { log "Docker..."; curl -fsSL https://get.docker.com | sh; }
 usermod -aG docker "${RUN_USER}" || true
 
@@ -66,7 +69,7 @@ for i in {1..120}; do curl -sf http://localhost:8001/health >/dev/null 2>&1 && b
 # ----- 4. Python-окружение --------------------------------------------------
 log "Python-окружение + зависимости (torch ${TORCH_CUDA})..."
 cd "${ROOT_DIR}"
-sudo -u "${RUN_USER}" python3.11 -m venv .venv
+sudo -u "${RUN_USER}" "${PYBIN}" -m venv .venv
 sudo -u "${RUN_USER}" ./.venv/bin/pip install --upgrade pip wheel
 sudo -u "${RUN_USER}" ./.venv/bin/pip install "torch==2.5.1" --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
 sudo -u "${RUN_USER}" ./.venv/bin/pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
