@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Корпоративный ассистент — панель</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0d0f14; --panel:#161922; --panel2:#1d212c; --line:#2a2f3c;
+    --txt:#e8eaed; --muted:#9aa3b2; --accent:#3b82f6; --accent2:#22c55e;
+    --warn:#f59e0b; --me:#2563eb; --bot:#222633;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;display:flex;min-height:100vh}
+  /* ---- сайдбар ---- */
+  aside{width:230px;background:var(--panel);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;padding:18px 12px;position:sticky;top:0;height:100vh}
+  .logo{font-weight:700;font-size:17px;padding:6px 10px 18px;display:flex;gap:8px;align-items:center}
+  nav button{display:flex;gap:10px;align-items:center;width:100%;text-align:left;
+    background:none;border:0;color:var(--muted);padding:11px 12px;border-radius:9px;
+    cursor:pointer;font-size:14px;margin-bottom:2px}
+  nav button:hover{background:var(--panel2);color:var(--txt)}
+  nav button.active{background:var(--accent);color:#fff}
+  .spacer{flex:1}
+  .pill{font-size:12px;color:var(--muted);padding:8px 12px;border-top:1px solid var(--line)}
+  /* ---- контент ---- */
+  main{flex:1;padding:26px 32px;overflow:auto;max-width:1200px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:22px}
+  section{display:none;animation:fade .25s ease}
+  section.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  /* ---- карточки ---- */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:8px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .card .v{font-size:28px;font-weight:700;margin-top:6px}
+  .card .v small{font-size:14px;color:var(--muted);font-weight:500}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;margin-top:16px}
+  .box h3{margin:0 0 12px;font-size:14px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+  button.act{background:var(--accent);color:#fff;border:0;border-radius:9px;padding:9px 16px;cursor:pointer;font-size:14px}
+  button.act.ghost{background:var(--panel2);border:1px solid var(--line)}
+  /* ---- таблица ---- */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--panel)}
+  .tag{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;background:var(--panel2);color:var(--muted)}
+  .tag.ok{background:rgba(34,197,94,.15);color:#4ade80}
+  .tag.no{background:rgba(245,158,11,.15);color:#fbbf24}
+  /* ---- чат ---- */
+  #chatbox{display:flex;flex-direction:column;height:calc(100vh - 150px)}
+  #msgs{flex:1;overflow:auto;padding-right:6px}
+  .msg{padding:12px 16px;border-radius:13px;margin:10px 0;white-space:pre-wrap;max-width:80%}
+  .me{background:var(--me);margin-left:auto}
+  .bot{background:var(--bot)}
+  .src{font-size:12px;color:var(--muted);margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
+  #bar{display:flex;gap:8px;margin-top:12px}
+  #q{flex:1;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--txt)}
+  /* ---- админка ---- */
+  .field{margin-bottom:16px}
+  .field label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+  .field input[type=text],.field input[type=number],.field textarea,.field select{
+    width:100%;padding:9px 11px;border-radius:9px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--txt);font:inherit}
+  .field textarea{min-height:120px;resize:vertical;font-size:13px}
+  .range{display:flex;align-items:center;gap:12px}
+  .range input[type=range]{flex:1}
+  .range output{width:54px;text-align:right;color:var(--accent);font-weight:600}
+  .ro{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;font-size:13px}
+  .ro div span{color:var(--muted)}
+  .note{font-size:12px;color:var(--muted);margin-top:4px}
+  .saved{color:#4ade80;font-size:13px;margin-left:10px}
+  /* ---- схема ---- */
+  .stage rect{transition:all .3s}
+  .stage.lit rect{stroke:var(--accent);stroke-width:2.5;filter:drop-shadow(0 0 10px var(--accent))}
+  .flow{stroke-dasharray:6 8;animation:dash 1s linear infinite}
+  @keyframes dash{to{stroke-dashoffset:-28}}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:10px}
+  .legend b{color:var(--txt)}
+</style>
+</head>
+<body>
+<aside>
+  <div class="logo">🤖 RAG-панель</div>
+  <nav>
+    <button data-t="dash" class="active">📊 Дашборд</button>
+    <button data-t="schema">🛠 Схема работы</button>
+    <button data-t="chat">💬 Чат</button>
+    <button data-t="logs">📜 Журнал</button>
+    <button data-t="analytics">📈 Аналитика</button>
+    <button data-t="admin">⚙️ Администратор</button>
+  </nav>
+  <div class="spacer"></div>
+  <div class="pill" id="footinfo">—</div>
+</aside>
+
+<main>
+  <!-- ===== ДАШБОРД ===== -->
+  <section id="dash" class="active">
+    <h1>Дашборд</h1>
+    <div class="sub">Статистика работы ассистента <button class="act ghost" onclick="loadStats()">Обновить</button></div>
+    <div class="cards" id="statcards"></div>
+    <div class="box">
+      <h3>Последние запросы</h3>
+      <table><thead><tr><th>Время</th><th>Вопрос</th><th>Ответ</th><th>Реленв.</th></tr></thead>
+      <tbody id="dashrecent"></tbody></table>
+    </div>
+  </section>
+
+  <!-- ===== СХЕМА ===== -->
+  <section id="schema">
+    <h1>Схема работы связки</h1>
+    <div class="sub">Путь запроса от вопроса сотрудника до ответа
+      <button class="act" onclick="runDemo()">▶ Запустить демо-прогон</button></div>
+    <div class="box">
+      <svg viewBox="0 0 980 320" width="100%" id="svg" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+            <path d="M0,0 L8,3 L0,6 Z" fill="#6b7280"/>
+          </marker>
+        </defs>
+        <!-- связи -->
+        <g fill="none" stroke="#3a4150" stroke-width="2" marker-end="url(#arr)">
+          <line id="c0" x1="150" y1="70" x2="150" y2="120"/>
+          <line id="c1" x1="150" y1="170" x2="370" y2="170"/>
+          <line id="c2" x1="540" y1="170" x2="540" y2="120" transform="translate(0,0)"/>
+          <line id="c3" x1="540" y1="120" x2="540" y2="70"/>
+          <line id="c4" x1="630" y1="45" x2="760" y2="45"/>
+          <line id="c5" x1="830" y1="70" x2="830" y2="120"/>
+          <line id="c6" x1="760" y1="170" x2="630" y2="170"/>
+          <line id="c7" x1="455" y1="195" x2="455" y2="250"/>
+          <line id="c8" x1="455" y1="285" x2="830" y2="285" transform="translate(0,0)"/>
+        </g>
+        <!-- узлы -->
+        <g font-size="13" fill="#e8eaed" text-anchor="middle">
+          <g class="stage" id="s0"><rect x="60" y="20" width="180" height="50" rx="10" fill="#1d212c" stroke="#2a2f3c"/><text x="150" y="50">📁 Папка с документами</text></g>
+          <g class="stage" id="s1"><rect x="60" y="120" width="180" height="50" rx="10" fill="#1d212c" stroke="#2a2f3c"/><text x="150" y="150">⚙️ Ингест → чанки</text></g>
+          <g class="stage" id="s2"><rect x="370" y="145" width="170" height="50" rx="10" fill="#1d212c" stroke="#2a2f3c"/><text x="455" y="175">🗄 Qdrant (векторы)</text></g>
+          <g class="stage" id="s3"><rect x="370" y="250" width="170" height="50" rx="10" fill="#1d212c" stroke="#2a2f3c"/><text x="455" y="280">💬 Вопрос сотрудника</text></g>
+          <g class="stage" id="s4"><rect x="630" y="20" width="130" height="50" rx="10" fill="#1d212c" stroke="#2a2f3c"/><text x="695" y="50">🔎 Поиск+реранк</text></g>
+          <g class="stage" id="s5"><rect x="760" y="20" width="160" height="50" rx="10" fill="#1d212c" stroke="#2a2f3c"/><text x="840" y="44">🧠 LLM</text><text x="840" y="60" font-size="11" fill="#9aa3b2">Ollama / vLLM</text></g>
+          <g class="stage" id="s6"><rect x="760" y="120" width="160" height="50" rx="10" fill="#1d212c" stroke="#2a2f3c"/><text x="840" y="150">✅ Ответ + источники</text></g>
+        </g>
+      </svg>
+      <div class="legend">
+        <span><b>Индексация (офлайн):</b> документы → чанки → эмбеддинги → Qdrant</span>
+        <span><b>Запрос (онлайн):</b> вопрос → гибридный поиск → реранк → LLM → ответ со ссылками</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== ЧАТ ===== -->
+  <section id="chat">
+    <h1>Чат с ассистентом</h1>
+    <div class="sub">Ответы строго по корпоративным документам</div>
+    <div id="chatbox">
+      <div id="msgs"><div class="msg bot">Здравствуйте! Задайте вопрос по прайсам, презентациям или материалам обучения.</div></div>
+      <div id="bar">
+        <input id="q" placeholder="Ваш вопрос..." autofocus>
+        <button class="act" id="send" onclick="ask()">Отправить</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== ЖУРНАЛ ===== -->
+  <section id="logs">
+    <h1>Журнал запросов</h1>
+    <div class="sub">Все обращения сотрудников <button class="act ghost" onclick="loadLogs()">Обновить</button></div>
+    <div class="box" style="max-height:70vh;overflow:auto">
+      <table><thead><tr><th>Время</th><th>Вопрос</th><th>Категория</th><th>Найдено</th><th>Реленв.</th><th>Задержка</th><th>Статус</th><th>Источники</th></tr></thead>
+      <tbody id="logrows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- ===== АНАЛИТИКА ===== -->
+  <section id="analytics">
+    <h1>Аналитика по запросам</h1>
+    <div class="sub">Тренды и структура обращений <button class="act ghost" onclick="loadAnalytics()">Обновить</button></div>
+    <div class="grid2">
+      <div class="box"><h3>Запросы по дням</h3><canvas id="ch_day" height="170"></canvas></div>
+      <div class="box"><h3>По категориям</h3><canvas id="ch_cat" height="170"></canvas></div>
+      <div class="box"><h3>Топ источников</h3><canvas id="ch_src" height="170"></canvas></div>
+      <div class="box"><h3>Задержка ответа</h3><canvas id="ch_lat" height="170"></canvas></div>
+    </div>
+    <div class="box"><h3>Частые слова в вопросах</h3><div id="kwcloud" style="display:flex;flex-wrap:wrap;gap:8px"></div></div>
+  </section>
+
+  <!-- ===== АДМИН ===== -->
+  <section id="admin">
+    <h1>Администратор</h1>
+    <div class="sub">Все настройки системы и операции обслуживания</div>
+
+    <!-- операции -->
+    <div class="box">
+      <h3>Состояние и операции</h3>
+      <div class="cards" id="opsstatus" style="margin-bottom:14px"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="reindex(false)">🔄 Переиндексировать</button>
+        <button class="act ghost" onclick="reindex(true)">♻️ Переиндексировать с нуля</button>
+        <button class="act ghost" onclick="applyLLM()">🧠 Применить модель LLM (рестарт vLLM)</button>
+        <button class="act ghost" onclick="restartSvc()">⏻ Перезапустить сервис</button>
+        <button class="act ghost" onclick="loadOps()">Обновить статус</button>
+        <span id="opsmsg"></span>
+      </div>
+      <pre id="joblog" style="margin-top:12px;background:var(--panel2);border:1px solid var(--line);
+        border-radius:9px;padding:10px;font-size:12px;max-height:160px;overflow:auto;display:none;white-space:pre-wrap"></pre>
+    </div>
+
+    <!-- токен -->
+    <div class="box">
+      <div class="field" style="margin:0"><label>Токен администратора (для применения изменений)</label>
+        <input type="password" id="cfg_token" placeholder="введите токен, если задан на сервере">
+        <div class="note" id="tokennote"></div></div>
+    </div>
+
+    <!-- авто-сгенерированные поля по группам -->
+    <div id="cfgroot"></div>
+
+    <div class="box" style="display:flex;align-items:center;gap:10px">
+      <button class="act" onclick="saveConfig()">💾 Сохранить настройки</button>
+      <button class="act ghost" onclick="resetConfig()">Сбросить к умолчаниям</button>
+      <span id="savemsg"></span>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmtTime = ts => new Date(ts*1000).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+
+// ---- навигация ----
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('section').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); $('#'+b.dataset.t).classList.add('active');
+  ({dash:loadStats,logs:loadLogs,analytics:loadAnalytics,admin:loadConfig}[b.dataset.t]||(()=>{}))();
+});
+
+// ---- дашборд ----
+async function loadStats(){
+  const s = await (await fetch('/api/stats')).json();
+  $('#footinfo').textContent = `Модель: ${s.model} · ${s.backend}/${s.device}`;
+  const cards = [
+    ['Всего запросов', s.total],
+    ['Сегодня', s.today],
+    ['Доля ответов', s.answer_rate+'<small>%</small>'],
+    ['Ср. релевантность', s.avg_top_score],
+    ['Ср. задержка', s.avg_latency_ms+'<small> мс</small>'],
+    ['Чанков в базе', s.chunks],
+  ];
+  $('#statcards').innerHTML = cards.map(([k,v])=>
+    `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+  const r = await (await fetch('/api/logs?limit=8')).json();
+  $('#dashrecent').innerHTML = r.map(x=>
+    `<tr><td>${fmtTime(x.ts)}</td><td>${esc(x.question)}</td>
+     <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет</span>'}</td>
+     <td>${x.top_score||'—'}</td></tr>`).join('') || emptyRow(4);
+}
+
+// ---- журнал ----
+async function loadLogs(){
+  const r = await (await fetch('/api/logs?limit=300')).json();
+  $('#logrows').innerHTML = r.map(x=>{
+    const src = (x.sources||[]).map(s=>s.source+(s.page?` с.${s.page}`:'')).join(', ');
+    return `<tr><td>${fmtTime(x.ts)}</td><td>${esc(x.question)}</td>
+      <td><span class="tag">${x.category||'—'}</span></td><td>${x.n_hits}</td>
+      <td>${x.top_score||'—'}</td><td>${x.latency_ms} мс</td>
+      <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет данных</span>'}</td>
+      <td style="max-width:240px;color:#9aa3b2">${esc(src)||'—'}</td></tr>`;
+  }).join('') || emptyRow(8);
+}
+
+// ---- аналитика ----
+let charts={};
+function mkChart(id,cfg){ if(charts[id])charts[id].destroy(); charts[id]=new Chart($('#'+id),cfg); }
+const C={grid:'#2a2f3c',txt:'#9aa3b2',a:'#3b82f6',palette:['#3b82f6','#22c55e','#f59e0b','#a855f7','#ef4444','#14b8a6']};
+const axes={scales:{x:{ticks:{color:C.txt},grid:{color:C.grid}},y:{ticks:{color:C.txt},grid:{color:C.grid}}},plugins:{legend:{display:false}}};
+async function loadAnalytics(){
+  const a = await (await fetch('/api/analytics')).json();
+  mkChart('ch_day',{type:'line',data:{labels:a.per_day.map(d=>d.day.slice(5)),
+    datasets:[{data:a.per_day.map(d=>d.n),borderColor:C.a,backgroundColor:'rgba(59,130,246,.15)',fill:true,tension:.3}]},options:axes});
+  mkChart('ch_cat',{type:'doughnut',data:{labels:a.per_category.map(c=>c.cat),
+    datasets:[{data:a.per_category.map(c=>c.n),backgroundColor:C.palette}]},
+    options:{plugins:{legend:{labels:{color:C.txt}}}}});
+  mkChart('ch_src',{type:'bar',data:{labels:a.top_sources.map(s=>short(s.source)),
+    datasets:[{data:a.top_sources.map(s=>s.n),backgroundColor:C.a}]},options:{...axes,indexAxis:'y'}});
+  const lb=a.latency_buckets;
+  mkChart('ch_lat',{type:'bar',data:{labels:Object.keys(lb),
+    datasets:[{data:Object.values(lb),backgroundColor:C.palette}]},options:axes});
+  const max=Math.max(1,...a.top_keywords.map(k=>k.n));
+  $('#kwcloud').innerHTML=a.top_keywords.map(k=>
+    `<span class="tag" style="font-size:${12+18*k.n/max}px">${esc(k.word)} <b style="color:#3b82f6">${k.n}</b></span>`).join('')||'<span class="note">пока нет данных</span>';
+}
+
+// ---- админка: авто-рендер настроек из схемы ----
+const SCOPE={live:['на лету','#22c55e'],reindex:['после реиндекса','#f59e0b'],
+  restart:['после рестарта','#ef4444'],vllm:['рестарт vLLM','#a855f7'],secret:['','']};
+let FIELDS=[];
+function badge(sc){ const s=SCOPE[sc]; return s&&s[0]?`<span class="tag" style="background:${s[1]}22;color:${s[1]}">${s[0]}</span>`:''; }
+function tk(k){ return `<span style="color:#5b6472;font-weight:400">${k}</span>`; }
+function renderField(f,val,tokenSet){
+  if(f.type==='bool')
+    return `<div class="field"><label><input type="checkbox" id="f_${f.key}" ${val?'checked':''}> ${esc(f.label)} ${tk(f.key)} ${badge(f.scope)}</label></div>`;
+  const lab=`<label>${esc(f.label)} ${tk(f.key)} ${badge(f.scope)}</label>`;
+  let inp;
+  if(f.type==='range') inp=`<div class="range"><input type="range" id="f_${f.key}" min="${f.min}" max="${f.max}" step="${f.step}" value="${val}"><output id="o_${f.key}">${val}</output></div>`;
+  else if(f.type==='select') inp=`<select id="f_${f.key}">`+f.options.map(o=>`<option ${o===val?'selected':''}>${esc(o)}</option>`).join('')+`</select>`;
+  else if(f.type==='textarea') inp=`<textarea id="f_${f.key}">${esc(val)}</textarea>`;
+  else if(f.type==='secret') inp=`<input type="password" id="f_${f.key}" placeholder="${tokenSet?'•••• задан — введите новый, чтобы сменить':'не задан'}">`;
+  else inp=`<input type="text" id="f_${f.key}" value="${esc(String(val))}">`;
+  return `<div class="field">${lab}${inp}</div>`;
+}
+async function loadConfig(){
+  const c=await (await fetch('/api/config')).json(); FIELDS=c.fields;
+  $('#tokennote').textContent = c.auth_required
+    ? 'На сервере задан токен — без него изменения и операции не выполнятся.'
+    : 'Токен на сервере не задан — поле можно оставить пустым.';
+  const groups={};
+  c.fields.forEach(f=>{(groups[f.group]=groups[f.group]||[]).push(f);});
+  let html='';
+  for(const g in groups){
+    html+=`<div class="box"><h3>${esc(g)}</h3>`;
+    groups[g].forEach(f=>{ html+=renderField(f,c.values[f.key],c.admin_token_set); });
+    html+='</div>';
+  }
+  $('#cfgroot').innerHTML=html;
+  c.fields.forEach(f=>{ if(f.type==='range'){ const el=$('#f_'+f.key); el.oninput=()=>$('#o_'+f.key).textContent=el.value; }});
+  loadOps();
+}
+async function saveConfig(){
+  const body={};
+  FIELDS.forEach(f=>{ const el=$('#f_'+f.key); if(!el)return;
+    if(f.type==='bool') body[f.key]=el.checked;
+    else if(f.type==='range'||f.type==='int') body[f.key]=+el.value;
+    else body[f.key]=el.value;
+  });
+  const r=await fetch('/api/config',{method:'POST',
+    headers:{'Content-Type':'application/json','X-Admin-Token':$('#cfg_token').value},
+    body:JSON.stringify(body)});
+  const ok=r.ok; const j=await r.json().catch(()=>({}));
+  $('#savemsg').textContent=ok?'✓ Сохранено':'✗ '+(j.detail||'ошибка');
+  $('#savemsg').className=ok?'saved':'note';
+  if(ok) loadConfig();
+  setTimeout(()=>$('#savemsg').textContent='',3500);
+}
+async function resetConfig(){
+  if(!confirm('Сбросить все настройки к умолчаниям?'))return;
+  const r=await fetch('/api/config/reset',{method:'POST',headers:{'X-Admin-Token':$('#cfg_token').value}});
+  const j=await r.json().catch(()=>({}));
+  $('#savemsg').textContent=r.ok?'✓ Сброшено':'✗ '+(j.detail||'ошибка');
+  $('#savemsg').className=r.ok?'saved':'note';
+  if(r.ok) loadConfig();
+  setTimeout(()=>$('#savemsg').textContent='',3500);
+}
+
+// ---- админка: операции ----
+async function loadOps(){
+  let s;
+  try{ s=await (await fetch('/api/admin/status',{headers:{'X-Admin-Token':$('#cfg_token').value}})).json(); }
+  catch(e){ return; }
+  if(s.detail){ $('#opsstatus').innerHTML=`<div class="card"><div class="k">Доступ</div><div class="v" style="font-size:15px">${esc(s.detail)}</div></div>`; return; }
+  const dot=b=>b?'<span style="color:#4ade80">● в сети</span>':'<span style="color:#f87171">● нет</span>';
+  const j=s.index_job||{};
+  const job=j.running?'идёт…':(j.ok===true?'успешно':(j.ok===false?'ошибка':'—'));
+  $('#opsstatus').innerHTML=[
+    ['Qdrant',dot(s.qdrant)],['LLM ('+s.backend+')',dot(s.llm)],
+    ['Чанков в базе',s.chunks],['Индексация',job],
+  ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v" style="font-size:18px">${v}</div></div>`).join('');
+  if(j.log){ $('#joblog').style.display='block'; $('#joblog').textContent=j.log; }
+}
+async function adminPost(url,body){
+  const r=await fetch(url,{method:'POST',
+    headers:{'Content-Type':'application/json','X-Admin-Token':$('#cfg_token').value},
+    body:body?JSON.stringify(body):'{}'});
+  return r.json().catch(()=>({}));
+}
+function opsMsg(t,ok=true){ $('#opsmsg').textContent=t; $('#opsmsg').className=ok?'saved':'note'; }
+let pollT=null;
+function pollJob(){ clearInterval(pollT); pollT=setInterval(loadOps,4000);
+  setTimeout(()=>clearInterval(pollT),300000); }
+async function reindex(reset){ if(reset&&!confirm('Пересоздать индекс с нуля?'))return;
+  opsMsg('запуск индексации…'); const r=await adminPost('/api/admin/reindex',{reset}); opsMsg(r.msg||'ок',r.ok!==false); pollJob(); }
+async function applyLLM(){ opsMsg('перезапуск vLLM…'); const r=await adminPost('/api/admin/apply-llm'); opsMsg(r.msg||'готово',r.ok!==false); }
+async function restartSvc(){ if(!confirm('Перезапустить сервис API?'))return;
+  opsMsg('перезапуск…'); await adminPost('/api/admin/restart'); setTimeout(loadOps,5000); }
+
+// ---- чат ----
+let history=[];
+async function ask(){
+  const q=$('#q').value.trim(); if(!q) return;
+  $('#q').value=''; $('#send').disabled=true;
+  add('me',q); const bot=add('bot',''); let ans='';
+  try{
+    const res=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({question:q,history})});
+    const rd=res.body.getReader(),dec=new TextDecoder(); let buf='';
+    while(true){ const {value,done}=await rd.read(); if(done)break;
+      buf+=dec.decode(value,{stream:true}); let nl;
+      while((nl=buf.indexOf('\n'))>=0){ const ln=buf.slice(0,nl).trim(); buf=buf.slice(nl+1);
+        if(!ln)continue; const ev=JSON.parse(ln);
+        if(ev.type==='answer'){ans+=ev.text;bot.firstChild.textContent=ans;}
+        else if(ev.type==='sources'&&ev.items.length){
+          const s=document.createElement('div');s.className='src';
+          s.textContent='Источники: '+ev.items.map(i=>i.source+(i.page?`, с.${i.page}`:'')).join('; ');
+          bot.appendChild(s);}
+      }
+      $('#msgs').scrollTop=$('#msgs').scrollHeight;
+    }
+    history.push({role:'user',content:q}); history.push({role:'assistant',content:ans});
+  }catch(e){ bot.firstChild.textContent='Ошибка: '+e.message; }
+  $('#send').disabled=false; $('#q').focus();
+}
+function add(cls,text){ const d=document.createElement('div'); d.className='msg '+cls;
+  const span=document.createElement('span'); span.textContent=text; d.appendChild(span);
+  $('#msgs').appendChild(d); $('#msgs').scrollTop=$('#msgs').scrollHeight; return d; }
+$('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask();});
+
+// ---- демо схемы ----
+async function runDemo(){
+  const seq=['s3','s4','s2','s4','s5','s6'];
+  document.querySelectorAll('.stage').forEach(s=>s.classList.remove('lit'));
+  document.querySelectorAll('line').forEach(l=>l.classList.remove('flow'));
+  for(const id of seq){ const el=$('#'+id); el.classList.add('lit');
+    await new Promise(r=>setTimeout(r,650)); }
+  // индексация подсветим отдельно
+  for(const id of ['s0','s1','s2']){ $('#'+id).classList.add('lit'); await new Promise(r=>setTimeout(r,300)); }
+  document.querySelectorAll('line').forEach(l=>l.classList.add('flow'));
+}
+
+// ---- утилиты ----
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function short(s){ s=s||''; return s.length>22? '…'+s.slice(-21):s; }
+function emptyRow(n){ return `<tr><td colspan="${n}" style="color:#9aa3b2">Пока нет данных</td></tr>`; }
+
+// старт
+loadStats();
+</script>
+</body>
+</html>

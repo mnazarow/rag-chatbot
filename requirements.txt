@@ -1,0 +1,34 @@
+# --- веб/API ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+python-dotenv==1.0.1
+httpx==0.28.1
+
+# --- векторная БД ---
+qdrant-client==1.12.2
+
+# --- эмбеддинги и реранк (работают на Apple Metal / MPS) ---
+sentence-transformers==3.3.1
+FlagEmbedding==1.3.3
+torch==2.5.1
+
+# --- лексический поиск (гибрид) ---
+rank-bm25==0.2.2
+
+# --- парсинг документов ---
+pymupdf==1.25.1            # PDF
+python-docx==1.1.2         # DOCX
+python-pptx==1.0.2         # PPTX
+openpyxl==3.1.5            # XLSX
+pandas==2.2.3              # прайс-листы / таблицы
+unstructured==0.16.11      # универсальный фолбэк
+beautifulsoup4==4.12.3     # HTML
+markdown-it-py==3.0.0
+
+# --- транскрибация обучающих записей (аудио/видео) ---
+mlx-whisper==0.4.2         # Whisper на Apple Silicon (Metal)
+
+# --- утилиты ---
+tqdm==4.67.1
+tenacity==9.0.0

@@ -1,0 +1,45 @@
+# vLLM (OpenAI-совместимый сервер генерации) + Qdrant, с доступом к GPU.
+# Требуется установленный NVIDIA Container Toolkit (см. setup_gpu.sh).
+#
+# Переменные модели задаются в .env рядом с этим файлом:
+#   VLLM_MODEL, VLLM_MAX_LEN, VLLM_TP (tensor-parallel = число GPU)
+
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.6.6
+    container_name: rag_vllm
+    restart: unless-stopped
+    ports:
+      - "8001:8000"          # наружу 8001 -> внутри vLLM слушает 8000
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      --model ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}
+      --served-model-name ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}
+      --max-model-len ${VLLM_MAX_LEN:-16384}
+      --tensor-parallel-size ${VLLM_TP:-1}
+      --gpu-memory-utilization 0.90
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: rag_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage

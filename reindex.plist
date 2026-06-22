@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Пример launchd-задачи: переиндексация документов раз в час.
+  Установка:
+    1) отредактируйте путь /ПУТЬ/К/ПРОЕКТУ ниже
+    2) cp reindex.plist ~/Library/LaunchAgents/com.company.rag.reindex.plist
+    3) launchctl load ~/Library/LaunchAgents/com.company.rag.reindex.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.company.rag.reindex</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>cd /ПУТЬ/К/ПРОЕКТУ &amp;&amp; source .venv/bin/activate &amp;&amp; python ingest.py</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/rag_reindex.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/rag_reindex.err</string>
+</dict>
+</plist>

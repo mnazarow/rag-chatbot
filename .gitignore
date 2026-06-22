@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Окружение и секреты
+.env
+gpu_variant/.env
+lightrag_variant/.env
+
+# Рантайм-данные (не версионируются)
+runtime_config.json
+rag_logs.db
+rag_logs.db-journal
+qdrant_storage/
+lightrag_variant/lightrag_storage/
+
+# Модели/кеши
+*.bin
+*.gguf
+.cache/
+
+# ОС
+.DS_Store
+Thumbs.db
