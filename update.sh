@@ -15,6 +15,14 @@ REINDEX="${REINDEX:-0}"
 log(){ printf "\033[1;36m[update]\033[0m %s\n" "$*"; }
 cd "${TARGET_DIR}"
 
+# update.sh — только для уже развёрнутого сервера. Если установки нет — направляем на run_gpu.sh
+if [[ ! -x ./.venv/bin/pip ]] || ! command -v docker >/dev/null; then
+  echo "Сервер ещё не развёрнут (нет .venv или Docker)."
+  echo "Запустите первичную установку:"
+  echo "  sudo bash -c \"ADMIN_TOKEN='пароль' bash ${TARGET_DIR}/gpu_variant/run_gpu.sh\""
+  exit 1
+fi
+
 OLD="$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
 log "Обновляю код до origin/${BRANCH}..."
 git fetch --all -q
