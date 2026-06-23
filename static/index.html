@@ -308,6 +308,15 @@
       <div class="note" style="margin-top:12px">Распределение длины ответов в датасете</div>
       <canvas id="cc_ans" height="150"></canvas>
     </div>
+
+    <div class="box"><h3>⏱ Тайминги по компонентам</h3>
+      <div class="note">Среднее время этапов запроса</div>
+      <div class="cards" id="cc_tstages" style="margin-top:6px"></div>
+      <div class="note" style="margin-top:12px">Последний бенчмарк (мс по компонентам)</div>
+      <canvas id="cc_tbench" height="150"></canvas>
+      <div class="note" style="margin-top:12px">Длительность последних операций</div>
+      <div class="cards" id="cc_tjobs" style="margin-top:6px"></div>
+    </div>
   </section>
 
   <!-- ===== БЕНЧМАРК ===== -->
@@ -729,6 +738,18 @@ async function loadComponents(){
     ['LoRA r',nz(l.r)],['LoRA alpha',nz(l.alpha)],['Адаптер, МБ',nz(f.adapter_size_mb)]]);
   if(d.ans_hist) mkChart('cc_ans',{type:'bar',data:{labels:Object.keys(d.ans_hist),
     datasets:[{data:Object.values(d.ans_hist),backgroundColor:C.a}]},options:axes});
+  // тайминги
+  const tm=s.timings||{};
+  const stg=tm.stages||{};
+  $('#cc_tstages').innerHTML=sysCards([['Поиск',nz(stg.retrieve)+' мс'],
+    ['Генерация',nz(stg.gen)+' мс'],['Всего',nz(stg.total)+' мс']]);
+  const bm=tm.benchmark||[];
+  if(bm.length) mkChart('cc_tbench',{type:'bar',data:{labels:bm.map(x=>x.component),
+    datasets:[{data:bm.map(x=>x.ms),backgroundColor:C.a}]},options:{...axes,indexAxis:'y'}});
+  else { if(charts['cc_tbench'])charts['cc_tbench'].destroy(); }
+  const jobs=(tm.jobs||[]).filter(j=>j.sec!=null);
+  $('#cc_tjobs').innerHTML = jobs.length
+    ? sysCards(jobs.map(j=>[j.name, j.sec+' с'])) : '<span class="note">операций в этой сессии не было</span>';
 }
 
 // ---- админка: авто-рендер настроек из схемы ----

@@ -1143,7 +1143,27 @@ def component_analytics() -> dict:
             pass
         ft["adapter_size_mb"] = _dir_size_mb(ROOT / "finetune" / "adapter")
 
-    return {"qdrant": qd, "graph": graph, "finetune": ft, "usage": db.engine_usage()}
+    # ---- тайминги: средние по этапам, длительности задач, последний бенчмарк ----
+    st = db.stats()
+    def _dur(j):
+        if j.get("started") and j.get("finished"):
+            return round(j["finished"] - j["started"], 1)
+        return None
+    timings = {
+        "stages": {"retrieve": st.get("avg_retrieve_ms", 0),
+                   "gen": st.get("avg_gen_ms", 0),
+                   "total": st.get("avg_latency_ms", 0)},
+        "jobs": [
+            {"name": "Индексация", "sec": _dur(_job)},
+            {"name": "Граф", "sec": _dur(_graph_job)},
+            {"name": "Дообучение", "sec": _dur(_ft_job)},
+            {"name": "Парсинг сайтов", "sec": _dur(_web_job)},
+        ],
+        "benchmark": [{"component": r["component"], "ms": r["ms"]} for r in _bench_job.get("results", [])],
+    }
+
+    return {"qdrant": qd, "graph": graph, "finetune": ft,
+            "usage": db.engine_usage(), "timings": timings}
 
 
 def browse(path: str | None = None) -> dict:
