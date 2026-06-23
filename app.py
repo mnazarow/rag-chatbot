@@ -38,6 +38,22 @@ class ChatRequest(BaseModel):
     question: str
     history: list[dict] = []
     filters: dict | None = None
+    debug: bool = False
+
+
+def _debug_params() -> dict:
+    return {k: settings.get(k) for k in
+            ("MIN_SCORE", "TOP_K_RETRIEVE", "TOP_K_RERANK", "TEMPERATURE",
+             "AUTO_FILTER", "SMART_FILTER")}
+
+
+def _debug_chunks(hits: list) -> list:
+    out = []
+    for h in hits:
+        out.append({"source": h.get("source"), "page": h.get("page"),
+                    "score": round(h.get("score", 0), 3),
+                    "snippet": (h.get("text", "") or "")[:240]})
+    return out
 
 
 def _check_admin(token: str | None):
@@ -75,6 +91,13 @@ async def chat(req: ChatRequest):
                                   "items": [{"source": "граф знаний (LightRAG)", "page": None}]},
                                  ensure_ascii=False) + "\n"
                 lat = int((time.time() - t0) * 1000)
+                if req.debug:
+                    yield json.dumps({"type": "debug", "info": {
+                        "engine": "LightRAG (граф)" if use_lightrag_all else "граф (hybrid, сводный вопрос)",
+                        "mode": settings.current_mode(), "model": settings.active_model(),
+                        "backend": settings.get("LLM_BACKEND"),
+                        "timings": {"retrieve_ms": 0, "gen_ms": lat, "total_ms": lat},
+                        "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
                 rid = db.log_request(req.question, cat, 1, 1.0, lat, len(text), True, [],
                                      retrieve_ms=0, gen_ms=lat)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
@@ -120,6 +143,14 @@ async def chat(req: ChatRequest):
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
         latency = int((time.time() - t0) * 1000)
+        if req.debug:
+            yield json.dumps({"type": "debug", "info": {
+                "engine": "векторный (поиск + реранк)", "mode": settings.current_mode(),
+                "model": settings.active_model(), "backend": settings.get("LLM_BACKEND"),
+                "filters": req.filters or "авто/по вопросу",
+                "timings": {"retrieve_ms": retrieve_ms, "gen_ms": max(0, latency - retrieve_ms),
+                            "total_ms": latency},
+                "params": _debug_params(), "chunks": _debug_chunks(hits)}}, ensure_ascii=False) + "\n"
         rid = db.log_request(req.question, category, len(hits), hits[0]["score"],
                              latency, len("".join(acc)), True, sources,
                              retrieve_ms=retrieve_ms, gen_ms=max(0, latency - retrieve_ms))
@@ -149,7 +180,7 @@ def api_rate(payload: dict = Body(...)):
 # ============================ ЧАТ С ПРИЛОЖЕННЫМ ДОКУМЕНТОМ ============================
 @app.post("/chat-doc")
 async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
-                   history: str = Form("[]")):
+                   history: str = Form("[]"), debug: str = Form("")):
     """Ответ на основе приложенного к вопросу документа (Excel и др.), без индексации."""
     t0 = time.time()
     name = os.path.basename(file.filename or "файл")
@@ -204,8 +235,15 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
+        latency = int((time.time() - t0) * 1000)
+        if debug in ("1", "true", "on", "yes"):
+            yield json.dumps({"type": "debug", "info": {
+                "engine": "приложенный документ (rerank)", "mode": settings.current_mode(),
+                "model": settings.active_model(), "backend": settings.get("LLM_BACKEND"),
+                "timings": {"retrieve_ms": 0, "gen_ms": latency, "total_ms": latency},
+                "params": _debug_params(), "chunks": _debug_chunks(hits)}}, ensure_ascii=False) + "\n"
         rid = db.log_request(question, "attached", len(hits), hits[0]["score"],
-                             int((time.time() - t0) * 1000), len("".join(acc)), True, sources)
+                             latency, len("".join(acc)), True, sources)
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")

@@ -240,6 +240,9 @@
         <button class="act" id="send" onclick="ask()">Отправить</button>
       </div>
       <div id="chatfileinfo" class="note" style="margin-top:4px"></div>
+      <label class="note" style="margin-top:6px;display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="checkbox" id="chatdebug" onchange="saveDebug()"> Подробно об источниках и алгоритме формирования ответа
+      </label>
     </div>
   </section>
 
@@ -1244,14 +1247,16 @@ async function ask(){
   add('me', q + (file?(' 📎 '+file.name):'')); const bot=add('bot',''); let ans='';
   try{
     let res;
+    const dbg=$('#chatdebug')&&$('#chatdebug').checked;
     if(file){
       const fd=new FormData();
       fd.append('file',file); fd.append('question',q); fd.append('history',JSON.stringify(history));
+      fd.append('debug',dbg?'1':'');
       res=await fetch('/chat-doc',{method:'POST',body:fd});
       $('#chatfile').value=''; $('#chatfileinfo').textContent='';
     } else {
       res=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({question:q,history})});
+        body:JSON.stringify({question:q,history,debug:dbg})});
     }
     const rd=res.body.getReader(),dec=new TextDecoder(); let buf='';
     while(true){ const {value,done}=await rd.read(); if(done)break;
@@ -1263,6 +1268,7 @@ async function ask(){
           const s=document.createElement('div');s.className='src';
           s.textContent='Источники: '+ev.items.map(i=>i.source+(i.page?`, с.${i.page}`:'')).join('; ');
           bot.appendChild(s);}
+        else if(ev.type==='debug'&&ev.info){ addDebug(bot,ev.info); }
         else if(ev.type==='meta'&&ev.id){ addRating(bot,ev.id); }
       }
       $('#msgs').scrollTop=$('#msgs').scrollHeight;
@@ -1275,6 +1281,25 @@ function add(cls,text){ const d=document.createElement('div'); d.className='msg 
   const span=document.createElement('span'); span.textContent=text; d.appendChild(span);
   $('#msgs').appendChild(d); $('#msgs').scrollTop=$('#msgs').scrollHeight; return d; }
 $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask();});
+function saveDebug(){ try{ localStorage.setItem('rag_chatdebug',$('#chatdebug').checked?'1':''); }catch(e){} }
+(function initDebug(){ try{ const v=localStorage.getItem('rag_chatdebug'); if(v&&$('#chatdebug')) $('#chatdebug').checked=true; }catch(e){} })();
+function addDebug(bot,info){
+  const d=document.createElement('details'); d.className='src'; d.open=true;
+  const t=info.timings||{};
+  let html='<summary style="cursor:pointer">ℹ️ Детали: алгоритм и источники</summary><div style="margin-top:6px">';
+  html+='<b>Движок:</b> '+esc(info.engine)+' · <b>режим:</b> '+esc(info.mode)+' · <b>модель:</b> '+esc(info.model)+' ('+esc(info.backend)+')<br>';
+  html+='<b>Время:</b> поиск '+(t.retrieve_ms||0)+' мс · генерация '+(t.gen_ms||0)+' мс · всего '+(t.total_ms||0)+' мс<br>';
+  if(info.filters) html+='<b>Фильтры:</b> '+esc(typeof info.filters==='string'?info.filters:JSON.stringify(info.filters))+'<br>';
+  if(info.params) html+='<b>Параметры:</b> '+esc(JSON.stringify(info.params))+'<br>';
+  if(info.chunks&&info.chunks.length){
+    html+='<br><b>Использованные фрагменты ('+info.chunks.length+'):</b>';
+    html+=info.chunks.map((c,i)=>`<div style="margin:5px 0;padding:6px 8px;border:1px solid var(--line);border-radius:6px">
+      <span class="tag">#${i+1}</span> ${esc(c.source||'')}${c.page?(' · с.'+c.page):''} · score <b>${c.score}</b>
+      <div style="color:var(--muted);margin-top:3px">${esc(c.snippet||'')}…</div></div>`).join('');
+  } else { html+='<br><span class="note">Фрагменты не использовались (граф/нет данных).</span>'; }
+  html+='</div>';
+  d.innerHTML=html; bot.appendChild(d); $('#msgs').scrollTop=$('#msgs').scrollHeight;
+}
 function addRating(bot,id){
   const w=document.createElement('div'); w.className='src';
   w.style.display='flex'; w.style.gap='8px'; w.style.alignItems='center';
