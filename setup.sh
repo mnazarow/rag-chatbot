@@ -65,7 +65,14 @@ pip install -r requirements.txt
 if [[ ! -f "${PROJECT_DIR}/.env" ]]; then
   cp "${PROJECT_DIR}/.env.example" "${PROJECT_DIR}/.env"
   sed -i '' "s|^LLM_MODEL=.*|LLM_MODEL=${LLM_MODEL}|" "${PROJECT_DIR}/.env"
-  log "Создан .env (отредактируйте DOCS_DIR — путь к папке с документами)."
+  log "Создан .env (папка документов по умолчанию: /opt/db)."
+fi
+
+# папка документов по умолчанию /opt/db (в /opt нужны права sudo)
+if [[ ! -d /opt/db ]]; then
+  log "Создаю /opt/db (может потребоваться пароль sudo)..."
+  sudo mkdir -p /opt/db && sudo chown "$(whoami)" /opt/db \
+    || warn "Не удалось создать /opt/db — создайте вручную или укажите другую папку в админке."
 fi
 
 # ----- 7. прогрев моделей эмбеддинга/реранка -------------------------------
@@ -78,16 +85,31 @@ FlagReranker("${RERANK_MODEL_HF}", use_fp16=True)
 print("OK")
 PY
 
+# ----- 8. автозапуск API через launchd -----
+log "Настраиваю автозапуск (launchd)..."
+PORT="$(grep -E '^API_PORT=' "${PROJECT_DIR}/.env" 2>/dev/null | cut -d= -f2)"
+PORT="${PORT:-8000}"
+TPL="${PROJECT_DIR}/mac_variant/com.rag.api.plist.tpl"
+if [[ -f "$TPL" ]]; then
+  mkdir -p "$HOME/Library/LaunchAgents"
+  PLIST="$HOME/Library/LaunchAgents/com.rag.api.plist"
+  sed -e "s|__ROOT__|${PROJECT_DIR}|g" -e "s|__PORT__|${PORT}|g" "$TPL" > "$PLIST"
+  launchctl unload "$PLIST" 2>/dev/null || true
+  launchctl load "$PLIST"
+  log "Сервис rag-api зарегистрирован и запущен (автозапуск при входе в систему)."
+else
+  warn "Шаблон launchd не найден — автозапуск не настроен; запускайте вручную uvicorn."
+fi
+
 cat <<EOF
 
 ============================================================
-  Готово. Дальнейшие шаги:
-  1) Отредактируйте .env -> DOCS_DIR=/путь/к/папке/с/документами
-  2) Проиндексируйте документы:
-       source .venv/bin/activate
-       python ingest.py
-  3) Запустите API + веб-чат:
-       uvicorn app:app --host 0.0.0.0 --port 8000
-  4) Откройте http://<ip-сервера>:8000 в браузере сотрудника.
+  Готово. Сервис запущен автоматически (launchd).
+
+  Веб-панель:   http://localhost:${PORT}
+  Раздел «Администратор» — укажите папку с документами и нажмите
+  «Переиндексировать» (или загрузите файлы в админке).
+
+  Управление:   bash mac_variant/manage_mac.sh {status|logs|restart|stop|start}
 ============================================================
 EOF

@@ -24,7 +24,7 @@ from rag_lightrag import build_rag  # noqa: E402
 
 load_dotenv()
 
-DOCS_DIR = Path(os.getenv("DOCS_DIR", "../company_docs")).expanduser()
+DOCS_DIR = Path(os.getenv("DOCS_DIR", "/opt/db")).expanduser()
 SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".csv",
              ".txt", ".md", ".html", ".htm",
              ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}

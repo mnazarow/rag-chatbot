@@ -118,7 +118,7 @@ def main():
     # --- фатальные ошибки инициализации: понятное сообщение и выход ---
     print(f"Документы: {DOCS_DIR}")
     try:
-        client = QdrantClient(url=settings.get("QDRANT_URL"))
+        client = QdrantClient(url=settings.get("QDRANT_URL"), timeout=480)
         ensure_collection(client, args.reset)
     except Exception as e:
         raise SystemExit(f"FATAL: не удалось подключиться к Qdrant ({settings.get('QDRANT_URL')}): {e}")
@@ -165,29 +165,33 @@ def main():
                     # обогащение метаданными не критично — продолжаем без него
                     print(f"  ~ метаданные LLM пропущены для {source}: {me}")
 
-            vectors = embedder.encode(
-                [p["chunk"] for p in points],
-                normalize_embeddings=True, batch_size=32, show_progress_bar=False,
-            )
-            client.upsert(
-                COLLECTION,
-                points=[
-                    qm.PointStruct(
-                        id=str(uuid.uuid4()),
-                        vector=vec.tolist(),
-                        payload={
-                            "text": p["chunk"],
-                            "source": source,
-                            "page": p["page"],
-                            "ftype": path.suffix.lower().lstrip("."),
-                            "fhash": fhash,
-                            "indexed_at": time.strftime("%Y-%m-%d"),
-                            **md,  # doc_category, title, date
-                        },
-                    )
-                    for p, vec in zip(points, vectors)
-                ],
-            )
+            # пишем пачками — большие файлы не упираются в таймаут и не съедают память
+            BATCH = 256
+            for i in range(0, len(points), BATCH):
+                batch = points[i:i + BATCH]
+                vectors = embedder.encode(
+                    [p["chunk"] for p in batch],
+                    normalize_embeddings=True, batch_size=32, show_progress_bar=False,
+                )
+                client.upsert(
+                    COLLECTION,
+                    points=[
+                        qm.PointStruct(
+                            id=str(uuid.uuid4()),
+                            vector=vec.tolist(),
+                            payload={
+                                "text": p["chunk"],
+                                "source": source,
+                                "page": p["page"],
+                                "ftype": path.suffix.lower().lstrip("."),
+                                "fhash": fhash,
+                                "indexed_at": time.strftime("%Y-%m-%d"),
+                                **md,  # doc_category, title, date
+                            },
+                        )
+                        for p, vec in zip(batch, vectors)
+                    ],
+                )
             n_new += 1
             n_chunks += len(points)
         except KeyboardInterrupt:

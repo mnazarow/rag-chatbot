@@ -12,7 +12,7 @@ def _float(name: str, default: float) -> float:
     return float(os.getenv(name, default))
 
 # Документы
-DOCS_DIR = Path(os.getenv("DOCS_DIR", "./company_docs")).expanduser()
+DOCS_DIR = Path(os.getenv("DOCS_DIR", "/opt/db")).expanduser()
 
 # Модели
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:32b-instruct-q4_K_M")

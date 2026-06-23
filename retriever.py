@@ -16,7 +16,7 @@ import query_filters
 
 # клиенты/модели создаются при старте процесса из текущих настроек
 # (поля scope=restart применяются после перезапуска сервиса)
-_client = QdrantClient(url=settings.get("QDRANT_URL"))
+_client = QdrantClient(url=settings.get("QDRANT_URL"), timeout=60)
 _COLLECTION = settings.get("QDRANT_COLLECTION")
 
 

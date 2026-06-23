@@ -59,6 +59,9 @@ upd VLLM_MAX_LEN "${VLLM_MAX_LEN}"; upd VLLM_TP "${VLLM_TP}"
 upd API_PORT "${API_PORT}"; upd ADMIN_TOKEN "${ADMIN_TOKEN}"
 ln -sf "${PROJECT_DIR}/.env" "${ROOT_DIR}/.env"
 
+# папка документов по умолчанию
+mkdir -p /opt/db && chown "${RUN_USER}:${RUN_USER}" /opt/db || true
+
 # ----- 3. vLLM + Qdrant -----------------------------------------------------
 log "Поднимаю vLLM + Qdrant (первый старт качает веса — долго)..."
 cd "${PROJECT_DIR}"

@@ -220,6 +220,25 @@ sudo bash gpu_variant/apply_finetuned.sh
 Подробности — в `finetune/README_finetune.md`. Дообучение требует видеопамяти и
 времени; рекомендуется как дополнение к RAG (стиль/терминология), а не замена.
 
+## 5b. Разнесённое (split) развёртывание на отдельных серверах
+
+Опционально: вынести Qdrant + vLLM на отдельный GPU-сервер, а приложение
+(FastAPI + эмбеддинги + LightRAG) запустить на другом. Код тот же — отличаются
+только адреса бэкенда в `.env`.
+
+```bash
+# 1) на бэкенд-сервере (GPU):
+sudo VLLM_MODEL=Qwen/Qwen2.5-32B-Instruct-AWQ APP_HOST=<ip-app> \
+     bash remote_variant/setup_backend.sh
+# 2) на сервере приложения:
+sudo BACKEND_HOST=<ip-бэкенда> BACKEND_MODEL=Qwen/Qwen2.5-32B-Instruct-AWQ \
+     DEVICE=cpu ADMIN_TOKEN='пароль' bash remote_variant/setup_app.sh
+```
+
+Подробности и безопасность — в `remote_variant/README_remote.md`. Qdrant и vLLM
+поднимаются без авторизации, поэтому держите их в приватной сети и ограничивайте
+доступ по `APP_HOST` (firewall).
+
 ## 6. Отдельная ветка LightRAG (для сравнения)
 
 Изолированный стек для A/B-сравнения чистого граф-RAG с вектором.
@@ -244,7 +263,7 @@ python query_lightrag.py "вопрос" --mode mix
 
 | Переменная        | Назначение                                   | По умолчанию                       |
 |-------------------|----------------------------------------------|------------------------------------|
-| `DOCS_DIR`        | Папка с документами                          | `./company_docs`                   |
+| `DOCS_DIR`        | Папка с документами                          | `/opt/db`                          |
 | `LLM_BACKEND`     | `ollama` (Apple) или `openai` (vLLM)         | `ollama`                           |
 | `LLM_MODEL`       | Имя модели для запросов                       | `qwen2.5:32b-instruct-q4_K_M`      |
 | `OLLAMA_URL`      | Адрес Ollama                                  | `http://localhost:11434`           |
