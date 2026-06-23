@@ -581,15 +581,25 @@ async function loadModels(){
   catch(e){ if(list) list.innerHTML='<span class="note">ошибка: '+esc(e.message)+'</span>'; return; }
   if(m.detail){ $('#llmcurrent').textContent=m.detail; if(list) list.innerHTML='<span class="note">'+esc(m.detail)+'</span>'; return; }
   $('#llmcurrent').innerHTML='Бэкенд: <b>'+esc(m.backend)+'</b> · текущая: <b>'+esc(m.current||'—')+'</b>';
-  if(!m.models||!m.models.length){ list.innerHTML='<span class="note">'+(m.error?esc(m.error):'модели не найдены')+'</span>'; return; }
-  list.innerHTML=m.models.map(name=>`<span class="dirbtn" style="${name===m.current?'border-color:var(--accent);color:var(--accent)':''}" onclick="setLLM('${escAttr(name)}')">${esc(name)}</span>`).join('');
-  llmMsg('список обновлён ('+m.models.length+')');
+  if(!m.models||!m.models.length){
+    list.innerHTML='<span class="note">'+(m.error?esc(m.error):'модели не найдены — скачайте модель ниже или впишите имя в поле LLM_MODEL')+'</span>';
+    return;
+  }
+  // выпадающий список выбора + кнопка «Выбрать»
+  const opts=m.models.map(n=>`<option value="${escAttr(n)}" ${n===m.current?'selected':''}>${esc(n)}</option>`).join('');
+  list.innerHTML=
+    '<select id="llmselect" style="min-width:300px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:inherit">'+opts+'</select>'
+    +' <button class="act" onclick="applySelectedLLM()">Выбрать</button>'
+    +'<div class="note" style="width:100%;margin-top:6px">Доступно моделей: '+m.models.length+'. Выберите и нажмите «Выбрать».</div>';
+}
+function applySelectedLLM(){
+  const sel=$('#llmselect'); if(sel && sel.value) setLLM(sel.value);
 }
 async function setLLM(name){
   const r=await fetch('/api/config',{method:'POST',
     headers:{'Content-Type':'application/json','X-Admin-Token':tok()},
     body:JSON.stringify({LLM_MODEL:name})});
-  if(r.ok){ llmMsg('✓ Модель: '+name); loadModels(); loadStats(); }
+  if(r.ok){ llmMsg('✓ Модель выбрана: '+name); loadModels(); loadStats(); }
   else { llmMsg('✗ '+((await r.json().catch(()=>({}))).detail||'ошибка'),false); }
 }
 function llmMsg(t,ok=true){ $('#llmmsg').textContent=t; $('#llmmsg').className=ok?'saved':'note'; }
