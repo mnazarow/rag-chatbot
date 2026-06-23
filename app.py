@@ -282,6 +282,18 @@ def admin_pull_model(payload: dict = Body(...), x_admin_token: str | None = Head
     return admin_ops.pull_model(payload.get("model", ""))
 
 
+@app.get("/api/admin/web-urls")
+def admin_web_urls(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.get_web_urls()
+
+
+@app.post("/api/admin/ingest-web")
+def admin_ingest_web(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.ingest_web(payload.get("urls", []))
+
+
 @app.post("/api/admin/upload")
 async def admin_upload(files: list[UploadFile] = File(...),
                        x_admin_token: str | None = Header(None)):

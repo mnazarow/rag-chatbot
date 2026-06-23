@@ -34,6 +34,8 @@ _pull_job = {"running": False, "started": None, "finished": None, "ok": None,
              "log": "", "model": ""}
 _dep_job = {"running": False, "started": None, "finished": None, "ok": None,
             "log": "", "label": "", "logfile": ""}
+_web_job = {"running": False, "started": None, "finished": None, "ok": None,
+            "log": "", "summary": "", "logfile": ""}
 
 
 def _tail(path: str, n: int = 6000) -> str:
@@ -134,7 +136,79 @@ def status() -> dict:
     out["engine"] = settings.get("ENGINE")
     out["pull_job"] = dict(_pull_job)
     out["dep_job"] = _jobview(_dep_job)
+    out["web_job"] = _jobview(_web_job)
     return out
+
+
+_WEB_SOURCES = ROOT / "web_sources.txt"
+
+
+def get_web_urls() -> dict:
+    urls = []
+    if _WEB_SOURCES.exists():
+        urls = [u for u in _WEB_SOURCES.read_text(encoding="utf-8").splitlines() if u.strip()]
+    return {"urls": urls}
+
+
+def ingest_web(urls: list) -> dict:
+    """Скачать до 20 сайтов, извлечь текст в DOCS_DIR/web и переиндексировать."""
+    import re
+    urls = [u.strip() for u in (urls or []) if u.strip().startswith(("http://", "https://"))][:50]
+    if not urls:
+        return {"ok": False, "msg": "укажите хотя бы один URL (http/https), максимум 50"}
+    if _web_job["running"]:
+        return {"ok": False, "msg": "парсинг сайтов уже идёт"}
+    _WEB_SOURCES.write_text("\n".join(urls), encoding="utf-8")
+    webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
+    logfile = "/tmp/rag_web.log"
+
+    def _slug(u):
+        return re.sub(r"[^a-zA-Z0-9._-]", "_", u)[:120] or "page"
+
+    def run():
+        _web_job.update(running=True, started=time.time(), finished=None, ok=None,
+                        log="", summary="", logfile=logfile)
+        ok = err = 0
+        rc = -1
+        try:
+            from bs4 import BeautifulSoup
+            import html as _html
+            webdir.mkdir(parents=True, exist_ok=True)
+            with open(logfile, "w", buffering=1, errors="ignore") as fp:
+                for u in urls:
+                    try:
+                        r = httpx.get(u, timeout=30, follow_redirects=True,
+                                      headers={"User-Agent": "Mozilla/5.0 (RAGBot)"})
+                        soup = BeautifulSoup(r.text, "html.parser")
+                        for t in soup(["script", "style", "noscript", "header", "footer", "nav"]):
+                            t.decompose()
+                        text = soup.get_text(separator="\n")
+                        title = (soup.title.string if soup.title and soup.title.string else u)
+                        doc = ("<html><body><!-- source: %s -->\n<h1>%s</h1>\n<pre>%s</pre></body></html>"
+                               % (_html.escape(u), _html.escape(title.strip()), _html.escape(text)))
+                        (webdir / (_slug(u) + ".html")).write_text(doc, encoding="utf-8")
+                        ok += 1
+                        fp.write(f"OK  {u}  ({len(text)} симв.)\n")
+                    except Exception as e:
+                        err += 1
+                        fp.write(f"ERR {u}: {e}\n")
+                    fp.flush()
+                fp.write(f"Скачано: {ok}, ошибок: {err}. Запускаю индексацию...\n")
+                fp.flush()
+                rc = subprocess.Popen([sys.executable, "-u", "ingest.py"], cwd=ROOT,
+                                      stdout=fp, stderr=subprocess.STDOUT).wait(timeout=24 * 3600)
+                fp.write(f"SUMMARY web_ok={ok} web_err={err} index_rc={rc}\n")
+            _web_job["log"] = _tail(logfile)
+            _web_job["summary"] = _extract_summary(_web_job["log"])
+            _web_job["ok"] = (err == 0 and rc == 0)
+        except Exception as e:
+            _web_job["ok"] = False
+            _web_job["log"] = (_tail(logfile) + "\n" + str(e)).strip()
+        _web_job["running"] = False
+        _web_job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": f"парсинг {len(urls)} сайт(ов) запущен; затем — индексация"}
 
 
 def _run_dep_job(label: str, cmd: list, timeout: int = 3600) -> dict:

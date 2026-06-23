@@ -266,6 +266,18 @@
       <div class="note">Qdrant поднимается контейнером (нужен Docker). LightRAG ставится в окружение (pip). Статус и логи — в блоке «Состояние и операции».</div>
     </div>
 
+    <!-- сайты в базе знаний -->
+    <div class="box">
+      <h3>Сайты в базе знаний</h3>
+      <textarea id="weburls" placeholder="по одному URL в строке, до 50 (https://...)"
+                style="width:100%;min-height:110px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:13px monospace"></textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <button class="act" onclick="ingestWeb()">🌐 Спарсить и добавить в базу</button>
+        <span id="webmsg"></span>
+      </div>
+      <div class="note">До 20 адресов. Страницы скачиваются, из них извлекается текст (в папку <code>web/</code> внутри папки документов) и добавляется в базу с последующей индексацией. Прогресс — в «Состояние и операции».</div>
+    </div>
+
     <!-- добавление файлов -->
     <div class="box">
       <h3>Добавить файлы (Excel и др.)</h3>
@@ -601,7 +613,7 @@ async function loadConfig(){
   c.fields.forEach(f=>{ if(f.type==='range'){ const el=$('#f_'+f.key); el.oninput=()=>$('#o_'+f.key).textContent=el.value; }});
   renderEngine(c.values);
   renderGenModel(c.values);
-  loadMode(); loadOps(); loadModels();
+  loadMode(); loadOps(); loadModels(); loadWebUrls();
 }
 
 // ---- выбор/загрузка модели LLM ----
@@ -737,6 +749,21 @@ async function reinstallFull(kind){
   rsMsg('запуск полной переустановки ('+kind+')…');
   const r=await adminPost('/api/admin/reinstall-full',{kind});
   rsMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
+}
+
+// ---- сайты в базе знаний ----
+function webMsg(t,ok=true){ $('#webmsg').textContent=t; $('#webmsg').className=ok?'saved':'note'; }
+async function loadWebUrls(){
+  try{ const r=await (await fetch('/api/admin/web-urls?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json();
+    if(r.urls && $('#weburls')) $('#weburls').value=r.urls.join('\n'); }catch(e){}
+}
+async function ingestWeb(){
+  const urls=$('#weburls').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!urls.length){ webMsg('добавьте хотя бы один URL',false); return; }
+  if(urls.length>20){ webMsg('максимум 20 адресов',false); return; }
+  webMsg('парсинг…'); const r=await adminPost('/api/admin/ingest-web',{urls});
+  webMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false); pollJob();
 }
 
 // ---- установка компонентов ----
@@ -891,12 +918,14 @@ async function loadOps(){
   const pjob=pj.running?('идёт… '+(pj.model||'')):(pj.ok===true?'успешно':(pj.ok===false?'ошибка':'—'));
   const dj=s.dep_job||{};
   const djob=dj.running?('идёт… '+(dj.label||'')):(dj.ok===true?('ок'+(dj.label?' '+dj.label:'')):(dj.ok===false?'ошибка':'—'));
+  const wj=s.web_job||{};
+  const wjob=wj.running?'идёт…':(wj.ok===true?'успешно':(wj.ok===false?'ошибка':'—'));
   $('#opsstatus').innerHTML=[
     ['Qdrant',dot(s.qdrant)],['LLM ('+s.backend+')',dot(s.llm)],
     ['Чанков в базе',s.chunks],['Индексация',job],
     ['Граф',gjob],['Граф знаний',graph],
     ['Дообучение',ftjob],['Дообуч. модель',adapter],
-    ['Загрузка модели',pjob],['Установка',djob],
+    ['Загрузка модели',pjob],['Установка',djob],['Парсинг сайтов',wjob],
   ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v" style="font-size:18px">${v}</div></div>`).join('');
   // сводки задач (ok/skip/errors) и логи
   const sums=[];
@@ -904,11 +933,12 @@ async function loadOps(){
   if(gj.summary) sums.push('Граф: '+gj.summary);
   if(fj.summary) sums.push('Дообучение: '+fj.summary);
   $('#opssummary').innerHTML=sums.map(esc).join('<br>');
-  const running=[j,gj,fj,pj,dj].find(x=>x.running);
+  const running=[j,gj,fj,pj,dj,wj].find(x=>x.running);
   // заголовок лога: какая операция показывается
   const label=j.running?'индексации':gj.running?'построения графа':fj.running?'дообучения':
-              dj.running?('установки'+(dj.label?' '+dj.label:'')):pj.running?'загрузки модели':'последней операции';
-  const logtxt=running?running.log:(dj.log||gj.log||j.log||fj.log||pj.log||'');
+              wj.running?'парсинга сайтов':dj.running?('установки'+(dj.label?' '+dj.label:'')):
+              pj.running?'загрузки модели':'последней операции';
+  const logtxt=running?running.log:(wj.log||dj.log||gj.log||j.log||fj.log||pj.log||'');
   if(logtxt){ $('#joblog').style.display='block'; $('#joblog').textContent='— лог '+label+' —\n'+logtxt;
     if(running) $('#joblog').scrollTop=$('#joblog').scrollHeight; }
   // пока какая-либо задача идёт — продолжаем обновлять статус/лог вживую
