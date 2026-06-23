@@ -70,6 +70,10 @@ FIELDS: list[dict] = [
      "type": "text", "scope": "restart", "default": config.QDRANT_URL},
     {"key": "QDRANT_COLLECTION", "label": "Коллекция", "group": "Хранилище",
      "type": "text", "scope": "restart", "default": config.QDRANT_COLLECTION},
+    {"key": "QDRANT_TIMEOUT", "label": "Таймаут запросов Qdrant, с", "group": "Хранилище",
+     "type": "int", "scope": "restart", "default": config.QDRANT_TIMEOUT},
+    {"key": "QDRANT_INGEST_TIMEOUT", "label": "Таймаут индексации Qdrant, с", "group": "Хранилище",
+     "type": "int", "scope": "reindex", "default": config.QDRANT_INGEST_TIMEOUT},
 
     # --- Документы и индексация ---
     {"key": "DOCS_DIR", "label": "Папка с документами", "group": "Документы и индексация",

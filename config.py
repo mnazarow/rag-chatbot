@@ -29,6 +29,8 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "EMPTY")
 # Qdrant
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "company_kb")
+QDRANT_TIMEOUT = _int("QDRANT_TIMEOUT", 60)            # таймаут запросов (чат), с
+QDRANT_INGEST_TIMEOUT = _int("QDRANT_INGEST_TIMEOUT", 480)  # таймаут индексации, с
 
 # RAG-параметры
 CHUNK_SIZE = _int("CHUNK_SIZE", 900)

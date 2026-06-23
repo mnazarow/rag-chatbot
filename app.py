@@ -9,7 +9,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File
+import tempfile
+
+from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -22,6 +24,9 @@ import db
 import llm_backend
 import admin_ops
 import graph_rag
+import loaders
+import retriever
+from ingest import chunk_text, SUPPORTED
 from retriever import search, infer_category
 
 app = FastAPI(title="Корпоративный RAG-чатбот")
@@ -108,6 +113,70 @@ async def chat(req: ChatRequest):
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
         db.log_request(req.question, category, len(hits), hits[0]["score"],
+                       int((time.time() - t0) * 1000), len("".join(acc)), True, sources)
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+# ============================ ЧАТ С ПРИЛОЖЕННЫМ ДОКУМЕНТОМ ============================
+@app.post("/chat-doc")
+async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
+                   history: str = Form("[]")):
+    """Ответ на основе приложенного к вопросу документа (Excel и др.), без индексации."""
+    t0 = time.time()
+    name = os.path.basename(file.filename or "файл")
+    ext = os.path.splitext(name)[1].lower()
+    try:
+        hist = json.loads(history) if history else []
+    except Exception:
+        hist = []
+
+    if ext not in SUPPORTED:
+        async def bad():
+            msg = f"Тип файла {ext or '?'} не поддерживается."
+            yield json.dumps({"type": "answer", "text": msg}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "sources", "items": []}, ensure_ascii=False) + "\n"
+        return StreamingResponse(bad(), media_type="application/x-ndjson")
+
+    # сохраняем во временный файл и парсим теми же загрузчиками
+    tmp = Path(tempfile.gettempdir()) / f"rag_attach_{int(time.time())}_{name}"
+    tmp.write_bytes(await file.read())
+    items = []
+    try:
+        for part in loaders.load_file(tmp):
+            for ch in chunk_text(part["text"], settings.get("CHUNK_SIZE"),
+                                 settings.get("CHUNK_OVERLAP")):
+                items.append({"text": ch, "source": name, "page": part["page"]})
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    hits = retriever.rerank_texts(question, items)
+    if not hits:
+        async def empty():
+            msg = "Не удалось извлечь данные из файла или он пуст."
+            yield json.dumps({"type": "answer", "text": msg}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "sources", "items": []}, ensure_ascii=False) + "\n"
+        db.log_request(question, "attached", 0, 0.0,
+                       int((time.time() - t0) * 1000), 0, False, [])
+        return StreamingResponse(empty(), media_type="application/x-ndjson")
+
+    context = prompts.build_context(hits)
+    messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")}]
+    messages += hist[-6:]
+    messages.append({"role": "user",
+                     "content": prompts.build_user_message(question, context)})
+    sources = [{"source": h["source"], "page": h.get("page"),
+                "score": round(h["score"], 3)} for h in hits]
+
+    async def stream():
+        acc = []
+        async for tok in llm_backend.chat_stream(
+                messages, temperature=settings.get("TEMPERATURE"),
+                model=settings.active_model()):
+            acc.append(tok)
+            yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
+        yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
+        db.log_request(question, "attached", len(hits), hits[0]["score"],
                        int((time.time() - t0) * 1000), len("".join(acc)), True, sources)
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
@@ -201,6 +270,12 @@ def admin_models(x_admin_token: str | None = Header(None)):
     return admin_ops.list_models()
 
 
+@app.get("/api/admin/available-models")
+def admin_available_models(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.available_models()
+
+
 @app.post("/api/admin/pull-model")
 def admin_pull_model(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
@@ -242,6 +317,18 @@ def admin_reindex(payload: dict = Body(default={}),
 def admin_apply_llm(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.apply_llm()
+
+
+@app.post("/api/admin/install-qdrant")
+def admin_install_qdrant(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.install_qdrant()
+
+
+@app.post("/api/admin/install-lightrag")
+def admin_install_lightrag(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.install_lightrag()
 
 
 @app.post("/api/admin/build-graph")

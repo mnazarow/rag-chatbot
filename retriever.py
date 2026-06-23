@@ -16,7 +16,7 @@ import query_filters
 
 # клиенты/модели создаются при старте процесса из текущих настроек
 # (поля scope=restart применяются после перезапуска сервиса)
-_client = QdrantClient(url=settings.get("QDRANT_URL"), timeout=60)
+_client = QdrantClient(url=settings.get("QDRANT_URL"), timeout=settings.get("QDRANT_TIMEOUT"))
 _COLLECTION = settings.get("QDRANT_COLLECTION")
 
 
@@ -120,3 +120,24 @@ def search(question: str, filters: dict | None = None,
     top_k = settings.get("TOP_K_RERANK")
     top = [c for c in cands if c["score"] >= min_score][:top_k]
     return top
+
+
+def rerank_texts(question: str, items: list, top_k: int | None = None) -> list:
+    """Отобрать самые релевантные фрагменты из готового списка (без Qdrant).
+    Используется для «подложенного» к вопросу документа. items: [{text,source,page}].
+    Для длинных файлов сначала отсев BM25 до 120 кандидатов, затем кросс-энкодер."""
+    if not items:
+        return []
+    if len(items) > 120:
+        bm = BM25Okapi([_tokenize(i["text"]) for i in items])
+        sc = bm.get_scores(_tokenize(question))
+        idx = sorted(range(len(items)), key=lambda k: sc[k], reverse=True)[:120]
+        items = [items[k] for k in idx]
+    pairs = [[question, i["text"]] for i in items]
+    scores = _reranker().compute_score(pairs, normalize=True)
+    if not isinstance(scores, list):
+        scores = [scores]
+    for i, s in zip(items, scores):
+        i["score"] = float(s)
+    items.sort(key=lambda x: x["score"], reverse=True)
+    return items[: (top_k or settings.get("TOP_K_RERANK"))]

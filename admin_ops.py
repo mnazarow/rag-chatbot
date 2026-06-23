@@ -32,6 +32,8 @@ _ft_job = {"running": False, "started": None, "finished": None, "ok": None, "log
 _graph_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": ""}
 _pull_job = {"running": False, "started": None, "finished": None, "ok": None,
              "log": "", "model": ""}
+_dep_job = {"running": False, "started": None, "finished": None, "ok": None,
+            "log": "", "label": ""}
 
 # зависимости LightRAG (как в lightrag_variant/requirements-lightrag.txt)
 _LIGHTRAG_DEPS = ["lightrag-hku==1.3.0", "nano-vectordb==0.0.4.3",
@@ -77,7 +79,48 @@ def status() -> dict:
     out["graph_ready"] = (ROOT / "graph_storage").exists()
     out["engine"] = settings.get("ENGINE")
     out["pull_job"] = dict(_pull_job)
+    out["dep_job"] = dict(_dep_job)
     return out
+
+
+def _run_dep_job(label: str, cmd: list, timeout: int = 3600) -> dict:
+    """Запустить установочную команду в фоне с записью статуса в _dep_job."""
+    if _dep_job["running"]:
+        return {"ok": False, "msg": "установка зависимостей уже идёт"}
+
+    def run():
+        _dep_job.update(running=True, started=time.time(), finished=None, ok=None,
+                        log="", label=label)
+        try:
+            p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+            _dep_job["log"] = (p.stdout[-3000:] + "\n" + p.stderr[-2000:]).strip()
+            _dep_job["ok"] = p.returncode == 0
+        except Exception as e:
+            _dep_job["ok"] = False
+            _dep_job["log"] = str(e)
+        _dep_job["running"] = False
+        _dep_job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": f"установка «{label}» запущена; статус — в «Состояние и операции»"}
+
+
+def install_lightrag() -> dict:
+    """pip-установка LightRAG и зависимостей (без построения графа)."""
+    return _run_dep_job("LightRAG", [sys.executable, "-m", "pip", "install", "-q", *_LIGHTRAG_DEPS])
+
+
+def install_qdrant() -> dict:
+    """Поднять контейнер Qdrant через docker compose."""
+    if not shutil.which("docker"):
+        return {"ok": False, "msg": "Docker не установлен. Linux: curl -fsSL https://get.docker.com | sh; "
+                "Mac: установите Docker Desktop."}
+    compose = ROOT / "docker-compose.yml"
+    if not compose.exists():
+        compose = ROOT / "gpu_variant" / "docker-compose.gpu.yml"
+    return _run_dep_job("Qdrant",
+                        ["docker", "compose", "-f", str(compose), "up", "-d", "qdrant"],
+                        timeout=900)
 
 
 def list_models() -> dict:
@@ -98,6 +141,34 @@ def list_models() -> dict:
     except Exception as e:
         out["error"] = str(e)
     return out
+
+
+# Курируемые каталоги моделей (полного API библиотеки у Ollama нет)
+_OLLAMA_CATALOG = [
+    {"name": "qwen2.5:7b-instruct", "note": "~4.7 ГБ · быстрый, базовый RU"},
+    {"name": "qwen2.5:14b-instruct", "note": "~9 ГБ · хороший баланс"},
+    {"name": "qwen2.5:32b-instruct-q4_K_M", "note": "~20 ГБ · сильный RU (рекоменд.)"},
+    {"name": "qwen2.5:72b-instruct-q4_K_M", "note": "~42 ГБ · максимум качества"},
+    {"name": "llama3.1:8b-instruct-q4_K_M", "note": "~4.9 ГБ"},
+    {"name": "gemma2:9b-instruct-q4_K_M", "note": "~5.8 ГБ"},
+    {"name": "gemma2:27b-instruct-q4_K_M", "note": "~16 ГБ"},
+    {"name": "mistral-nemo:12b-instruct-2407-q4_K_M", "note": "~7 ГБ · 128k контекст"},
+    {"name": "phi3.5:3.8b-mini-instruct-q4_K_M", "note": "~2.2 ГБ · лёгкая"},
+    {"name": "bge-m3", "note": "эмбеддинги (нужно для графа на Ollama)"},
+]
+_VLLM_CATALOG = [
+    {"name": "Qwen/Qwen2.5-7B-Instruct-AWQ", "note": "~24 ГБ VRAM"},
+    {"name": "Qwen/Qwen2.5-14B-Instruct-AWQ", "note": "~24 ГБ VRAM"},
+    {"name": "Qwen/Qwen2.5-32B-Instruct-AWQ", "note": "~48 ГБ VRAM"},
+    {"name": "Qwen/Qwen2.5-72B-Instruct-AWQ", "note": "~80 ГБ VRAM / TP=2"},
+]
+
+
+def available_models() -> dict:
+    """Каталог рекомендованных моделей под текущий бэкенд."""
+    b = settings.get("LLM_BACKEND")
+    return {"backend": b, "installable": b == "ollama",
+            "catalog": _OLLAMA_CATALOG if b == "ollama" else _VLLM_CATALOG}
 
 
 def pull_model(name: str) -> dict:

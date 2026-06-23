@@ -118,7 +118,8 @@ def main():
     # --- фатальные ошибки инициализации: понятное сообщение и выход ---
     print(f"Документы: {DOCS_DIR}")
     try:
-        client = QdrantClient(url=settings.get("QDRANT_URL"), timeout=480)
+        client = QdrantClient(url=settings.get("QDRANT_URL"),
+                              timeout=settings.get("QDRANT_INGEST_TIMEOUT"))
         ensure_collection(client, args.reset)
     except Exception as e:
         raise SystemExit(f"FATAL: не удалось подключиться к Qdrant ({settings.get('QDRANT_URL')}): {e}")
