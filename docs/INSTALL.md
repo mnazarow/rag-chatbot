@@ -154,6 +154,27 @@ sudo REINDEX=1 bash /opt/rag/update.sh    # то же + переиндексац
 `update.sh` работает только на уже установленном сервере; если установки нет, он
 подскажет запустить `run_gpu.sh`.
 
+### Деплой из GitHub на Mac (Apple Silicon)
+
+Аналог для Mac: клонирует репозиторий, запускает `setup.sh` и регистрирует
+автозапуск через launchd (без systemd).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/USER/rag-chatbot/main/mac_variant/deploy_mac.sh -o deploy_mac.sh
+REPO=https://github.com/USER/rag-chatbot.git ADMIN_TOKEN='пароль' bash deploy_mac.sh
+```
+
+После установки сервис стартует автоматически (launchd, `KeepAlive`), панель —
+`http://localhost:8000`. Управление и обновление:
+
+```bash
+bash mac_variant/manage_mac.sh {status|logs|restart|stop|start}
+bash mac_variant/update_mac.sh
+```
+
+В отличие от GPU-варианта здесь генерация идёт через Ollama (Metal), а операция
+«Применить модель LLM» (рестарт vLLM) не применяется.
+
 ---
 
 ## 5. Расширенный режим hybrid+ (граф-RAG)
