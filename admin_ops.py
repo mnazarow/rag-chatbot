@@ -702,6 +702,82 @@ def update_app() -> dict:
     return {"ok": True, "msg": "обновление запущено; сервис перезапустится автоматически"}
 
 
+_CALIB_BACKUP = ROOT / "calib_backup.json"
+_CALIB_KEYS = ("MIN_SCORE", "TOP_K_RETRIEVE", "TOP_K_RERANK", "TEMPERATURE",
+               "AUTO_FILTER", "SMART_FILTER")
+
+
+def recommend() -> dict:
+    """Анализ оценок ответов → рекомендации по настройкам (эвристики)."""
+    import db
+    a = db.rating_analysis()
+    cur = {k: settings.get(k) for k in _CALIB_KEYS}
+    rated = (a["good_n"] or 0) + (a["bad_n"] or 0)
+    if rated < 5:
+        return {"ok": True, "enough": False, "analysis": a, "current": cur, "changes": {},
+                "reasons": [], "msg": "Недостаточно оценок для анализа (нужно ≥ 5)."}
+    changes, reasons = {}, []
+    bad_n = a["bad_n"] or 1
+
+    # 1) часто «плохо» из-за отказа «не знаю» → ослабить порог, расширить выборку
+    if a["bad_no_answer"] >= max(2, 0.3 * bad_n):
+        ms = round(max(0.15, cur["MIN_SCORE"] - 0.07), 2)
+        if ms < cur["MIN_SCORE"]:
+            changes["MIN_SCORE"] = ms
+            reasons.append(f"Часто «не знаю» при плохих оценках → снизить MIN_SCORE до {ms}.")
+        if cur["TOP_K_RETRIEVE"] < 30:
+            changes["TOP_K_RETRIEVE"] = min(30, cur["TOP_K_RETRIEVE"] + 10)
+            reasons.append(f"Увеличить TOP_K_RETRIEVE до {changes['TOP_K_RETRIEVE']}.")
+        if cur["TOP_K_RERANK"] < 8:
+            changes["TOP_K_RERANK"] = min(8, cur["TOP_K_RERANK"] + 2)
+            reasons.append(f"Увеличить TOP_K_RERANK до {changes['TOP_K_RERANK']}.")
+
+    # 2) часто «плохо» при наличии ответа → точнее/строже
+    if a["bad_answered"] >= max(2, 0.5 * bad_n):
+        if cur["TEMPERATURE"] > 0.1:
+            changes["TEMPERATURE"] = 0.1
+            reasons.append("Снизить TEMPERATURE до 0.1 (точнее ответы).")
+        if not cur["SMART_FILTER"]:
+            changes["SMART_FILTER"] = True
+            reasons.append("Включить умные фильтры (SMART_FILTER).")
+        if a["bad_avg_score"] is not None and a["good_avg_score"] is not None \
+                and a["bad_avg_score"] < a["good_avg_score"]:
+            ms = round(min(0.6, (a["bad_avg_score"] + a["good_avg_score"]) / 2), 2)
+            if ms > cur["MIN_SCORE"] and "MIN_SCORE" not in changes:
+                changes["MIN_SCORE"] = ms
+                reasons.append(f"Поднять MIN_SCORE до {ms} (плохие ответы имеют низкую релевантность).")
+
+    return {"ok": True, "enough": True, "analysis": a, "current": cur,
+            "changes": changes, "reasons": reasons,
+            "msg": "Изменений не требуется." if not changes else f"Рекомендовано изменений: {len(changes)}."}
+
+
+def apply_recommendations() -> dict:
+    rec = recommend()
+    ch = rec.get("changes") or {}
+    if not ch:
+        return {"ok": True, "msg": rec.get("msg", "нет изменений")}
+    backup = {k: settings.get(k) for k in ch}
+    try:
+        _CALIB_BACKUP.write_text(_json.dumps(backup, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    settings.update(ch)
+    return {"ok": True, "msg": f"применено изменений: {len(ch)}", "changes": ch}
+
+
+def rollback_calibration() -> dict:
+    if not _CALIB_BACKUP.exists():
+        return {"ok": False, "msg": "нет сохранённого состояния для отката"}
+    try:
+        backup = _json.loads(_CALIB_BACKUP.read_text(encoding="utf-8"))
+        settings.update(backup)
+        _CALIB_BACKUP.unlink()
+        return {"ok": True, "msg": f"откат выполнен ({len(backup)} парам.)"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
 def reinstall_full(kind: str) -> dict:
     """Полная переустановка с нуля (destructive). kind: server (GPU) | mac.
     Запускает соответствующий скрипт detached с CONFIRM=yes."""

@@ -34,6 +34,8 @@ FIELDS: list[dict] = [
      "type": "range", "scope": "live", "min": 0, "max": 1, "step": 0.05, "default": 0.1},
     {"key": "AUTO_FILTER", "label": "Авто-фильтр по категории вопроса", "group": "Поиск и генерация",
      "type": "bool", "scope": "live", "default": True},
+    {"key": "AUTO_CALIBRATE", "label": "Авто-калибровка настроек по оценкам ответов",
+     "group": "Поиск и генерация", "type": "bool", "scope": "live", "default": False},
     {"key": "SYSTEM_PROMPT", "label": "Системный промпт", "group": "Поиск и генерация",
      "type": "textarea", "scope": "live", "default": prompts.SYSTEM_PROMPT},
 

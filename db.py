@@ -31,6 +31,11 @@ def init() -> None:
                 n_hits INTEGER, top_score REAL, latency_ms INTEGER,
                 answer_chars INTEGER, answered INTEGER, sources TEXT)"""
         )
+        # миграция: оценка ответа (1 — хорошо, -1 — плохо, NULL — без оценки)
+        try:
+            c.execute("ALTER TABLE requests ADD COLUMN rating INTEGER")
+        except Exception:
+            pass
 
 
 init()
@@ -38,10 +43,10 @@ init()
 
 def log_request(question: str, category: str | None, n_hits: int,
                 top_score: float, latency_ms: int, answer_chars: int,
-                answered: bool, sources: list) -> None:
+                answered: bool, sources: list) -> int:
     now = datetime.now()
     with _LOCK, _conn() as c:
-        c.execute(
+        cur = c.execute(
             """INSERT INTO requests
                (ts,day,question,category,n_hits,top_score,latency_ms,
                 answer_chars,answered,sources)
@@ -50,6 +55,35 @@ def log_request(question: str, category: str | None, n_hits: int,
              n_hits, round(top_score, 4), latency_ms, answer_chars,
              int(answered), json.dumps(sources, ensure_ascii=False)),
         )
+        return cur.lastrowid
+
+
+def set_rating(req_id: int, rating: int) -> bool:
+    with _LOCK, _conn() as c:
+        cur = c.execute("UPDATE requests SET rating=? WHERE id=?",
+                        (int(rating), int(req_id)))
+        return cur.rowcount > 0
+
+
+def rating_stats() -> dict:
+    with _conn() as c:
+        g = c.execute("SELECT COUNT(*) n FROM requests WHERE rating=1").fetchone()["n"]
+        b = c.execute("SELECT COUNT(*) n FROM requests WHERE rating=-1").fetchone()["n"]
+        tot = c.execute("SELECT COUNT(*) n FROM requests").fetchone()["n"]
+    rated = g + b
+    return {"good": g, "bad": b, "rated": rated, "unrated": tot - rated,
+            "satisfaction": round(g / rated * 100, 1) if rated else None}
+
+
+def rating_analysis() -> dict:
+    with _conn() as c:
+        good = c.execute("SELECT AVG(top_score) s, COUNT(*) n FROM requests WHERE rating=1").fetchone()
+        bad = c.execute("SELECT AVG(top_score) s, COUNT(*) n FROM requests WHERE rating=-1").fetchone()
+        bad_no = c.execute("SELECT COUNT(*) n FROM requests WHERE rating=-1 AND answered=0").fetchone()["n"]
+        bad_yes = c.execute("SELECT COUNT(*) n FROM requests WHERE rating=-1 AND answered=1").fetchone()["n"]
+    return {"good_avg_score": good["s"], "good_n": good["n"],
+            "bad_avg_score": bad["s"], "bad_n": bad["n"],
+            "bad_no_answer": bad_no, "bad_answered": bad_yes}
 
 
 def recent(limit: int = 100) -> list[dict]:
@@ -146,4 +180,5 @@ def analytics() -> dict:
         "top_sources": [{"source": s, "n": n} for s, n in src.most_common(10)],
         "top_keywords": [{"word": w, "n": n} for w, n in kw.most_common(15)],
         "latency_buckets": buckets,
+        "ratings": rating_stats(),
     }

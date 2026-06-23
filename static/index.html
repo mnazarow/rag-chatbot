@@ -230,6 +230,7 @@
       <div class="box"><h3>Топ источников</h3><canvas id="ch_src" height="170"></canvas></div>
       <div class="box"><h3>Задержка ответа</h3><canvas id="ch_lat" height="170"></canvas></div>
     </div>
+    <div class="box"><h3>Оценки ответов</h3><div class="cards" id="ratecards"></div></div>
     <div class="box"><h3>Частые слова в вопросах</h3><div id="kwcloud" style="display:flex;flex-wrap:wrap;gap:8px"></div></div>
   </section>
 
@@ -426,6 +427,20 @@
       <div class="note">SSH по логину/паролю (paramiko). Linux: нужен root/passwordless sudo. macOS/Windows: Docker должен быть предустановлен, SSH включён. Пароли хранятся в <code>remote_hosts.json</code> — держите в доверенной сети. После «Переключиться»/«Вернуться» перезапустите сервис.</div>
     </div>
 
+    <!-- калибровка по оценкам -->
+    <div class="box">
+      <h3>Калибровка по оценкам ответов</h3>
+      <div class="field" style="margin:0"><label><input type="checkbox" id="cal_auto" onchange="calToggle()"> Автоматически калибровать настройки по оценкам (каждые 10 оценок)</label></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+        <button class="act ghost" onclick="calAnalyze()">🔍 Проанализировать оценки</button>
+        <button class="act" onclick="calApply()">✅ Применить рекомендации</button>
+        <button class="act ghost" onclick="calRollback()">↩︎ Откатить изменения</button>
+        <span id="calmsg"></span>
+      </div>
+      <pre id="calinfo" style="margin-top:10px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+      <div class="note">Анализирует оценки 👍/👎 и предлагает изменения (порог релевантности, объём выборки, температура, фильтры). «Откатить» возвращает значения до последней применённой калибровки.</div>
+    </div>
+
     <!-- обновления -->
     <div class="box">
       <h3>Обновления</h3>
@@ -540,6 +555,11 @@ async function loadAnalytics(){
   const max=Math.max(1,...a.top_keywords.map(k=>k.n));
   $('#kwcloud').innerHTML=a.top_keywords.map(k=>
     `<span class="tag" style="font-size:${12+18*k.n/max}px">${esc(k.word)} <b style="color:#3b82f6">${k.n}</b></span>`).join('')||'<span class="note">пока нет данных</span>';
+  const rt=a.ratings||{};
+  $('#ratecards').innerHTML=[
+    ['👍 Хорошо',rt.good||0],['👎 Плохо',rt.bad||0],
+    ['Оценено',rt.rated||0],['Удовлетворённость',(rt.satisfaction==null?'—':rt.satisfaction+'%')],
+  ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
 }
 
 // ---- система: сводка по компонентам ----
@@ -667,7 +687,45 @@ async function loadConfig(){
   c.fields.forEach(f=>{ if(f.type==='range'){ const el=$('#f_'+f.key); el.oninput=()=>$('#o_'+f.key).textContent=el.value; }});
   renderEngine(c.values);
   renderGenModel(c.values);
+  if($('#cal_auto')) $('#cal_auto').checked=!!c.values.AUTO_CALIBRATE;
   loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad();
+}
+
+// ---- калибровка по оценкам ----
+function calMsg(t,ok=true){ $('#calmsg').textContent=t; $('#calmsg').className=ok?'saved':'note'; }
+async function calToggle(){
+  const v=$('#cal_auto').checked;
+  const r=await fetch('/api/config',{method:'POST',
+    headers:{'Content-Type':'application/json','X-Admin-Token':tok()},
+    body:JSON.stringify({AUTO_CALIBRATE:v})});
+  calMsg(r.ok?('авто-калибровка '+(v?'включена':'выключена')):'ошибка',r.ok);
+}
+async function calAnalyze(){
+  calMsg('анализ…');
+  let r; try{ r=await (await fetch('/api/admin/recommendations?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ calMsg('✗ '+e.message,false); return; }
+  if(!r.ok){ calMsg('✗ '+(r.msg||r.detail||'ошибка'),false); return; }
+  calMsg(r.msg||'');
+  const a=r.analysis||{}, ch=r.changes||{};
+  let txt='Оценок: 👍 '+(a.good_n||0)+' / 👎 '+(a.bad_n||0)+
+    '\nплохих без ответа: '+(a.bad_no_answer||0)+', плохих с ответом: '+(a.bad_answered||0)+'\n';
+  txt+='ср. релевантность: хорошие '+(a.good_avg_score!=null?a.good_avg_score.toFixed(3):'—')+
+    ', плохие '+(a.bad_avg_score!=null?a.bad_avg_score.toFixed(3):'—')+'\n\n';
+  if(Object.keys(ch).length){
+    txt+='Рекомендации:\n'+(r.reasons||[]).map(x=>'• '+x).join('\n')+
+      '\n\nИзменения: '+JSON.stringify(ch);
+  } else txt+='Изменений не требуется.';
+  $('#calinfo').style.display='block'; $('#calinfo').textContent=txt;
+}
+async function calApply(){
+  if(!confirm('Применить рекомендованные изменения настроек?'))return;
+  calMsg('применение…'); const r=await adminPost('/api/admin/apply-recommendations');
+  calMsg(r.msg||(r.ok?'применено':'ошибка'),r.ok!==false); loadConfig();
+}
+async function calRollback(){
+  if(!confirm('Откатить настройки к значениям до последней калибровки?'))return;
+  calMsg('откат…'); const r=await adminPost('/api/admin/rollback-calibration');
+  calMsg(r.msg||(r.ok?'откат выполнен':'ошибка'),r.ok!==false); loadConfig();
 }
 
 // ---- выбор/загрузка модели LLM ----
@@ -1126,6 +1184,7 @@ async function ask(){
           const s=document.createElement('div');s.className='src';
           s.textContent='Источники: '+ev.items.map(i=>i.source+(i.page?`, с.${i.page}`:'')).join('; ');
           bot.appendChild(s);}
+        else if(ev.type==='meta'&&ev.id){ addRating(bot,ev.id); }
       }
       $('#msgs').scrollTop=$('#msgs').scrollHeight;
     }
@@ -1137,6 +1196,22 @@ function add(cls,text){ const d=document.createElement('div'); d.className='msg 
   const span=document.createElement('span'); span.textContent=text; d.appendChild(span);
   $('#msgs').appendChild(d); $('#msgs').scrollTop=$('#msgs').scrollHeight; return d; }
 $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask();});
+function addRating(bot,id){
+  const w=document.createElement('div'); w.className='src';
+  w.style.display='flex'; w.style.gap='8px'; w.style.alignItems='center';
+  w.innerHTML='<span>Оценка:</span>';
+  const up=document.createElement('button'); up.className='dirbtn'; up.textContent='👍';
+  const dn=document.createElement('button'); dn.className='dirbtn'; dn.textContent='👎';
+  up.onclick=()=>rate(id,1,up,dn); dn.onclick=()=>rate(id,-1,up,dn);
+  w.appendChild(up); w.appendChild(dn); bot.appendChild(w);
+}
+async function rate(id,val,up,dn){
+  try{ await fetch('/api/rate',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id,rating:val})}); }catch(e){}
+  if(up&&dn){ const sel=val===1?up:dn;
+    up.style.opacity=dn.style.opacity='.4'; sel.style.opacity='1';
+    sel.style.borderColor=val===1?'#4ade80':'#f87171'; }
+}
 
 // ---- демо схемы ----
 async function runDemo(){

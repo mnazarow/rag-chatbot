@@ -74,8 +74,9 @@ async def chat(req: ChatRequest):
                 yield json.dumps({"type": "sources",
                                   "items": [{"source": "граф знаний (LightRAG)", "page": None}]},
                                  ensure_ascii=False) + "\n"
-                db.log_request(req.question, cat, 1, 1.0,
-                               int((time.time() - t0) * 1000), len(text), True, [])
+                rid = db.log_request(req.question, cat, 1, 1.0,
+                                     int((time.time() - t0) * 1000), len(text), True, [])
+                yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
             return StreamingResponse(gstream(), media_type="application/x-ndjson")
         except Exception as e:
@@ -86,12 +87,13 @@ async def chat(req: ChatRequest):
 
     if not hits:
         msg = "В доступных документах нет точного ответа на этот вопрос."
-        db.log_request(req.question, category, 0, 0.0,
-                       int((time.time() - t0) * 1000), len(msg), False, [])
+        rid = db.log_request(req.question, category, 0, 0.0,
+                             int((time.time() - t0) * 1000), len(msg), False, [])
 
         async def empty():
             yield json.dumps({"type": "answer", "text": msg}, ensure_ascii=False) + "\n"
             yield json.dumps({"type": "sources", "items": []}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
         return StreamingResponse(empty(), media_type="application/x-ndjson")
 
@@ -113,10 +115,29 @@ async def chat(req: ChatRequest):
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
-        db.log_request(req.question, category, len(hits), hits[0]["score"],
-                       int((time.time() - t0) * 1000), len("".join(acc)), True, sources)
+        rid = db.log_request(req.question, category, len(hits), hits[0]["score"],
+                             int((time.time() - t0) * 1000), len("".join(acc)), True, sources)
+        yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
+@app.post("/api/rate")
+def api_rate(payload: dict = Body(...)):
+    """Оценка ответа сотрудником: rating 1 (хорошо) / -1 (плохо) / 0 (снять)."""
+    rid = payload.get("id")
+    rating = int(payload.get("rating", 0))
+    if rid is None or rating not in (1, -1, 0):
+        return {"ok": False}
+    db.set_rating(int(rid), rating)
+    note = None
+    # авто-калибровка по накоплению оценок
+    if rating != 0 and settings.get("AUTO_CALIBRATE"):
+        rs = db.rating_stats()
+        if rs["rated"] and rs["rated"] % 10 == 0:
+            res = admin_ops.apply_recommendations()
+            note = res.get("msg")
+    return {"ok": True, "note": note}
 
 
 # ============================ ЧАТ С ПРИЛОЖЕННЫМ ДОКУМЕНТОМ ============================
@@ -177,8 +198,9 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
-        db.log_request(question, "attached", len(hits), hits[0]["score"],
-                       int((time.time() - t0) * 1000), len("".join(acc)), True, sources)
+        rid = db.log_request(question, "attached", len(hits), hits[0]["score"],
+                             int((time.time() - t0) * 1000), len("".join(acc)), True, sources)
+        yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
@@ -402,6 +424,24 @@ def admin_reinstall_env(x_admin_token: str | None = Header(None)):
 def admin_reinstall_full(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.reinstall_full(payload.get("kind", ""))
+
+
+@app.get("/api/admin/recommendations")
+def admin_recommendations(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.recommend()
+
+
+@app.post("/api/admin/apply-recommendations")
+def admin_apply_recommendations(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.apply_recommendations()
+
+
+@app.post("/api/admin/rollback-calibration")
+def admin_rollback_calibration(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.rollback_calibration()
 
 
 @app.post("/api/admin/restart")
