@@ -213,6 +213,12 @@ def api_system():
     return admin_ops.system_info()
 
 
+@app.post("/api/admin/selftest")
+def api_selftest(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.self_test()
+
+
 @app.get("/api/analytics-components")
 def api_analytics_components():
     return admin_ops.component_analytics()

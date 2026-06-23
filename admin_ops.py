@@ -36,6 +36,8 @@ _dep_job = {"running": False, "started": None, "finished": None, "ok": None,
             "log": "", "label": "", "logfile": ""}
 _web_job = {"running": False, "started": None, "finished": None, "ok": None,
             "log": "", "summary": "", "logfile": ""}
+_test_job = {"running": False, "started": None, "finished": None, "ok": None,
+             "log": "", "logfile": "", "results": []}
 
 
 def _tail(path: str, n: int = 6000) -> str:
@@ -137,7 +139,131 @@ def status() -> dict:
     out["pull_job"] = dict(_pull_job)
     out["dep_job"] = _jobview(_dep_job)
     out["web_job"] = _jobview(_web_job)
+    out["test_job"] = _jobview(_test_job)
     return out
+
+
+# ============================ самотесты компонентов ============================
+def _t_settings():
+    return True, (f"backend={settings.get('LLM_BACKEND')}, device={settings.get('DEVICE')}, "
+                  f"model={settings.get('LLM_MODEL')}")
+
+
+def _t_qdrant():
+    coll = settings.get("QDRANT_COLLECTION")
+    r = httpx.get(f"{settings.get('QDRANT_URL')}/collections/{coll}", timeout=6)
+    if r.status_code != 200:
+        return False, f"HTTP {r.status_code}"
+    n = (r.json().get("result", {}) or {}).get("points_count", 0)
+    return True, f"коллекция «{coll}», чанков: {n}"
+
+
+def _t_embedder():
+    from retriever import _embedder
+    v = _embedder().encode(["проверка эмбеддера"], normalize_embeddings=True)
+    return len(v[0]) > 0, f"модель {settings.get('EMBED_MODEL')}, размерность {len(v[0])}"
+
+
+def _t_reranker():
+    from retriever import _reranker
+    s = _reranker().compute_score([["вопрос", "ответ на вопрос"]], normalize=True)
+    val = float(s[0] if isinstance(s, list) else s)
+    return True, f"score={val:.3f}"
+
+
+def _t_llm():
+    b = settings.get("LLM_BACKEND")
+    m = settings.get("LLM_MODEL")
+    if b == "openai":
+        r = httpx.post(f"{settings.get('LLM_BASE_URL')}/chat/completions",
+                       headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
+                       json={"model": m, "messages": [{"role": "user", "content": "Ответь словом: тест"}],
+                             "max_tokens": 8, "temperature": 0}, timeout=60)
+        txt = r.json()["choices"][0]["message"]["content"]
+    else:
+        r = httpx.post(f"{settings.get('OLLAMA_URL')}/api/generate",
+                       json={"model": m, "prompt": "Ответь словом: тест", "stream": False,
+                             "options": {"num_predict": 8}}, timeout=120)
+        txt = r.json().get("response", "")
+    return bool(txt.strip()), f"{b}/{m}: «{txt.strip()[:50]}»"
+
+
+def _t_docs():
+    p = Path(settings.get("DOCS_DIR")).expanduser()
+    if not p.exists():
+        return False, f"папка не найдена: {p}"
+    n = sum(1 for f in p.rglob("*") if f.is_file())
+    return True, f"{p}: файлов {n}"
+
+
+def _t_db():
+    import db
+    return True, f"журнал: запросов {db.stats()['total']}"
+
+
+def _t_graph():
+    inst = _iu.find_spec("lightrag") is not None
+    built = (ROOT / "graph_storage").exists()
+    return (inst and built), f"установлен={inst}, граф построен={built}"
+
+
+def _t_finetune():
+    deps = _iu.find_spec("peft") is not None and _iu.find_spec("trl") is not None
+    adapter = (ROOT / "finetune" / "adapter").exists()
+    return (deps and adapter), f"зависимости={deps}, адаптер={adapter}"
+
+
+# критичные компоненты (для общего вердикта); граф и дообучение — опциональны
+_TESTS = [
+    ("Настройки", _t_settings, True),
+    ("Qdrant", _t_qdrant, True),
+    ("Эмбеддер (bge-m3)", _t_embedder, True),
+    ("Реранкер", _t_reranker, True),
+    ("LLM (генерация)", _t_llm, True),
+    ("Папка документов", _t_docs, True),
+    ("Журнал (SQLite)", _t_db, True),
+    ("LightRAG / граф", _t_graph, False),
+    ("Дообучение (LoRA)", _t_finetune, False),
+]
+
+
+def self_test() -> dict:
+    if _test_job["running"]:
+        return {"ok": False, "msg": "тестирование уже идёт"}
+    logfile = "/tmp/rag_selftest.log"
+
+    def run():
+        _test_job.update(running=True, started=time.time(), finished=None, ok=None,
+                         log="", logfile=logfile, results=[])
+        results = []
+        with open(logfile, "w", buffering=1, errors="ignore") as fp:
+            fp.write("=== Тестирование компонентов RAG ===\n")
+            for name, fn, critical in _TESTS:
+                fp.write(f"[ТЕСТ] {name} ...\n")
+                fp.flush()
+                try:
+                    ok, detail = fn()
+                except Exception as e:
+                    ok, detail = False, str(e)[:300]
+                results.append({"name": name, "ok": bool(ok), "detail": detail,
+                                "critical": critical})
+                fp.write(("  ✓ OK   " if ok else "  ✗ FAIL ") + f"{name}: {detail}\n")
+                fp.flush()
+                _test_job["results"] = list(results)
+            crit = [r for r in results if r["critical"]]
+            passed = sum(1 for r in crit if r["ok"])
+            overall = passed == len(crit)
+            fp.write(f"\nИТОГ: ключевых пройдено {passed}/{len(crit)}; "
+                     f"всего {sum(1 for r in results if r['ok'])}/{len(results)}. "
+                     f"Общий результат: {'УСПЕХ' if overall else 'ЕСТЬ ПРОБЛЕМЫ'}\n")
+        _test_job["results"] = results
+        _test_job["log"] = _tail(logfile)
+        _test_job["ok"] = overall
+        _test_job["running"] = False
+        _test_job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": "тестирование запущено"}
 
 
 _WEB_SOURCES = ROOT / "web_sources.txt"
