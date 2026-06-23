@@ -152,6 +152,18 @@ def api_reset_config(x_admin_token: str | None = Header(None)):
     return {"ok": True, "values": settings.reset()}
 
 
+@app.get("/api/mode")
+def api_mode():
+    return {"current": settings.current_mode(), "modes": settings.modes_catalog()}
+
+
+@app.post("/api/mode")
+def api_set_mode(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    settings.set_mode(payload.get("mode", ""))
+    return {"ok": True, "current": settings.current_mode()}
+
+
 # ============================ АДМИН-ОПЕРАЦИИ ============================
 @app.get("/api/admin/status")
 def admin_status(x_admin_token: str | None = Header(None)):

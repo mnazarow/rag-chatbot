@@ -1,0 +1,266 @@
+# Документация по установке
+
+Полное руководство по развёртыванию корпоративного RAG-чатбота. Система
+существует в двух платформенных вариантах с общим кодом приложения:
+
+- **Apple Silicon** (Mac Studio M3 и т.п.) — генерация через Ollama (Metal);
+- **Linux + NVIDIA GPU** — генерация через vLLM (CUDA), для нагрузки на команду.
+
+Поверх любого из них включается расширенный режим **hybrid+** (структурные
+LLM-метаданные, умные фильтры, граф-RAG) и опциональная отдельная ветка
+**LightRAG** для сравнения.
+
+---
+
+## 1. Требования
+
+### Общие
+- Папка с документами (прайс-листы, презентации, записи обучения и т.д.).
+  Поддерживаются: PDF, DOCX, PPTX, XLSX/XLS/CSV, TXT/MD, HTML, а также аудио/видео
+  (MP3, WAV, M4A, AAC, MP4, MOV, MKV, WEBM — транскрибируются Whisper).
+- Доступ в интернет при первой установке (скачивание моделей и образов).
+- ~50–100 ГБ свободного места под модели, образы и индекс.
+
+### Apple Silicon
+- macOS на чипе Apple (arm64). Рекомендуется Mac Studio M3, 64–96 ГБ ОЗУ.
+- Homebrew (ставится скриптом автоматически).
+
+### Linux + NVIDIA GPU
+- Ubuntu 22.04 / 24.04 (или совместимый дистрибутив с apt).
+- Установленный драйвер NVIDIA (`nvidia-smi` должен работать).
+- Права sudo.
+- VRAM определяет доступную модель (см. таблицу в разделе 3).
+
+---
+
+## 2. Установка на Apple Silicon (Mac Studio)
+
+```bash
+cd /путь/к/проекту
+chmod +x setup.sh
+./setup.sh
+```
+
+`setup.sh` выполняет:
+1. установку Homebrew (если нет);
+2. системные пакеты: `python@3.11`, `ffmpeg`, `poppler`, `tesseract`, Ollama, Docker;
+3. запуск Ollama как сервиса и скачивание LLM (по умолчанию
+   `qwen2.5:32b-instruct-q4_K_M`);
+4. поднятие Qdrant в Docker (`docker-compose.yml`);
+5. создание виртуального окружения `.venv` и установку зависимостей
+   (`requirements.txt`);
+6. создание `.env` из `.env.example`;
+7. прогрев моделей эмбеддингов (`bge-m3`) и реранка (`bge-reranker-v2-m3`) на MPS.
+
+Далее:
+
+```bash
+nano .env                       # укажите DOCS_DIR — путь к папке с документами
+source .venv/bin/activate
+python ingest.py                # индексация документов
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+Веб-панель: `http://<ip-сервера>:8000`.
+
+> На Apple Silicon можно также задать более крупную модель (`qwen2.5:72b`) —
+> хватит 64–96 ГБ унифицированной памяти; меняется в `.env` или позже в админке.
+
+---
+
+## 3. Установка на Linux + NVIDIA GPU
+
+### 3.1. Быстрый старт «одной командой» (рекомендуется)
+
+На чистом сервере с рабочим `nvidia-smi`:
+
+```bash
+cd gpu_variant
+ADMIN_TOKEN='придумайте-пароль' sudo -E bash run_gpu.sh
+```
+
+Если ваш sudo не разрешает `-E` (сообщение «preserving the entire environment is
+not supported»), используйте форму с заданием переменных внутри root-шелла:
+
+```bash
+sudo bash -c "ADMIN_TOKEN='пароль' bash run_gpu.sh"
+```
+
+`run_gpu.sh` выполняет всё автоматически:
+1. системные пакеты, Docker, NVIDIA Container Toolkit;
+2. поднятие **vLLM** (OpenAI-совместимый сервер) и **Qdrant** через
+   `docker-compose.gpu.yml`;
+3. Python-окружение `.venv` с CUDA-сборкой `torch` и зависимостями
+   (`requirements-gpu.txt`);
+4. регистрацию **systemd-сервиса `rag-api`** с автозапуском и `Restart=always`.
+
+После завершения откройте `http://<ip>:8000` → раздел **«Администратор»** и
+донастройте всё в веб-панели (папку документов, модель и т.д.).
+
+Стартовую модель можно задать заранее:
+
+```bash
+VLLM_MODEL=Qwen/Qwen2.5-32B-Instruct-AWQ VLLM_TP=1 ADMIN_TOKEN='пароль' sudo -E bash run_gpu.sh
+```
+
+### 3.2. Подбор модели под VRAM
+
+| GPU (VRAM)            | Рекомендуемая модель                | Параметры             |
+|-----------------------|-------------------------------------|-----------------------|
+| 24 ГБ (RTX 4090/3090) | `Qwen/Qwen2.5-14B-Instruct-AWQ`     | `VLLM_TP=1`           |
+| 48 ГБ (A6000/L40S)    | `Qwen/Qwen2.5-32B-Instruct-AWQ`     | `VLLM_TP=1`           |
+| 80 ГБ (A100/H100)     | `Qwen/Qwen2.5-72B-Instruct-AWQ`     | `VLLM_TP=1`           |
+| 2×24–48 ГБ            | 32B/72B без квантизации             | `VLLM_TP=2`           |
+
+`VLLM_MODEL` (модель контейнера) и `LLM_MODEL` (имя для запросов) должны совпадать.
+Менять модель потом можно прямо в админке кнопкой «Применить модель LLM».
+
+### 3.3. Управление сервисом
+
+```bash
+bash gpu_variant/manage.sh status      # статус сервиса и контейнеров
+bash gpu_variant/manage.sh logs        # логи API (journalctl)
+bash gpu_variant/manage.sh vllm-logs   # логи vLLM
+bash gpu_variant/manage.sh restart|stop|start
+```
+
+---
+
+## 4. Деплой из GitHub на чистый сервер
+
+Если код в репозитории GitHub, разворачивать сервер можно без ручного копирования.
+
+```bash
+# на чистом сервере (репозиторий публичный)
+curl -fsSL https://raw.githubusercontent.com/USER/rag-chatbot/main/deploy.sh -o deploy.sh
+sudo bash -c "ADMIN_TOKEN='пароль' bash deploy.sh https://github.com/USER/rag-chatbot.git"
+```
+
+`deploy.sh`:
+1. ставит git;
+2. клонирует репозиторий в `/opt/rag` (или `TARGET_DIR`), при повторе — обновляет;
+3. запускает `gpu_variant/run_gpu.sh` (полная GPU-установка).
+
+Переменные: `REPO`, `BRANCH` (по умолчанию `main`), `TARGET_DIR` (по умолчанию
+`/opt/rag`), `ADMIN_TOKEN`, `VLLM_MODEL`, `VLLM_TP`.
+
+### Обновление развёрнутого сервера
+
+```bash
+sudo bash /opt/rag/update.sh              # git pull + зависимости + перезапуск
+sudo REINDEX=1 bash /opt/rag/update.sh    # то же + переиндексация
+```
+
+`update.sh` работает только на уже установленном сервере; если установки нет, он
+подскажет запустить `run_gpu.sh`.
+
+---
+
+## 5. Расширенный режим hybrid+ (граф-RAG)
+
+Базовые улучшения (LLM-метаданные, умные фильтры) включаются прямо в админке.
+Слой граф-RAG требует LightRAG и построенного графа:
+
+```bash
+sudo bash gpu_variant/setup_hybrid.sh
+```
+
+Скрипт ставит LightRAG в существующее `.venv` и строит граф из `DOCS_DIR`
+(использует vLLM + bge-m3). Построение прогоняет документы через LLM и идёт долго —
+для пробы укажите в админке `DOCS_DIR` на подпапку из 30–50 файлов.
+
+Затем в админ-панели выберите режим **«Hybrid+ (граф)»** или включите тумблеры
+по отдельности (см. документацию по использованию).
+
+Перестроить граф вручную:
+
+```bash
+source .venv/bin/activate
+python -m graph_rag ingest
+```
+
+---
+
+## 6. Отдельная ветка LightRAG (для сравнения)
+
+Изолированный стек для A/B-сравнения чистого граф-RAG с вектором.
+
+```bash
+cd lightrag_variant
+python3.11 -m venv .venv-lr && source .venv-lr/bin/activate
+pip install -r requirements-lightrag.txt
+ollama pull bge-m3            # эмбеддер для LightRAG в этой ветке
+python ingest_lightrag.py    # построение графа (медленно)
+python query_lightrag.py "вопрос" --mode mix
+```
+
+Сравнение двух пайплайнов на одинаковых вопросах — `python compare.py`.
+
+---
+
+## 7. Переменные окружения (.env)
+
+`.env` создаётся автоматически; задаётся как минимум `DOCS_DIR`. Большинство
+параметров потом меняются в админке (значения из админки имеют приоритет).
+
+| Переменная        | Назначение                                   | По умолчанию                       |
+|-------------------|----------------------------------------------|------------------------------------|
+| `DOCS_DIR`        | Папка с документами                          | `./company_docs`                   |
+| `LLM_BACKEND`     | `ollama` (Apple) или `openai` (vLLM)         | `ollama`                           |
+| `LLM_MODEL`       | Имя модели для запросов                       | `qwen2.5:32b-instruct-q4_K_M`      |
+| `OLLAMA_URL`      | Адрес Ollama                                  | `http://localhost:11434`           |
+| `LLM_BASE_URL`    | Адрес vLLM (OpenAI API)                       | `http://localhost:8001/v1`         |
+| `EMBED_MODEL`     | Модель эмбеддингов                            | `BAAI/bge-m3`                      |
+| `RERANK_MODEL`    | Модель реранка                                | `BAAI/bge-reranker-v2-m3`          |
+| `DEVICE`          | `mps` / `cuda` / `cpu`                        | `mps`                              |
+| `QDRANT_URL`      | Адрес Qdrant                                  | `http://localhost:6333`            |
+| `QDRANT_COLLECTION`| Коллекция                                    | `company_kb`                       |
+| `WHISPER_BACKEND` | `mlx` (Apple) / `faster` (GPU)               | `mlx`                              |
+| `ADMIN_TOKEN`     | Пароль админ-панели (пусто = без пароля)      | пусто                              |
+| `API_PORT`        | Порт веб-сервиса                              | `8000`                             |
+
+Параметры, изменяемые в админке (TOP_K, порог, температура, промпт, режимы и т.д.),
+сохраняются в `runtime_config.json` и переопределяют `.env`.
+
+---
+
+## 8. Проверка установки
+
+```bash
+curl http://localhost:8000/health                 # сервис жив, видит модель
+curl http://localhost:6333/healthz                 # Qdrant
+curl http://localhost:8001/v1/models               # vLLM (только GPU)
+curl -X POST http://localhost:8000/chat \
+     -H 'Content-Type: application/json' \
+     -d '{"question":"тестовый вопрос"}'           # сквозной ответ RAG
+```
+
+В веб-панели раздел «Администратор» → «Состояние и операции» показывает
+доступность Qdrant и LLM и число проиндексированных чанков.
+
+---
+
+## 9. Типичные проблемы
+
+**`E: Невозможно найти пакет python3.11`.** В репозиториях сервера нет именно
+3.11. Актуальные скрипты ставят системный `python3` (подходит 3.10–3.12). Если у вас
+старая копия скрипта — пропатчите:
+`sudo sed -i 's/python3\.11-venv/python3-venv/g; s/python3\.11/python3/g' run_gpu.sh`.
+
+**`sudo: '-E' is ignored`.** Политика sudo запрещает перенос окружения. Используйте
+`sudo bash -c "ADMIN_TOKEN='...' bash run_gpu.sh"` — переменные задаются внутри
+root-шелла.
+
+**`./.venv/bin/pip: Нет такого файла` / `docker: command not found` при update.**
+Сервер ещё не развёрнут — это ошибка запуска `update.sh` до первичной установки.
+Запустите `run_gpu.sh` (полная установка), и только потом пользуйтесь `update.sh`.
+
+**Первый старт vLLM долгий.** Скачиваются веса модели (десятки ГБ). Следите за
+`bash gpu_variant/manage.sh vllm-logs`.
+
+**Граф-RAG не отвечает / падает.** Не установлен LightRAG или не построен граф —
+выполните `gpu_variant/setup_hybrid.sh`. При недоступности граф автоматически
+откатывается на вектор.
+
+**Нет доступа к моделям Hugging Face (приватные/гейтед).** Экспортируйте
+`HF_TOKEN` перед запуском — он пробрасывается в контейнер vLLM.

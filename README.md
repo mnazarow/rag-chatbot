@@ -4,6 +4,12 @@
 презентации, записи обучения и т.д.). Полностью локальный — данные не покидают
 сервер. Рассчитан на **Mac Studio M3, 96 ГБ** (Apple Silicon / Metal).
 
+## Документация
+
+- [docs/INSTALL.md](docs/INSTALL.md) — полная установка (Apple, GPU, деплой из GitHub, hybrid+, troubleshooting).
+- [docs/USAGE.md](docs/USAGE.md) — использование: веб-панель, режимы, справочник настроек, API, операции.
+- [docs/METHODOLOGY.md](docs/METHODOLOGY.md) — методология: RAG, конвейер, поиск/реранк, режимы, граф.
+
 ## Деплой из GitHub на чистый сервер (GPU)
 
 На чистом Linux-сервере с драйвером NVIDIA одной командой:

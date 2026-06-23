@@ -104,7 +104,27 @@ FIELDS: list[dict] = [
 DEFAULTS: dict = {f["key"]: f["default"] for f in FIELDS}
 _TYPES: dict = {f["key"]: f["type"] for f in FIELDS}
 
+# Режимы работы — пресеты, которые разом включают связку улучшений.
+MODES: dict = {
+    "basic": {
+        "label": "Базовый",
+        "desc": "Вектор + реранк. Быстро, без дополнительных вызовов LLM.",
+        "flags": {"SMART_FILTER": False, "GRAPH_RAG": False, "AUTO_FILTER": True},
+    },
+    "meta": {
+        "label": "С метаданными",
+        "desc": "+ умные фильтры из вопроса (категория / продукт / период).",
+        "flags": {"SMART_FILTER": True, "GRAPH_RAG": False, "AUTO_FILTER": True},
+    },
+    "hybrid": {
+        "label": "Hybrid+ (граф)",
+        "desc": "+ граф-RAG для сводных вопросов (требуется LightRAG).",
+        "flags": {"SMART_FILTER": True, "GRAPH_RAG": True, "AUTO_FILTER": True},
+    },
+}
+
 _state: dict = dict(DEFAULTS)
+_state["MODE"] = "basic"
 
 
 def _load() -> None:
@@ -174,6 +194,33 @@ def reset() -> dict:
     with _LOCK:
         _state.clear()
         _state.update(DEFAULTS)
+        _state["MODE"] = "basic"
         if _RUNTIME.exists():
             _RUNTIME.unlink()
+    return public_settings()
+
+
+# ----- режимы работы -----
+def modes_catalog() -> list[dict]:
+    return [{"key": k, "label": m["label"], "desc": m["desc"]} for k, m in MODES.items()]
+
+
+def current_mode() -> str:
+    """Текущий режим; 'custom', если флаги настроены вручную и не совпадают с пресетом."""
+    cur = _state.get("MODE", "basic")
+    flags = MODES.get(cur, {}).get("flags", {})
+    if flags and all(_state.get(k) == v for k, v in flags.items()):
+        return cur
+    return "custom"
+
+
+def set_mode(name: str) -> dict:
+    if name not in MODES:
+        return public_settings()
+    with _LOCK:
+        _state["MODE"] = name
+        for k, v in MODES[name]["flags"].items():
+            _state[k] = v
+        _RUNTIME.write_text(json.dumps(_state, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
     return public_settings()
