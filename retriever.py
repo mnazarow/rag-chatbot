@@ -12,6 +12,7 @@ from FlagEmbedding import FlagReranker
 from rank_bm25 import BM25Okapi
 
 import settings
+import query_filters
 
 # клиенты/модели создаются при старте процесса из текущих настроек
 # (поля scope=restart применяются после перезапуска сервиса)
@@ -85,10 +86,13 @@ def search(question: str, filters: dict | None = None,
         auto_filter = settings.get("AUTO_FILTER")
     qvec = _embedder().encode([question], normalize_embeddings=True)[0]
 
-    # 1) определяем фильтр: явный приоритетнее авто-угаданного
-    if filters is None and auto_filter:
-        cat = infer_category(question)
-        filters = {"doc_category": cat} if cat else None
+    # 1) определяем фильтр: явный > умный (LLM) > авто-угаданная категория (правила)
+    if filters is None:
+        if settings.get("SMART_FILTER"):
+            filters = query_filters.extract(question) or None
+        elif auto_filter:
+            cat = infer_category(question)
+            filters = {"doc_category": cat} if cat else None
 
     # 2) плотный поиск с фильтром; если фильтр дал мало — фолбэк без фильтра
     cands = _dense_search(qvec, _build_filter(filters))

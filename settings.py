@@ -85,6 +85,17 @@ FIELDS: list[dict] = [
     {"key": "WHISPER_MODEL", "label": "Модель Whisper", "group": "Транскрибация",
      "type": "text", "scope": "reindex", "default": config.WHISPER_MODEL},
 
+    # --- Расширенный поиск (hybrid+) ---
+    {"key": "LLM_METADATA", "label": "LLM-метаданные при индексации (продукт/тема/тип)",
+     "group": "Расширенный поиск (hybrid+)", "type": "bool", "scope": "reindex", "default": False},
+    {"key": "SMART_FILTER", "label": "Умные фильтры из вопроса (LLM)",
+     "group": "Расширенный поиск (hybrid+)", "type": "bool", "scope": "live", "default": False},
+    {"key": "GRAPH_RAG", "label": "Граф-RAG для сводных вопросов (нужен LightRAG)",
+     "group": "Расширенный поиск (hybrid+)", "type": "bool", "scope": "live", "default": False},
+    {"key": "GRAPH_MODE", "label": "Режим графа", "group": "Расширенный поиск (hybrid+)",
+     "type": "select", "scope": "live", "options": ["mix", "hybrid", "local", "global", "naive"],
+     "default": "mix"},
+
     # --- Доступ ---
     {"key": "ADMIN_TOKEN", "label": "Токен администратора", "group": "Доступ",
      "type": "secret", "scope": "live", "default": config.ADMIN_TOKEN},

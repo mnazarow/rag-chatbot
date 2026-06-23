@@ -23,6 +23,7 @@ from tqdm import tqdm
 import config
 import settings
 import metadata as meta
+import enrich
 from loaders import load_file
 
 # параметры индексации берутся из рантайм-настроек (правятся в админке),
@@ -73,7 +74,8 @@ def ensure_collection(client: QdrantClient, reset: bool):
             ),
         )
         # индексы payload — для инкрементального обновления и фильтрации
-        for field in ("source", "fhash", "doc_category", "date", "ftype"):
+        for field in ("source", "fhash", "doc_category", "date", "ftype",
+                      "product", "topic", "doc_type"):
             client.create_payload_index(
                 COLLECTION, field, qm.PayloadSchemaType.KEYWORD
             )
@@ -140,7 +142,16 @@ def main():
         if not points:
             continue
 
-        md = meta.extract(path)  # метаданные файла (категория, дата, заголовок)
+        md = meta.extract(path)  # rule-based метаданные (категория, дата, заголовок)
+        if settings.get("LLM_METADATA"):
+            # LLM-обогащение: продукт/тема/тип (по первому чанку, один вызов на файл)
+            e = enrich.extract_structured(points[0]["chunk"])
+            for k in ("product", "topic", "doc_type"):
+                if e.get(k):
+                    md[k] = e[k]
+            # категорию уточняем, только если правило дало общий "document"
+            if md.get("doc_category") == "document" and e.get("category"):
+                md["doc_category"] = e["category"]
 
         vectors = embedder.encode(
             [p["chunk"] for p in points],

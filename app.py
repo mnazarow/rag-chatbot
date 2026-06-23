@@ -19,6 +19,7 @@ import settings
 import db
 import llm_backend
 import admin_ops
+import graph_rag
 from retriever import search, infer_category
 
 app = FastAPI(title="Корпоративный RAG-чатбот")
@@ -47,6 +48,26 @@ def health():
 @app.post("/chat")
 async def chat(req: ChatRequest):
     t0 = time.time()
+
+    # граф-RAG для «сводных» вопросов (если включён и LightRAG доступен)
+    if settings.get("GRAPH_RAG") and req.filters is None and graph_rag.is_global(req.question):
+        try:
+            text = await graph_rag.answer(req.question)
+
+            async def gstream():
+                for i in range(0, len(text), 40):
+                    yield json.dumps({"type": "answer", "text": text[i:i + 40]},
+                                     ensure_ascii=False) + "\n"
+                yield json.dumps({"type": "sources",
+                                  "items": [{"source": "граф знаний (LightRAG)", "page": None}]},
+                                 ensure_ascii=False) + "\n"
+                db.log_request(req.question, "graph", 1, 1.0,
+                               int((time.time() - t0) * 1000), len(text), True, [])
+
+            return StreamingResponse(gstream(), media_type="application/x-ndjson")
+        except Exception as e:
+            print(f"graph-RAG недоступен, фолбэк на вектор: {e}")
+
     hits = search(req.question, filters=req.filters)
     category = (req.filters or {}).get("doc_category") or infer_category(req.question)
 
