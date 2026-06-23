@@ -1,0 +1,19 @@
+# Override для подачи дообученного LoRA-адаптера через vLLM.
+# Применяется поверх docker-compose.gpu.yml:
+#   docker compose --env-file .env -f docker-compose.gpu.yml -f docker-compose.lora.yml up -d vllm
+# Монтирует адаптер из finetune/adapter и регистрирует его как модель
+# ${FINETUNED_MODEL} (по умолчанию company-lora), оставляя доступной и базовую.
+
+services:
+  vllm:
+    volumes:
+      - ../finetune/adapter:/adapter:ro
+    command: >
+      --model ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}
+      --served-model-name ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}
+      --max-model-len ${VLLM_MAX_LEN:-16384}
+      --tensor-parallel-size ${VLLM_TP:-1}
+      --gpu-memory-utilization 0.90
+      --enable-lora
+      --max-lora-rank 32
+      --lora-modules ${FINETUNED_MODEL:-company-lora}=/adapter

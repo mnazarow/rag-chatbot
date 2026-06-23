@@ -96,7 +96,7 @@ async def chat(req: ChatRequest):
         acc = []
         async for tok in llm_backend.chat_stream(
                 messages, temperature=settings.get("TEMPERATURE"),
-                model=settings.get("LLM_MODEL")):
+                model=settings.active_model()):
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
@@ -114,7 +114,8 @@ def api_stats():
         s["chunks"] = _qdrant.count(settings.get("QDRANT_COLLECTION"), exact=True).count
     except Exception:
         s["chunks"] = 0
-    s["model"] = settings.get("LLM_MODEL")
+    s["model"] = settings.active_model()
+    s["finetuned"] = bool(settings.get("USE_FINETUNED"))
     s["backend"] = settings.get("LLM_BACKEND")
     s["device"] = settings.get("DEVICE")
     return s
@@ -171,6 +172,12 @@ def admin_status(x_admin_token: str | None = Header(None)):
     return admin_ops.status()
 
 
+@app.get("/api/admin/browse")
+def admin_browse(path: str | None = None, x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.browse(path)
+
+
 @app.post("/api/admin/reindex")
 def admin_reindex(payload: dict = Body(default={}),
                   x_admin_token: str | None = Header(None)):
@@ -182,6 +189,18 @@ def admin_reindex(payload: dict = Body(default={}),
 def admin_apply_llm(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.apply_llm()
+
+
+@app.post("/api/admin/finetune")
+def admin_finetune(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.finetune()
+
+
+@app.post("/api/admin/apply-finetuned")
+def admin_apply_finetuned(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.apply_finetuned()
 
 
 @app.post("/api/admin/restart")

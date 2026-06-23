@@ -23,6 +23,12 @@ import settings
 ROOT = Path(__file__).resolve().parent
 
 _job = {"running": False, "started": None, "finished": None, "ok": None, "log": ""}
+_ft_job = {"running": False, "started": None, "finished": None, "ok": None, "log": ""}
+
+# поддерживаемые типы — для подсказки «сколько документов в папке»
+_SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".csv", ".txt", ".md",
+              ".html", ".htm", ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov",
+              ".mkv", ".webm"}
 
 
 def status() -> dict:
@@ -52,6 +58,9 @@ def status() -> dict:
         out["llm"] = False
     out["backend"] = settings.get("LLM_BACKEND")
     out["index_job"] = dict(_job)
+    out["finetune_job"] = dict(_ft_job)
+    out["adapter_ready"] = (ROOT / "finetune" / "adapter").exists()
+    out["use_finetuned"] = bool(settings.get("USE_FINETUNED"))
     return out
 
 
@@ -98,6 +107,54 @@ def apply_llm() -> dict:
         return {"ok": False, "msg": str(e)}
 
 
+def finetune() -> dict:
+    """Запустить пайплайн дообучения (датасет + LoRA) в фоне."""
+    script = ROOT / "finetune" / "run_pipeline.sh"
+    if not script.exists():
+        return {"ok": False, "msg": "run_pipeline.sh не найден"}
+    if _ft_job["running"]:
+        return {"ok": False, "msg": "дообучение уже идёт"}
+
+    def run():
+        _ft_job.update(running=True, started=time.time(), finished=None, ok=None, log="")
+        try:
+            p = subprocess.run(["bash", str(script)], cwd=ROOT,
+                               capture_output=True, text=True, timeout=24 * 3600)
+            _ft_job["log"] = (p.stdout[-4000:] + "\n" + p.stderr[-3000:]).strip()
+            _ft_job["ok"] = p.returncode == 0
+        except Exception as e:
+            _ft_job["ok"] = False
+            _ft_job["log"] = str(e)
+        _ft_job["running"] = False
+        _ft_job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": "дообучение запущено (может занять часы)"}
+
+
+def apply_finetuned() -> dict:
+    """Перезапустить vLLM с LoRA-адаптером (GPU)."""
+    script = ROOT / "gpu_variant" / "apply_finetuned.sh"
+    env_file = ROOT / "gpu_variant" / ".env"
+    if not script.exists():
+        return {"ok": False, "msg": "apply_finetuned.sh не найден — операция только для GPU-варианта"}
+    if not (ROOT / "finetune" / "adapter").exists():
+        return {"ok": False, "msg": "адаптер не найден — сначала запустите дообучение"}
+    _update_env(env_file, {
+        "VLLM_MODEL": settings.get("VLLM_MODEL"),
+        "VLLM_MAX_LEN": settings.get("VLLM_MAX_LEN"),
+        "VLLM_TP": settings.get("VLLM_TP"),
+        "FINETUNED_MODEL": settings.get("FINETUNED_MODEL"),
+    })
+    try:
+        p = subprocess.run(["bash", str(script)], cwd=ROOT / "gpu_variant",
+                           capture_output=True, text=True, timeout=1800)
+        return {"ok": p.returncode == 0,
+                "msg": (p.stdout + p.stderr)[-1500:].strip() or "vLLM перезапускается с адаптером"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
 def restart() -> dict:
     """Завершить процесс — systemd (Restart=always) поднимет его заново."""
     def killer():
@@ -105,6 +162,38 @@ def restart() -> dict:
         os._exit(0)
     threading.Thread(target=killer, daemon=True).start()
     return {"ok": True, "msg": "перезапуск сервиса через ~1 сек..."}
+
+
+def browse(path: str | None = None) -> dict:
+    """Обзор папок на сервере для выбора DOCS_DIR.
+    Возвращает текущий путь, родителя, список подпапок и число документов в папке."""
+    try:
+        base = Path(path).expanduser() if path else Path(settings.get("DOCS_DIR")).expanduser()
+        if not base.exists() or not base.is_dir():
+            base = Path.home()
+        base = base.resolve()
+    except Exception:
+        base = Path.home()
+
+    dirs = []
+    n_docs = 0
+    try:
+        for p in sorted(base.iterdir(), key=lambda x: x.name.lower()):
+            if p.name.startswith("."):
+                continue
+            if p.is_dir():
+                dirs.append(p.name)
+            elif p.suffix.lower() in _SUPPORTED:
+                n_docs += 1
+    except PermissionError:
+        pass
+
+    return {
+        "path": str(base),
+        "parent": str(base.parent),
+        "dirs": dirs,
+        "docs_here": n_docs,        # документов непосредственно в этой папке
+    }
 
 
 def _update_env(path: Path, kv: dict) -> None:

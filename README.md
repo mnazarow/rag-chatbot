@@ -9,6 +9,7 @@
 - [docs/INSTALL.md](docs/INSTALL.md) — полная установка (Apple, GPU, деплой из GitHub, hybrid+, troubleshooting).
 - [docs/USAGE.md](docs/USAGE.md) — использование: веб-панель, режимы, справочник настроек, API, операции.
 - [docs/METHODOLOGY.md](docs/METHODOLOGY.md) — методология: RAG, конвейер, поиск/реранк, режимы, граф.
+- [finetune/README_finetune.md](finetune/README_finetune.md) — вариант с дообучением (LoRA) и переключение модели генерации.
 
 ## Деплой из GitHub на чистый сервер (GPU)
 

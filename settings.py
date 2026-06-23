@@ -96,6 +96,12 @@ FIELDS: list[dict] = [
      "type": "select", "scope": "live", "options": ["mix", "hybrid", "local", "global", "naive"],
      "default": "mix"},
 
+    # --- Дообучение (fine-tuning) ---
+    {"key": "USE_FINETUNED", "label": "Использовать дообученную модель",
+     "group": "Дообучение (fine-tuning)", "type": "bool", "scope": "live", "default": False},
+    {"key": "FINETUNED_MODEL", "label": "Имя дообученной модели (LoRA в vLLM)",
+     "group": "Дообучение (fine-tuning)", "type": "text", "scope": "live", "default": "company-lora"},
+
     # --- Доступ ---
     {"key": "ADMIN_TOKEN", "label": "Токен администратора", "group": "Доступ",
      "type": "secret", "scope": "live", "default": config.ADMIN_TOKEN},
@@ -143,6 +149,13 @@ _load()
 
 def get(key: str):
     return _state.get(key, DEFAULTS.get(key))
+
+
+def active_model() -> str:
+    """Имя модели для генерации: дообученная (если включена) или базовая."""
+    if _state.get("USE_FINETUNED"):
+        return _state.get("FINETUNED_MODEL") or _state.get("LLM_MODEL")
+    return _state.get("LLM_MODEL")
 
 
 def all_settings() -> dict:

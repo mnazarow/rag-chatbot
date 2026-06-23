@@ -22,6 +22,10 @@ lightrag_variant/lightrag_storage/
 *.gguf
 .cache/
 
+# Дообучение: датасет и адаптер (не версионируются)
+finetune/data/
+finetune/adapter/
+
 # ОС
 .DS_Store
 Thumbs.db

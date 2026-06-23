@@ -76,6 +76,17 @@
   .ro div span{color:var(--muted)}
   .note{font-size:12px;color:var(--muted);margin-top:4px}
   .saved{color:#4ade80;font-size:13px;margin-left:10px}
+  /* модальный браузер папок */
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
+  .overlay.open{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:min(640px,92vw);max-height:80vh;display:flex;flex-direction:column}
+  .modal h3{margin:0;padding:16px 18px;border-bottom:1px solid var(--line);font-size:15px}
+  .modal .path{padding:10px 18px;font-size:12px;color:var(--muted);word-break:break-all;border-bottom:1px solid var(--line)}
+  .modal .list{overflow:auto;flex:1;padding:6px 8px}
+  .modal .row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:14px}
+  .modal .row:hover{background:var(--panel2)}
+  .modal .foot{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;justify-content:flex-end}
+  .modal .dirbtn{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--txt);cursor:pointer;font-size:13px}
   /* ---- схема ---- */
   .stage rect{transition:all .3s}
   .stage.lit rect{stroke:var(--accent);stroke-width:2.5;filter:drop-shadow(0 0 10px var(--accent))}
@@ -204,6 +215,18 @@
       <div class="note">Режим разом включает связку улучшений. Тонкая настройка флагов — в группе «Расширенный поиск (hybrid+)» ниже.</div>
     </div>
 
+    <!-- модель генерации -->
+    <div class="box">
+      <h3>Модель генерации</h3>
+      <div class="cards" id="genmodelcards"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <button class="act ghost" onclick="runFinetune()">🎓 Запустить дообучение</button>
+        <button class="act ghost" onclick="applyFinetuned()">📥 Применить дообученную модель (рестарт vLLM)</button>
+        <span id="ftmsg"></span>
+      </div>
+      <div class="note">Дообучение строит LoRA-адаптер из ваших документов (долго, грузит GPU). После применения переключите «Дообученная».</div>
+    </div>
+
     <!-- операции -->
     <div class="box">
       <h3>Состояние и операции</h3>
@@ -237,6 +260,20 @@
     </div>
   </section>
 </main>
+
+<!-- модальный браузер папок -->
+<div class="overlay" id="browser">
+  <div class="modal">
+    <h3>📁 Выбор папки с документами</h3>
+    <div class="path" id="br_path">—</div>
+    <div class="list" id="br_list"></div>
+    <div class="foot">
+      <span id="br_info" class="note" style="margin-right:auto"></span>
+      <button class="act ghost" onclick="closeBrowser()">Отмена</button>
+      <button class="act" onclick="chooseFolder()">Выбрать эту папку</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -321,6 +358,9 @@ function renderField(f,val,tokenSet){
   else if(f.type==='select') inp=`<select id="f_${f.key}">`+f.options.map(o=>`<option ${o===val?'selected':''}>${esc(o)}</option>`).join('')+`</select>`;
   else if(f.type==='textarea') inp=`<textarea id="f_${f.key}">${esc(val)}</textarea>`;
   else if(f.type==='secret') inp=`<input type="password" id="f_${f.key}" placeholder="${tokenSet?'•••• задан — введите новый, чтобы сменить':'не задан'}">`;
+  else if(f.key==='DOCS_DIR') inp=`<div style="display:flex;gap:8px">
+      <input type="text" id="f_${f.key}" value="${esc(String(val))}" style="flex:1">
+      <button class="act ghost" type="button" onclick="openBrowser()">📁 Обзор…</button></div>`;
   else inp=`<input type="text" id="f_${f.key}" value="${esc(String(val))}">`;
   return `<div class="field">${lab}${inp}</div>`;
 }
@@ -339,7 +379,62 @@ async function loadConfig(){
   }
   $('#cfgroot').innerHTML=html;
   c.fields.forEach(f=>{ if(f.type==='range'){ const el=$('#f_'+f.key); el.oninput=()=>$('#o_'+f.key).textContent=el.value; }});
+  renderGenModel(c.values);
   loadMode(); loadOps();
+}
+
+// ---- браузер папок для DOCS_DIR ----
+let BR_PATH='';
+async function browseTo(path){
+  const url='/api/admin/browse'+(path?('?path='+encodeURIComponent(path)):'');
+  const r=await fetch(url,{headers:{'X-Admin-Token':($('#cfg_token')?$('#cfg_token').value:'')}});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){ $('#br_info').textContent=d.detail||'нет доступа'; return; }
+  BR_PATH=d.path;
+  $('#br_path').textContent=d.path;
+  $('#br_info').textContent='Документов в папке: '+(d.docs_here||0)+' · подпапок: '+d.dirs.length;
+  let rows=`<div class="row" onclick="browseTo('${escAttr(d.parent)}')">⬆️ <span>.. (вверх)</span></div>`;
+  rows+=d.dirs.map(name=>`<div class="row" onclick="browseTo('${escAttr(d.path.replace(/\/$/,'')+'/'+name)}')">📁 <span>${esc(name)}</span></div>`).join('');
+  $('#br_list').innerHTML=rows;
+}
+function escAttr(s){ return esc(s).replace(/'/g,"\\'"); }
+function openBrowser(){ $('#browser').classList.add('open'); browseTo($('#f_DOCS_DIR')?$('#f_DOCS_DIR').value:''); }
+function closeBrowser(){ $('#browser').classList.remove('open'); }
+function chooseFolder(){
+  if($('#f_DOCS_DIR')) $('#f_DOCS_DIR').value=BR_PATH;
+  closeBrowser();
+  opsMsg('Папка выбрана — нажмите «Сохранить настройки», затем «Переиндексировать»');
+}
+
+// ---- переключатель модели генерации (базовая / дообученная) ----
+function renderGenModel(v){
+  const root=$('#genmodelcards'); if(!root) return;
+  const ft=!!v.USE_FINETUNED;
+  const cards=[
+    {key:false,label:'Базовая модель',desc:'Исходная LLM ('+esc(v.LLM_MODEL||'')+').'},
+    {key:true,label:'Дообученная (LoRA)',desc:'Адаптер «'+esc(v.FINETUNED_MODEL||'company-lora')+'» в vLLM.'},
+  ];
+  root.innerHTML=cards.map(c=>`<div class="card mode ${c.key===ft?'active':''}" onclick="setGenModel(${c.key})">
+    <div class="k">${c.label}</div>
+    <div style="font-size:12px;color:var(--muted);margin-top:6px">${c.desc}</div></div>`).join('');
+}
+async function setGenModel(useFt){
+  const r=await fetch('/api/config',{method:'POST',
+    headers:{'Content-Type':'application/json','X-Admin-Token':($('#cfg_token')?$('#cfg_token').value:'')},
+    body:JSON.stringify({USE_FINETUNED:useFt})});
+  const j=await r.json().catch(()=>({}));
+  if(r.ok){ opsMsg('✓ Модель генерации: '+(useFt?'дообученная':'базовая')); loadConfig(); loadStats(); }
+  else { opsMsg('✗ '+(j.detail||'ошибка'),false); }
+}
+function ftMsg(t,ok=true){ $('#ftmsg').textContent=t; $('#ftmsg').className=ok?'saved':'note'; }
+async function runFinetune(){
+  if(!confirm('Запустить дообучение? Это надолго и нагрузит GPU.'))return;
+  ftMsg('запуск дообучения…'); const r=await adminPost('/api/admin/finetune');
+  ftMsg(r.msg||'запущено',r.ok!==false); pollJob();
+}
+async function applyFinetuned(){
+  ftMsg('перезапуск vLLM с адаптером…'); const r=await adminPost('/api/admin/apply-finetuned');
+  ftMsg(r.msg||'готово',r.ok!==false);
 }
 
 // ---- режим работы ----
@@ -399,11 +494,16 @@ async function loadOps(){
   const dot=b=>b?'<span style="color:#4ade80">● в сети</span>':'<span style="color:#f87171">● нет</span>';
   const j=s.index_job||{};
   const job=j.running?'идёт…':(j.ok===true?'успешно':(j.ok===false?'ошибка':'—'));
+  const fj=s.finetune_job||{};
+  const ftjob=fj.running?'идёт…':(fj.ok===true?'успешно':(fj.ok===false?'ошибка':'—'));
+  const adapter=s.adapter_ready?(s.use_finetuned?'активна':'готова'):'нет';
   $('#opsstatus').innerHTML=[
     ['Qdrant',dot(s.qdrant)],['LLM ('+s.backend+')',dot(s.llm)],
     ['Чанков в базе',s.chunks],['Индексация',job],
+    ['Дообучение',ftjob],['Дообуч. модель',adapter],
   ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v" style="font-size:18px">${v}</div></div>`).join('');
-  if(j.log){ $('#joblog').style.display='block'; $('#joblog').textContent=j.log; }
+  const logtxt=(fj.log&&fj.running)?fj.log:(j.log||fj.log||'');
+  if(logtxt){ $('#joblog').style.display='block'; $('#joblog').textContent=logtxt; }
 }
 async function adminPost(url,body){
   const r=await fetch(url,{method:'POST',
