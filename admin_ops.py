@@ -110,16 +110,39 @@ def install_lightrag() -> dict:
     return _run_dep_job("LightRAG", [sys.executable, "-m", "pip", "install", "-q", *_LIGHTRAG_DEPS])
 
 
+def _docker_bin() -> str | None:
+    """Найти docker даже если PATH урезан (launchd/systemd)."""
+    d = shutil.which("docker")
+    if d:
+        return d
+    for p in ("/usr/local/bin/docker", "/opt/homebrew/bin/docker", "/usr/bin/docker"):
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def install_qdrant() -> dict:
     """Поднять контейнер Qdrant через docker compose."""
-    if not shutil.which("docker"):
-        return {"ok": False, "msg": "Docker не установлен. Linux: curl -fsSL https://get.docker.com | sh; "
-                "Mac: установите Docker Desktop."}
+    docker = _docker_bin()
+    if not docker:
+        if os.path.exists("/Applications/Docker.app"):
+            return {"ok": False, "msg": "Docker Desktop установлен, но не в PATH/не запущен. "
+                    "Откройте приложение Docker и повторите."}
+        return {"ok": False, "msg": "Docker не установлен. Mac: brew install --cask docker, затем "
+                "откройте Docker Desktop. Linux: curl -fsSL https://get.docker.com | sh"}
+    # проверка, что демон запущен
+    try:
+        info = subprocess.run([docker, "info"], capture_output=True, text=True, timeout=20)
+        if info.returncode != 0:
+            return {"ok": False, "msg": "Docker установлен, но демон не запущен — откройте Docker Desktop "
+                    "(Mac) или запустите службу docker (Linux) и повторите."}
+    except Exception as e:
+        return {"ok": False, "msg": f"Docker недоступен: {e}"}
     compose = ROOT / "docker-compose.yml"
     if not compose.exists():
         compose = ROOT / "gpu_variant" / "docker-compose.gpu.yml"
     return _run_dep_job("Qdrant",
-                        ["docker", "compose", "-f", str(compose), "up", "-d", "qdrant"],
+                        [docker, "compose", "-f", str(compose), "up", "-d", "qdrant"],
                         timeout=900)
 
 
