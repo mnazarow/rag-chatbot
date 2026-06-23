@@ -449,7 +449,7 @@ function sysCards(arr){ return '<div class="cards">'+arr.map(([k,v])=>
 function sysJob(j){ j=j||{}; return j.running?'идёт…':(j.ok===true?'успешно':(j.ok===false?'ошибка':'—')); }
 function nz(v){ return (v===null||v===undefined)?'—':v; }
 async function loadSystem(){
-  let s; try{ s=await (await fetch('/api/system')).json(); }catch(e){ return; }
+  let s; try{ s=await (await fetch('/api/system?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
   // Qdrant
   const q=s.qdrant||{}; let qh;
   if(q.online){
@@ -496,7 +496,7 @@ async function loadSystem(){
 
 // ---- аналитика+ по компонентам ----
 async function loadComponents(){
-  let s; try{ s=await (await fetch('/api/analytics-components')).json(); }catch(e){ return; }
+  let s; try{ s=await (await fetch('/api/analytics-components?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
   const q=s.qdrant||{}, g=s.graph||{}, f=s.finetune||{}, u=s.usage||{};
   const dough={plugins:{legend:{labels:{color:C.txt}}}};
   // Qdrant
@@ -573,12 +573,17 @@ async function loadConfig(){
 // ---- выбор/загрузка модели LLM ----
 function tok(){ return $('#cfg_token')?$('#cfg_token').value:''; }
 async function loadModels(){
-  let m; try{ m=await (await fetch('/api/admin/models',{headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
-  if(m.detail){ $('#llmcurrent').textContent=m.detail; return; }
-  $('#llmcurrent').innerHTML='Бэкенд: <b>'+esc(m.backend)+'</b> · текущая: <b>'+esc(m.current||'—')+'</b>';
   const list=$('#llmlist');
+  if(list) list.innerHTML='<span class="note">загрузка списка…</span>';
+  let m;
+  try{ m=await (await fetch('/api/admin/models?t='+Date.now(),
+        {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }
+  catch(e){ if(list) list.innerHTML='<span class="note">ошибка: '+esc(e.message)+'</span>'; return; }
+  if(m.detail){ $('#llmcurrent').textContent=m.detail; if(list) list.innerHTML='<span class="note">'+esc(m.detail)+'</span>'; return; }
+  $('#llmcurrent').innerHTML='Бэкенд: <b>'+esc(m.backend)+'</b> · текущая: <b>'+esc(m.current||'—')+'</b>';
   if(!m.models||!m.models.length){ list.innerHTML='<span class="note">'+(m.error?esc(m.error):'модели не найдены')+'</span>'; return; }
   list.innerHTML=m.models.map(name=>`<span class="dirbtn" style="${name===m.current?'border-color:var(--accent);color:var(--accent)':''}" onclick="setLLM('${escAttr(name)}')">${esc(name)}</span>`).join('');
+  llmMsg('список обновлён ('+m.models.length+')');
 }
 async function setLLM(name){
   const r=await fetch('/api/config',{method:'POST',
@@ -773,7 +778,7 @@ async function resetConfig(){
 // ---- админка: операции ----
 async function loadOps(){
   let s;
-  try{ s=await (await fetch('/api/admin/status',{headers:{'X-Admin-Token':$('#cfg_token').value}})).json(); }
+  try{ s=await (await fetch('/api/admin/status?t='+Date.now(),{cache:'no-store',headers:{'X-Admin-Token':$('#cfg_token').value}})).json(); }
   catch(e){ return; }
   if(s.detail){ $('#opsstatus').innerHTML=`<div class="card"><div class="k">Доступ</div><div class="v" style="font-size:15px">${esc(s.detail)}</div></div>`; return; }
   const dot=b=>b?'<span style="color:#4ade80">● в сети</span>':'<span style="color:#f87171">● нет</span>';
