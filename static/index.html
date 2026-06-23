@@ -338,6 +338,18 @@
       <span id="savemsg"></span>
     </div>
 
+    <!-- обновления -->
+    <div class="box">
+      <h3>Обновления</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act ghost" onclick="checkUpdates()">🔍 Проверить обновления</button>
+        <button class="act" onclick="doUpdate()">⬆️ Обновить</button>
+        <span id="updmsg"></span>
+      </div>
+      <pre id="updinfo" style="display:none;margin-top:10px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:160px;overflow:auto;white-space:pre-wrap"></pre>
+      <div class="note">Сравнивает версию с GitHub и обновляет код + зависимости, затем перезапускает сервис. Работает, если установка делалась из GitHub (git-репозиторий).</div>
+    </div>
+
     <!-- переустановка и сброс -->
     <div class="box">
       <h3>Переустановка и сброс</h3>
@@ -634,6 +646,28 @@ async function buildGraph(){
   if(!confirm('Построить граф знаний? Установит LightRAG и прогонит документы через LLM — это надолго.'))return;
   engMsg('установка LightRAG и построение графа…'); const r=await adminPost('/api/admin/build-graph');
   engMsg(r.msg||'запущено',r.ok!==false); pollJob();
+}
+
+// ---- обновления ----
+function updMsg(t,ok=true){ $('#updmsg').textContent=t; $('#updmsg').className=ok?'saved':'note'; }
+async function checkUpdates(){
+  updMsg('проверка…');
+  let r; try{ r=await (await fetch('/api/admin/check-updates?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }
+  catch(e){ updMsg('✗ '+e.message,false); return; }
+  if(!r.ok){ updMsg('✗ '+(r.msg||r.detail||'ошибка'),false); $('#updinfo').style.display='none'; return; }
+  if(r.up_to_date){ updMsg('✓ установлена последняя версия ('+r.current+')'); $('#updinfo').style.display='none'; }
+  else {
+    updMsg('доступно обновлений: '+r.behind);
+    $('#updinfo').style.display='block';
+    $('#updinfo').textContent='Текущая: '+r.current+'  →  доступна: '+r.latest+' (ветка '+r.branch+')\n\n'+(r.changes||'');
+  }
+}
+async function doUpdate(){
+  if(!confirm('Обновить до последней версии из GitHub? Код и зависимости обновятся, сервис перезапустится.'))return;
+  updMsg('обновление…');
+  const r=await adminPost('/api/admin/update');
+  updMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
 }
 
 // ---- переустановка и сброс ----

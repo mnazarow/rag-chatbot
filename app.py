@@ -268,6 +268,18 @@ def admin_reset(payload: dict = Body(...), x_admin_token: str | None = Header(No
     return admin_ops.reset(payload.get("targets", []))
 
 
+@app.get("/api/admin/check-updates")
+def admin_check_updates(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.check_updates()
+
+
+@app.post("/api/admin/update")
+def admin_update(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.update_app()
+
+
 @app.post("/api/admin/reinstall-env")
 def admin_reinstall_env(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

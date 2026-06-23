@@ -318,6 +318,74 @@ def reinstall_env() -> dict:
         return {"ok": False, "msg": str(e)}
 
 
+_upd_job = {"running": False, "started": None, "finished": None, "ok": None, "log": ""}
+
+
+def _git(*args):
+    p = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=120)
+    return p.stdout.strip()
+
+
+def check_updates() -> dict:
+    """Сравнить локальную версию с origin (git fetch)."""
+    try:
+        if not (ROOT / ".git").exists():
+            return {"ok": False, "msg": "это не git-репозиторий (обновление через git недоступно)"}
+        subprocess.run(["git", "fetch", "--all", "-q"], cwd=ROOT,
+                       capture_output=True, text=True, timeout=120)
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD") or "main"
+        local = _git("rev-parse", "--short", "HEAD")
+        latest = _git("rev-parse", "--short", f"origin/{branch}")
+        behind = _git("rev-list", "--count", f"HEAD..origin/{branch}")
+        n = int(behind or 0)
+        changes = _git("log", "--oneline", f"HEAD..origin/{branch}")
+        return {"ok": True, "branch": branch, "current": local, "latest": latest,
+                "behind": n, "up_to_date": n == 0, "changes": changes[:2000]}
+    except FileNotFoundError:
+        return {"ok": False, "msg": "git не установлен"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
+def update_app() -> dict:
+    """git pull + зависимости в фоне, затем самоперезапуск (без sudo).
+    Подхват новой версии — через systemd Restart=always / launchd KeepAlive."""
+    if not (ROOT / ".git").exists():
+        return {"ok": False, "msg": "это не git-репозиторий"}
+    if _upd_job["running"]:
+        return {"ok": False, "msg": "обновление уже идёт"}
+
+    def run():
+        _upd_job.update(running=True, started=time.time(), finished=None, ok=None, log="")
+        out = []
+        try:
+            branch = _git("rev-parse", "--abbrev-ref", "HEAD") or "main"
+            for cmd in (["git", "fetch", "--all", "-q"],
+                        ["git", "reset", "--hard", f"origin/{branch}"]):
+                p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=600)
+                out.append((p.stdout + p.stderr).strip())
+                if p.returncode != 0:
+                    raise RuntimeError(" ".join(cmd) + " → " + (p.stderr[-300:] or p.stdout[-300:]))
+            req = "gpu_variant/requirements-gpu.txt" if shutil.which("nvidia-smi") else "requirements.txt"
+            p = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", req],
+                               cwd=ROOT, capture_output=True, text=True, timeout=3600)
+            out.append((p.stdout[-800:] + p.stderr[-800:]).strip())
+            _upd_job["ok"] = p.returncode == 0
+            out.append("Готово, перезапуск сервиса...")
+        except Exception as e:
+            _upd_job["ok"] = False
+            out.append(str(e))
+        _upd_job["log"] = "\n".join(x for x in out if x)[-4000:]
+        _upd_job["running"] = False
+        _upd_job["finished"] = time.time()
+        if _upd_job["ok"]:
+            time.sleep(1)
+            os._exit(0)  # супервизор (systemd/launchd) поднимет с новой версией
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": "обновление запущено; сервис перезапустится автоматически"}
+
+
 def reinstall_full(kind: str) -> dict:
     """Полная переустановка с нуля (destructive). kind: server (GPU) | mac.
     Запускает соответствующий скрипт detached с CONFIRM=yes."""
