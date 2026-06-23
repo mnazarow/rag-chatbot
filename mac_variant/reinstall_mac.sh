@@ -10,8 +10,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-read -r -p "Удалить окружение и ВСЕ данные (индекс, граф, адаптер, журнал)? [y/N] " ans
-[[ "${ans:-}" =~ ^[Yy]$ ]] || { echo "Отменено."; exit 0; }
+# CONFIRM=yes пропускает интерактивный вопрос (используется при запуске из админки)
+if [[ "${CONFIRM:-}" != "yes" ]]; then
+  read -r -p "Удалить окружение и ВСЕ данные (индекс, граф, адаптер, журнал)? [y/N] " ans
+  [[ "${ans:-}" =~ ^[Yy]$ ]] || { echo "Отменено."; exit 0; }
+fi
 
 echo "[reinstall-mac] Останавливаю сервис и контейнеры..."
 launchctl unload "$HOME/Library/LaunchAgents/com.rag.api.plist" 2>/dev/null || true

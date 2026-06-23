@@ -351,9 +351,11 @@
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">
         <button class="act" onclick="reinstallEnv()">🔧 Переустановить окружение</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="reinstallFull('server')">♻️ Полная переустановка (GPU-сервер)</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="reinstallFull('mac')">♻️ Полная переустановка (Mac)</button>
         <span id="rsmsg"></span>
       </div>
-      <div class="note">Сброс данных необратим (.env и сервис сохраняются). «Переустановить окружение» пересоздаёт .venv и зависимости, затем перезапускает сервис. Полная переустановка сервера с нуля — скрипт <code>reinstall_server.sh</code> (GPU) или <code>mac_variant/reinstall_mac.sh</code>.</div>
+      <div class="note">«Переустановить окружение» — пересоздаёт .venv и зависимости, данные сохраняются. «Полная переустановка» — DESTRUCTIVE: удаляет окружение и ВСЕ данные (индекс, граф, адаптер, журнал) и разворачивает заново; `.env` сохраняется, сервис будет недоступен во время процесса. Выбирайте кнопку под вашу платформу. На GPU нужен сервис, запущенный от пользователя с правами sudo.</div>
     </div>
   </section>
 </main>
@@ -635,6 +637,14 @@ async function reinstallEnv(){
   if(!confirm('Переустановить окружение (.venv + зависимости)? Сервис перезапустится.'))return;
   rsMsg('переустановка окружения…');
   const r=await adminPost('/api/admin/reinstall-env');
+  rsMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
+}
+async function reinstallFull(kind){
+  const label=kind==='server'?'GPU-сервера':'Mac';
+  if(!confirm('ПОЛНАЯ переустановка '+label+'.\n\nБудут удалены окружение и ВСЕ данные (индекс, граф, адаптер, журнал), затем повторная установка. Сервис будет недоступен. Продолжить?'))return;
+  if(!confirm('Точно? Это необратимо.'))return;
+  rsMsg('запуск полной переустановки ('+kind+')…');
+  const r=await adminPost('/api/admin/reinstall-full',{kind});
   rsMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
 }
 

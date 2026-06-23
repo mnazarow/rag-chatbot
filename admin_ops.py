@@ -318,6 +318,28 @@ def reinstall_env() -> dict:
         return {"ok": False, "msg": str(e)}
 
 
+def reinstall_full(kind: str) -> dict:
+    """Полная переустановка с нуля (destructive). kind: server (GPU) | mac.
+    Запускает соответствующий скрипт detached с CONFIRM=yes."""
+    scripts = {"server": ROOT / "reinstall_server.sh",
+               "mac": ROOT / "mac_variant" / "reinstall_mac.sh"}
+    sc = scripts.get(kind)
+    if not sc or not sc.exists():
+        return {"ok": False, "msg": f"скрипт переустановки '{kind}' не найден"}
+    try:
+        logf = open("/tmp/rag_reinstall.log", "ab")
+        subprocess.Popen(["bash", str(sc)], cwd=ROOT,
+                         env={**os.environ, "CONFIRM": "yes"},
+                         stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+        note = ("полная переустановка запущена; сервис будет недоступен во время "
+                "процесса. Лог: /tmp/rag_reinstall.log")
+        if kind == "server":
+            note += " (для GPU нужны права root — запускайте сервис от пользователя с sudo)"
+        return {"ok": True, "msg": note}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
 def restart() -> dict:
     """Завершить процесс — systemd (Restart=always) поднимет его заново."""
     def killer():
