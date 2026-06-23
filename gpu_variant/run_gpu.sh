@@ -69,6 +69,9 @@ for i in {1..120}; do curl -sf http://localhost:8001/health >/dev/null 2>&1 && b
 # ----- 4. Python-окружение --------------------------------------------------
 log "Python-окружение + зависимости (torch ${TORCH_CUDA})..."
 cd "${ROOT_DIR}"
+# каталог должен принадлежать пользователю сервиса: и для venv, и чтобы приложение
+# могло писать runtime_config.json, журнал и т.п.
+chown -R "${RUN_USER}:${RUN_USER}" "${ROOT_DIR}"
 sudo -u "${RUN_USER}" "${PYBIN}" -m venv .venv
 sudo -u "${RUN_USER}" ./.venv/bin/pip install --upgrade pip wheel
 sudo -u "${RUN_USER}" ./.venv/bin/pip install "torch==2.5.1" --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
