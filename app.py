@@ -4,10 +4,12 @@
 """
 from __future__ import annotations
 import json
+import os
 import time
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Body
+from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -141,6 +143,11 @@ def api_system():
     return admin_ops.system_info()
 
 
+@app.get("/api/analytics-components")
+def api_analytics_components():
+    return admin_ops.component_analytics()
+
+
 @app.get("/api/config")
 def api_config():
     return {
@@ -186,6 +193,42 @@ def admin_status(x_admin_token: str | None = Header(None)):
 def admin_browse(path: str | None = None, x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.browse(path)
+
+
+@app.get("/api/admin/models")
+def admin_models(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.list_models()
+
+
+@app.post("/api/admin/pull-model")
+def admin_pull_model(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.pull_model(payload.get("model", ""))
+
+
+@app.post("/api/admin/upload")
+async def admin_upload(files: list[UploadFile] = File(...),
+                       x_admin_token: str | None = Header(None)):
+    """Загрузка файлов (Excel и др.) в DOCS_DIR/uploads. Индексируются при reindex."""
+    _check_admin(x_admin_token)
+    dest = Path(settings.get("DOCS_DIR")).expanduser() / "uploads"
+    dest.mkdir(parents=True, exist_ok=True)
+    saved, skipped = [], []
+    for f in files:
+        name = os.path.basename(f.filename or "")
+        if not name:
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in admin_ops._SUPPORTED:
+            skipped.append(name)
+            continue
+        try:
+            (dest / name).write_bytes(await f.read())
+            saved.append(name)
+        except Exception as e:
+            skipped.append(f"{name} ({e})")
+    return {"ok": True, "saved": saved, "skipped": skipped, "dir": str(dest)}
 
 
 @app.post("/api/admin/reindex")

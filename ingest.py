@@ -108,78 +108,106 @@ def main():
     args = ap.parse_args()
 
     if not DOCS_DIR.exists():
-        raise SystemExit(f"DOCS_DIR не найдена: {DOCS_DIR} (укажите в админке)")
+        raise SystemExit(f"FATAL: DOCS_DIR не найдена: {DOCS_DIR} (укажите в админке)")
 
     embed_model = settings.get("EMBED_MODEL")
     device = settings.get("DEVICE")
     chunk_size = settings.get("CHUNK_SIZE")
     chunk_overlap = settings.get("CHUNK_OVERLAP")
 
+    # --- фатальные ошибки инициализации: понятное сообщение и выход ---
     print(f"Документы: {DOCS_DIR}")
-    client = QdrantClient(url=settings.get("QDRANT_URL"))
-    ensure_collection(client, args.reset)
+    try:
+        client = QdrantClient(url=settings.get("QDRANT_URL"))
+        ensure_collection(client, args.reset)
+    except Exception as e:
+        raise SystemExit(f"FATAL: не удалось подключиться к Qdrant ({settings.get('QDRANT_URL')}): {e}")
 
     print(f"Загружаю эмбеддер {embed_model} на {device} ...")
-    embedder = SentenceTransformer(embed_model, device=device)
+    try:
+        embedder = SentenceTransformer(embed_model, device=device)
+    except Exception as e:
+        raise SystemExit(f"FATAL: не удалось загрузить модель эмбеддингов '{embed_model}' на {device}: {e}")
 
     files = [p for p in DOCS_DIR.rglob("*")
              if p.is_file() and p.suffix.lower() in SUPPORTED]
     print(f"Найдено файлов: {len(files)}")
 
-    n_new = n_chunks = 0
+    n_new = n_chunks = n_skip = 0
+    errors = []  # (файл, причина)
     for path in tqdm(files, desc="Индексация"):
         source = str(path.relative_to(DOCS_DIR))
-        fhash = file_hash(path)
-        if not args.reset and already_indexed(client, source, fhash):
+        try:
+            fhash = file_hash(path)
+            if not args.reset and already_indexed(client, source, fhash):
+                continue
+            delete_old_versions(client, source)  # файл изменился — чистим старое
+
+            points = []
+            for part in load_file(path):
+                for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
+                    points.append({"chunk": chunk, "page": part["page"]})
+
+            if not points:
+                n_skip += 1  # пустой/нечитаемый файл — пропускаем, не ошибка
+                continue
+
+            md = meta.extract(path)  # rule-based метаданные (категория, дата, заголовок)
+            if settings.get("LLM_METADATA"):
+                try:
+                    e = enrich.extract_structured(points[0]["chunk"])
+                    for k in ("product", "topic", "doc_type"):
+                        if e.get(k):
+                            md[k] = e[k]
+                    if md.get("doc_category") == "document" and e.get("category"):
+                        md["doc_category"] = e["category"]
+                except Exception as me:
+                    # обогащение метаданными не критично — продолжаем без него
+                    print(f"  ~ метаданные LLM пропущены для {source}: {me}")
+
+            vectors = embedder.encode(
+                [p["chunk"] for p in points],
+                normalize_embeddings=True, batch_size=32, show_progress_bar=False,
+            )
+            client.upsert(
+                COLLECTION,
+                points=[
+                    qm.PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=vec.tolist(),
+                        payload={
+                            "text": p["chunk"],
+                            "source": source,
+                            "page": p["page"],
+                            "ftype": path.suffix.lower().lstrip("."),
+                            "fhash": fhash,
+                            "indexed_at": time.strftime("%Y-%m-%d"),
+                            **md,  # doc_category, title, date
+                        },
+                    )
+                    for p, vec in zip(points, vectors)
+                ],
+            )
+            n_new += 1
+            n_chunks += len(points)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            # один битый файл не должен ронять всю индексацию
+            errors.append((source, str(e)[:200]))
+            print(f"  ! ошибка обработки {source}: {e}")
             continue
-        delete_old_versions(client, source)  # файл изменился — чистим старое
 
-        points = []
-        for part in load_file(path):
-            for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
-                points.append({"chunk": chunk, "page": part["page"]})
-
-        if not points:
-            continue
-
-        md = meta.extract(path)  # rule-based метаданные (категория, дата, заголовок)
-        if settings.get("LLM_METADATA"):
-            # LLM-обогащение: продукт/тема/тип (по первому чанку, один вызов на файл)
-            e = enrich.extract_structured(points[0]["chunk"])
-            for k in ("product", "topic", "doc_type"):
-                if e.get(k):
-                    md[k] = e[k]
-            # категорию уточняем, только если правило дало общий "document"
-            if md.get("doc_category") == "document" and e.get("category"):
-                md["doc_category"] = e["category"]
-
-        vectors = embedder.encode(
-            [p["chunk"] for p in points],
-            normalize_embeddings=True, batch_size=32, show_progress_bar=False,
-        )
-        client.upsert(
-            COLLECTION,
-            points=[
-                qm.PointStruct(
-                    id=str(uuid.uuid4()),
-                    vector=vec.tolist(),
-                    payload={
-                        "text": p["chunk"],
-                        "source": source,
-                        "page": p["page"],
-                        "ftype": path.suffix.lower().lstrip("."),
-                        "fhash": fhash,
-                        "indexed_at": time.strftime("%Y-%m-%d"),
-                        **md,  # doc_category, title, date
-                    },
-                )
-                for p, vec in zip(points, vectors)
-            ],
-        )
-        n_new += 1
-        n_chunks += len(points)
-
-    print(f"Готово. Обновлено файлов: {n_new}, чанков добавлено: {n_chunks}")
+    print(f"Готово. Обновлено файлов: {n_new}, чанков добавлено: {n_chunks}, "
+          f"пропущено пустых: {n_skip}, ошибок: {len(errors)}")
+    if errors:
+        print("Файлы с ошибками:")
+        for s, e in errors[:50]:
+            print(f"  - {s}: {e}")
+        if len(errors) > 50:
+            print(f"  … и ещё {len(errors) - 50}")
+    # машиночитаемая сводка (последняя строка) — её разбирает админка
+    print(f"SUMMARY files_ok={n_new} chunks={n_chunks} skipped={n_skip} errors={len(errors)}")
 
 
 if __name__ == "__main__":

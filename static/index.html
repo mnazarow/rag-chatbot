@@ -106,6 +106,7 @@
     <button data-t="logs">📜 Журнал</button>
     <button data-t="analytics">📈 Аналитика</button>
     <button data-t="system">🧩 Система</button>
+    <button data-t="components">🔬 Аналитика+</button>
     <button data-t="admin">⚙️ Администратор</button>
   </nav>
   <div class="spacer"></div>
@@ -215,10 +216,50 @@
     <div class="box"><h3>⚡ Hybrid+ и использование движков</h3><div id="sys_hybrid"></div></div>
   </section>
 
+  <!-- ===== АНАЛИТИКА+ ===== -->
+  <section id="components">
+    <h1>Аналитика+ по компонентам</h1>
+    <div class="sub">Подробные графики и статистика по Qdrant, графу и дообучению
+      <button class="act ghost" onclick="loadComponents()">Обновить</button></div>
+
+    <div class="box"><h3>🗄 Qdrant</h3>
+      <div id="cc_qstats"></div>
+      <div class="grid2" style="margin-top:12px">
+        <div><div class="note">Чанков по категориям</div><canvas id="cc_cat" height="170"></canvas></div>
+        <div><div class="note">Чанков по типам файлов</div><canvas id="cc_ftype" height="170"></canvas></div>
+        <div><div class="note">Покрытие LLM-метаданными (чанков)</div><canvas id="cc_meta" height="170"></canvas></div>
+        <div><div class="note">Ответов по движкам</div><canvas id="cc_usage" height="170"></canvas></div>
+      </div>
+    </div>
+
+    <div class="box"><h3>🧠 Граф знаний (LightRAG)</h3>
+      <div id="cc_gstats"></div>
+      <canvas id="cc_graph" height="150" style="margin-top:12px"></canvas>
+    </div>
+
+    <div class="box"><h3>🎓 Дообучение (LoRA)</h3>
+      <div id="cc_fstats"></div>
+      <div class="note" style="margin-top:12px">Распределение длины ответов в датасете</div>
+      <canvas id="cc_ans" height="150"></canvas>
+    </div>
+  </section>
+
   <!-- ===== АДМИН ===== -->
   <section id="admin">
     <h1>Администратор</h1>
     <div class="sub">Все настройки системы и операции обслуживания</div>
+
+    <!-- добавление файлов -->
+    <div class="box">
+      <h3>Добавить файлы (Excel и др.)</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="file" id="upfile" multiple accept=".xlsx,.xls,.csv,.pdf,.docx,.pptx,.txt,.md,.html">
+        <button class="act" onclick="uploadFiles()">⬆️ Загрузить</button>
+        <button class="act ghost" onclick="uploadFiles(true)">Загрузить и переиндексировать</button>
+        <span id="upmsg"></span>
+      </div>
+      <div class="note">Файлы кладутся в подпапку <code>uploads</code> папки документов и попадают в базу после переиндексации. Excel/CSV разбираются построчно (колонка: значение).</div>
+    </div>
 
     <!-- режим работы -->
     <div class="box">
@@ -236,6 +277,20 @@
         <span id="engmsg"></span>
       </div>
       <div class="note">«Векторный» — первый вариант (поиск + реранк). «LightRAG» направляет ВСЕ вопросы в граф знаний. Кнопка «Построить граф» ставит LightRAG и прогоняет документы через LLM (долго). При недоступности графа — автоматический откат на векторный.</div>
+    </div>
+
+    <!-- выбор LLM -->
+    <div class="box">
+      <h3>Модель LLM</h3>
+      <div id="llmcurrent" class="note" style="margin-bottom:8px"></div>
+      <div id="llmlist" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <input type="text" id="pullname" placeholder="напр. qwen2.5:14b-instruct" style="flex:1;min-width:220px">
+        <button class="act ghost" onclick="pullModel()">⬇️ Скачать модель</button>
+        <button class="act ghost" onclick="loadModels()">Обновить список</button>
+        <span id="llmmsg"></span>
+      </div>
+      <div class="note">Кликните модель в списке, чтобы переключить генерацию. Загрузка новых моделей — для Ollama (Apple); для vLLM меняйте VLLM_MODEL и жмите «Применить модель LLM».</div>
     </div>
 
     <!-- модель генерации -->
@@ -262,7 +317,8 @@
         <button class="act ghost" onclick="loadOps()">Обновить статус</button>
         <span id="opsmsg"></span>
       </div>
-      <pre id="joblog" style="margin-top:12px;background:var(--panel2);border:1px solid var(--line);
+      <div id="opssummary" class="note" style="margin-top:10px"></div>
+      <pre id="joblog" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);
         border-radius:9px;padding:10px;font-size:12px;max-height:160px;overflow:auto;display:none;white-space:pre-wrap"></pre>
     </div>
 
@@ -307,7 +363,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('section').forEach(x=>x.classList.remove('active'));
   b.classList.add('active'); $('#'+b.dataset.t).classList.add('active');
-  ({dash:loadStats,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,admin:loadConfig}[b.dataset.t]||(()=>{}))();
+  ({dash:loadStats,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,components:loadComponents,admin:loadConfig}[b.dataset.t]||(()=>{}))();
 });
 
 // ---- дашборд ----
@@ -418,6 +474,41 @@ async function loadSystem(){
   $('#sys_hybrid').innerHTML=hh;
 }
 
+// ---- аналитика+ по компонентам ----
+async function loadComponents(){
+  let s; try{ s=await (await fetch('/api/analytics-components')).json(); }catch(e){ return; }
+  const q=s.qdrant||{}, g=s.graph||{}, f=s.finetune||{}, u=s.usage||{};
+  const dough={plugins:{legend:{labels:{color:C.txt}}}};
+  // Qdrant
+  $('#cc_qstats').innerHTML = q.online
+    ? sysCards([['Точек (чанков)',nz(q.points)],['Сегментов',nz(q.segments)]])
+    : '<div class="note">Qdrant недоступен'+(q.error?': '+esc(q.error):'')+'</div>';
+  if(q.by_category) mkChart('cc_cat',{type:'doughnut',data:{labels:Object.keys(q.by_category),
+    datasets:[{data:Object.values(q.by_category),backgroundColor:C.palette}]},options:dough});
+  if(q.by_ftype){ const e=Object.entries(q.by_ftype);
+    mkChart('cc_ftype',{type:'bar',data:{labels:e.map(x=>x[0]),
+      datasets:[{data:e.map(x=>x[1]),backgroundColor:C.a}]},options:axes}); }
+  if(q.meta) mkChart('cc_meta',{type:'bar',data:{labels:['product','topic','doc_type'],
+    datasets:[{data:[q.meta.product,q.meta.topic,q.meta.doc_type],backgroundColor:C.palette}]},options:axes});
+  mkChart('cc_usage',{type:'doughnut',data:{labels:['Векторный','Граф','LightRAG'],
+    datasets:[{data:[u.vector||0,u.graph||0,u.lightrag||0],backgroundColor:C.palette}]},options:dough});
+  // Граф
+  $('#cc_gstats').innerHTML = g.ready
+    ? sysCards([['Сущности',nz(g.entities)],['Связи',nz(g.relations)],
+        ['Связей/сущность',nz(g.rel_per_entity)],['Чанки',nz(g.chunks)],
+        ['Документы',nz(g.docs)],['Размер, МБ',nz(g.size_mb)]])
+    : '<div class="note">Граф не построен</div>';
+  if(g.ready) mkChart('cc_graph',{type:'bar',data:{labels:['Сущности','Связи','Чанки','Документы'],
+    datasets:[{data:[g.entities||0,g.relations||0,g.chunks||0,g.docs||0],backgroundColor:C.palette}]},options:axes});
+  // Дообучение
+  const d=f.dataset||{}, l=f.lora||{};
+  $('#cc_fstats').innerHTML = sysCards([['Пар в датасете',nz(d.pairs)],
+    ['Ср. длина вопроса',nz(d.avg_q)],['Ср. длина ответа',nz(d.avg_a)],
+    ['LoRA r',nz(l.r)],['LoRA alpha',nz(l.alpha)],['Адаптер, МБ',nz(f.adapter_size_mb)]]);
+  if(d.ans_hist) mkChart('cc_ans',{type:'bar',data:{labels:Object.keys(d.ans_hist),
+    datasets:[{data:Object.values(d.ans_hist),backgroundColor:C.a}]},options:axes});
+}
+
 // ---- админка: авто-рендер настроек из схемы ----
 const SCOPE={live:['на лету','#22c55e'],reindex:['после реиндекса','#f59e0b'],
   restart:['после рестарта','#ef4444'],vllm:['рестарт vLLM','#a855f7'],secret:['','']};
@@ -456,7 +547,31 @@ async function loadConfig(){
   c.fields.forEach(f=>{ if(f.type==='range'){ const el=$('#f_'+f.key); el.oninput=()=>$('#o_'+f.key).textContent=el.value; }});
   renderEngine(c.values);
   renderGenModel(c.values);
-  loadMode(); loadOps();
+  loadMode(); loadOps(); loadModels();
+}
+
+// ---- выбор/загрузка модели LLM ----
+function tok(){ return $('#cfg_token')?$('#cfg_token').value:''; }
+async function loadModels(){
+  let m; try{ m=await (await fetch('/api/admin/models',{headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
+  if(m.detail){ $('#llmcurrent').textContent=m.detail; return; }
+  $('#llmcurrent').innerHTML='Бэкенд: <b>'+esc(m.backend)+'</b> · текущая: <b>'+esc(m.current||'—')+'</b>';
+  const list=$('#llmlist');
+  if(!m.models||!m.models.length){ list.innerHTML='<span class="note">'+(m.error?esc(m.error):'модели не найдены')+'</span>'; return; }
+  list.innerHTML=m.models.map(name=>`<span class="dirbtn" style="${name===m.current?'border-color:var(--accent);color:var(--accent)':''}" onclick="setLLM('${escAttr(name)}')">${esc(name)}</span>`).join('');
+}
+async function setLLM(name){
+  const r=await fetch('/api/config',{method:'POST',
+    headers:{'Content-Type':'application/json','X-Admin-Token':tok()},
+    body:JSON.stringify({LLM_MODEL:name})});
+  if(r.ok){ llmMsg('✓ Модель: '+name); loadModels(); loadStats(); }
+  else { llmMsg('✗ '+((await r.json().catch(()=>({}))).detail||'ошибка'),false); }
+}
+function llmMsg(t,ok=true){ $('#llmmsg').textContent=t; $('#llmmsg').className=ok?'saved':'note'; }
+async function pullModel(){
+  const name=$('#pullname').value.trim(); if(!name){ llmMsg('укажите имя модели',false); return; }
+  llmMsg('загрузка '+name+'…'); const r=await adminPost('/api/admin/pull-model',{model:name});
+  llmMsg(r.msg||'запущено',r.ok!==false); pollJob();
 }
 
 // ---- движок ответов (векторный / LightRAG) ----
@@ -484,6 +599,26 @@ async function buildGraph(){
   if(!confirm('Построить граф знаний? Установит LightRAG и прогонит документы через LLM — это надолго.'))return;
   engMsg('установка LightRAG и построение графа…'); const r=await adminPost('/api/admin/build-graph');
   engMsg(r.msg||'запущено',r.ok!==false); pollJob();
+}
+
+// ---- загрузка файлов ----
+function upMsg(t,ok=true){ $('#upmsg').textContent=t; $('#upmsg').className=ok?'saved':'note'; }
+async function uploadFiles(thenReindex){
+  const inp=$('#upfile');
+  if(!inp.files.length){ upMsg('выберите файлы',false); return; }
+  const fd=new FormData();
+  for(const f of inp.files) fd.append('files',f);
+  upMsg('загрузка '+inp.files.length+' файл(ов)…');
+  let j={};
+  try{
+    const r=await fetch('/api/admin/upload',{method:'POST',headers:{'X-Admin-Token':tok()},body:fd});
+    j=await r.json().catch(()=>({}));
+    if(!r.ok){ upMsg('✗ '+(j.detail||'ошибка'),false); return; }
+  }catch(e){ upMsg('✗ '+e.message,false); return; }
+  const sk=(j.skipped&&j.skipped.length)?(' · пропущено: '+j.skipped.length):'';
+  upMsg('✓ загружено: '+((j.saved||[]).length)+sk);
+  inp.value='';
+  if(thenReindex) reindex(false);
 }
 
 // ---- браузер папок для DOCS_DIR ----
@@ -603,15 +738,23 @@ async function loadOps(){
   const gj=s.graph_job||{};
   const gjob=gj.running?'идёт…':(gj.ok===true?'успешно':(gj.ok===false?'ошибка':'—'));
   const graph=s.graph_ready?(s.engine==='lightrag'?'активен':'готов'):'нет';
+  const pj=s.pull_job||{};
+  const pjob=pj.running?('идёт… '+(pj.model||'')):(pj.ok===true?'успешно':(pj.ok===false?'ошибка':'—'));
   $('#opsstatus').innerHTML=[
     ['Qdrant',dot(s.qdrant)],['LLM ('+s.backend+')',dot(s.llm)],
     ['Чанков в базе',s.chunks],['Индексация',job],
     ['Граф',gjob],['Граф знаний',graph],
     ['Дообучение',ftjob],['Дообуч. модель',adapter],
+    ['Загрузка модели',pjob],
   ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v" style="font-size:18px">${v}</div></div>`).join('');
-  // показываем лог активной фоновой задачи (или последней с логом)
-  const running=[j,gj,fj].find(x=>x.running);
-  const logtxt=running?running.log:(gj.log||j.log||fj.log||'');
+  // сводки задач (ok/skip/errors) и логи
+  const sums=[];
+  if(j.summary) sums.push('Индексация: '+j.summary);
+  if(gj.summary) sums.push('Граф: '+gj.summary);
+  if(fj.summary) sums.push('Дообучение: '+fj.summary);
+  $('#opssummary').innerHTML=sums.map(esc).join('<br>');
+  const running=[j,gj,fj,pj].find(x=>x.running);
+  const logtxt=running?running.log:(gj.log||j.log||fj.log||pj.log||'');
   if(logtxt){ $('#joblog').style.display='block'; $('#joblog').textContent=logtxt; }
 }
 async function adminPost(url,body){

@@ -26,9 +26,11 @@ import db
 
 ROOT = Path(__file__).resolve().parent
 
-_job = {"running": False, "started": None, "finished": None, "ok": None, "log": ""}
-_ft_job = {"running": False, "started": None, "finished": None, "ok": None, "log": ""}
-_graph_job = {"running": False, "started": None, "finished": None, "ok": None, "log": ""}
+_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": ""}
+_ft_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": ""}
+_graph_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": ""}
+_pull_job = {"running": False, "started": None, "finished": None, "ok": None,
+             "log": "", "model": ""}
 
 # зависимости LightRAG (как в lightrag_variant/requirements-lightrag.txt)
 _LIGHTRAG_DEPS = ["lightrag-hku==1.3.0", "nano-vectordb==0.0.4.3",
@@ -73,7 +75,57 @@ def status() -> dict:
     out["graph_job"] = dict(_graph_job)
     out["graph_ready"] = (ROOT / "graph_storage").exists()
     out["engine"] = settings.get("ENGINE")
+    out["pull_job"] = dict(_pull_job)
     return out
+
+
+def list_models() -> dict:
+    """Список доступных моделей генерации из текущего бэкенда."""
+    backend = settings.get("LLM_BACKEND")
+    out = {"backend": backend, "current": settings.get("LLM_MODEL"), "models": []}
+    try:
+        if backend == "openai":
+            r = httpx.get(f"{settings.get('LLM_BASE_URL')}/models",
+                          headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
+                          timeout=4)
+            if r.status_code == 200:
+                out["models"] = [m.get("id") for m in r.json().get("data", []) if m.get("id")]
+        else:
+            r = httpx.get(f"{settings.get('OLLAMA_URL')}/api/tags", timeout=4)
+            if r.status_code == 200:
+                out["models"] = [m.get("name") for m in r.json().get("models", []) if m.get("name")]
+    except Exception as e:
+        out["error"] = str(e)
+    return out
+
+
+def pull_model(name: str) -> dict:
+    """Скачать новую модель в Ollama (фоном). Для vLLM — не применимо."""
+    if settings.get("LLM_BACKEND") != "ollama":
+        return {"ok": False, "msg": "Загрузка доступна только для Ollama. Для vLLM измените "
+                "VLLM_MODEL и нажмите «Применить модель LLM»."}
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "msg": "укажите имя модели"}
+    if _pull_job["running"]:
+        return {"ok": False, "msg": "загрузка модели уже идёт"}
+
+    def run():
+        _pull_job.update(running=True, started=time.time(), finished=None,
+                         ok=None, log="", model=name)
+        try:
+            p = subprocess.run(["ollama", "pull", name], capture_output=True,
+                               text=True, timeout=6 * 3600)
+            _pull_job["log"] = (p.stdout[-2000:] + "\n" + p.stderr[-2000:]).strip()
+            _pull_job["ok"] = p.returncode == 0
+        except Exception as e:
+            _pull_job["ok"] = False
+            _pull_job["log"] = str(e)
+        _pull_job["running"] = False
+        _pull_job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": f"загрузка модели {name} запущена"}
 
 
 def reindex(reset: bool = False) -> dict:
@@ -81,16 +133,19 @@ def reindex(reset: bool = False) -> dict:
         return {"ok": False, "msg": "индексация уже идёт"}
 
     def run():
-        _job.update(running=True, started=time.time(), finished=None, ok=None, log="")
+        _job.update(running=True, started=time.time(), finished=None, ok=None,
+                    log="", summary="")
         cmd = [sys.executable, "ingest.py"] + (["--reset"] if reset else [])
         try:
             p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                                timeout=24 * 3600)
             _job["log"] = (p.stdout[-4000:] + "\n" + p.stderr[-2000:]).strip()
+            _job["summary"] = _extract_summary(p.stdout + "\n" + p.stderr)
             _job["ok"] = p.returncode == 0
         except Exception as e:
             _job["ok"] = False
             _job["log"] = str(e)
+            _job["summary"] = f"FATAL: {e}"[:200]
         _job["running"] = False
         _job["finished"] = time.time()
 
@@ -126,7 +181,8 @@ def build_graph() -> dict:
         return {"ok": False, "msg": "построение графа уже идёт"}
 
     def run():
-        _graph_job.update(running=True, started=time.time(), finished=None, ok=None, log="")
+        _graph_job.update(running=True, started=time.time(), finished=None, ok=None,
+                          log="", summary="")
         log = []
         try:
             log.append("[1/2] Установка LightRAG...")
@@ -135,15 +191,19 @@ def build_graph() -> dict:
                                 cwd=ROOT, capture_output=True, text=True, timeout=3600)
             log.append((p1.stdout[-1000:] + p1.stderr[-1500:]).strip())
             if p1.returncode != 0:
+                _graph_job["summary"] = "FATAL: не удалось установить LightRAG"
                 raise RuntimeError("не удалось установить LightRAG")
             log.append("[2/2] Построение графа (graph_rag ingest)...")
             p2 = subprocess.run([sys.executable, "-m", "graph_rag", "ingest"],
                                 cwd=ROOT, capture_output=True, text=True, timeout=24 * 3600)
             log.append((p2.stdout[-4000:] + p2.stderr[-2000:]).strip())
+            _graph_job["summary"] = _extract_summary(p2.stdout + "\n" + p2.stderr)
             _graph_job["ok"] = p2.returncode == 0
         except Exception as e:
             _graph_job["ok"] = False
             log.append(str(e))
+            if not _graph_job.get("summary"):
+                _graph_job["summary"] = f"FATAL: {e}"[:200]
         _graph_job["log"] = "\n".join(log).strip()
         _graph_job["running"] = False
         _graph_job["finished"] = time.time()
@@ -218,6 +278,16 @@ def _qcount(base: str, coll: str, flt: dict) -> int:
     except Exception:
         pass
     return 0
+
+
+def _extract_summary(text: str) -> str:
+    """Достаёт машиночитаемую строку 'SUMMARY ...' из вывода задачи."""
+    for line in reversed((text or "").splitlines()):
+        if line.startswith("SUMMARY "):
+            return line[len("SUMMARY "):].strip()
+        if line.startswith("FATAL:"):
+            return line.strip()
+    return ""
 
 
 def _dir_size_mb(path: Path) -> float:
@@ -325,6 +395,115 @@ def system_info() -> dict:
 
     return {"qdrant": qd, "graph": graph, "finetune": ft,
             "hybrid": hybrid, "usage": db.engine_usage()}
+
+
+def component_analytics() -> dict:
+    """Расширенная аналитика по компонентам: Qdrant, граф (LightRAG), дообучение."""
+    coll = settings.get("QDRANT_COLLECTION")
+    qbase = settings.get("QDRANT_URL")
+
+    # ---- Qdrant: по категориям, типам файлов, покрытию метаданными ----
+    qd: dict = {"online": False}
+    try:
+        r = httpx.get(f"{qbase}/collections/{coll}", timeout=4)
+        if r.status_code == 200:
+            res = r.json().get("result", {}) or {}
+            qd = {"online": True, "points": res.get("points_count", 0),
+                  "segments": res.get("segments_count", 0)}
+            qd["by_category"] = {
+                c: _qcount(qbase, coll, {"must": [{"key": "doc_category", "match": {"value": c}}]})
+                for c in ("price", "presentation", "training", "document")}
+            byf = {}
+            for ft in ("pdf", "docx", "pptx", "xlsx", "xls", "csv", "txt", "md",
+                       "html", "htm", "mp3", "wav", "m4a", "aac", "mp4", "mov", "mkv", "webm"):
+                n = _qcount(qbase, coll, {"must": [{"key": "ftype", "match": {"value": ft}}]})
+                if n:
+                    byf[ft] = n
+            qd["by_ftype"] = byf
+            qd["meta"] = {
+                "product": _qcount(qbase, coll, {"must_not": [{"is_empty": {"key": "product"}}]}),
+                "topic": _qcount(qbase, coll, {"must_not": [{"is_empty": {"key": "topic"}}]}),
+                "doc_type": _qcount(qbase, coll, {"must_not": [{"is_empty": {"key": "doc_type"}}]}),
+            }
+    except Exception as e:
+        qd = {"online": False, "error": str(e)}
+
+    # ---- Граф (LightRAG) ----
+    gdir = ROOT / "graph_storage"
+    graph: dict = {"ready": gdir.exists()}
+    if gdir.exists():
+        def _jlen(name, key=None):
+            f = gdir / name
+            if not f.exists():
+                return None
+            try:
+                d = _json.loads(f.read_text(encoding="utf-8"))
+                v = d.get(key) if key else d
+                return len(v) if hasattr(v, "__len__") else None
+            except Exception:
+                return None
+        ent = _jlen("vdb_entities.json", "data")
+        rel = _jlen("vdb_relationships.json", "data")
+        ch = _jlen("kv_store_text_chunks.json")
+        dc = _jlen("kv_store_full_docs.json")
+        gml = gdir / "graph_chunk_entity_relation.graphml"
+        if ent is None and gml.exists():
+            t = gml.read_text(errors="ignore")
+            ent, rel = t.count("<node "), t.count("<edge ")
+        graph.update(entities=ent, relations=rel, chunks=ch, docs=dc,
+                     size_mb=_dir_size_mb(gdir))
+        if ent:
+            graph["rel_per_entity"] = round((rel or 0) / ent, 2)
+
+    # ---- Дообучение: датасет и параметры LoRA ----
+    ft: dict = {"adapter_ready": (ROOT / "finetune" / "adapter").exists()}
+    ds = ROOT / "finetune" / "data" / "train.jsonl"
+    if ds.exists():
+        pairs = ql = al = 0
+        hist = {"<100": 0, "100–300": 0, "300–600": 0, ">600": 0}
+        try:
+            with ds.open(encoding="utf-8") as f:
+                for i, line in enumerate(f):
+                    if i >= 5000:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = _json.loads(line)
+                    except Exception:
+                        continue
+                    msgs = rec.get("messages", [])
+                    q = next((m.get("content", "") for m in msgs if m.get("role") == "user"), "")
+                    a = next((m.get("content", "") for m in msgs if m.get("role") == "assistant"), "")
+                    pairs += 1
+                    ql += len(q)
+                    al += len(a)
+                    L = len(a)
+                    if L < 100:
+                        hist["<100"] += 1
+                    elif L < 300:
+                        hist["100–300"] += 1
+                    elif L < 600:
+                        hist["300–600"] += 1
+                    else:
+                        hist[">600"] += 1
+        except Exception:
+            pass
+        ft["dataset"] = {"pairs": pairs, "avg_q": round(ql / pairs) if pairs else 0,
+                         "avg_a": round(al / pairs) if pairs else 0, "ans_hist": hist}
+    acfg = ROOT / "finetune" / "adapter" / "adapter_config.json"
+    if acfg.exists():
+        try:
+            c = _json.loads(acfg.read_text(encoding="utf-8"))
+            ft["lora"] = {"r": c.get("r"), "alpha": c.get("lora_alpha"),
+                          "dropout": c.get("lora_dropout"),
+                          "targets": len(c.get("target_modules") or [])}
+        except Exception:
+            pass
+        ft["adapter_size_mb"] = _dir_size_mb(ROOT / "finetune" / "adapter")
+
+    return {"qdrant": qd, "graph": graph, "finetune": ft, "usage": db.engine_usage()}
 
 
 def browse(path: str | None = None) -> dict:

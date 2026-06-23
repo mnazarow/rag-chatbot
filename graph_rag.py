@@ -91,18 +91,44 @@ async def _ingest():
     from loaders import load_file
     docs = Path(settings.get("DOCS_DIR")).expanduser()
     if not docs.exists():
-        sys.exit(f"DOCS_DIR не найдена: {docs}")
-    rag = await get_rag()
+        sys.exit(f"FATAL: DOCS_DIR не найдена: {docs}")
+    # инициализация LightRAG — фатальная ошибка (нет пакета/не строится граф)
+    try:
+        rag = await get_rag()
+    except ModuleNotFoundError as e:
+        sys.exit(f"FATAL: LightRAG не установлен ({e}). Запустите «Построить граф» из админки "
+                 "или установите зависимости вручную.")
+    except Exception as e:
+        sys.exit(f"FATAL: не удалось инициализировать граф (проверьте Qdrant/LLM/эмбеддер): {e}")
+
     files = [p for p in docs.rglob("*") if p.is_file()]
     print(f"Файлов: {len(files)}")
+    ok = skip = 0
+    errors = []
     for path in files:
-        text = "\n\n".join(part["text"] for part in load_file(path)
-                           if part["text"].strip())
-        if text.strip():
-            print(f"  + {path.name}")
-            await rag.ainsert(text, ids=[str(path.relative_to(docs))],
-                              file_paths=[str(path.relative_to(docs))])
-    print("Граф построен в", WORKING_DIR)
+        name = str(path.relative_to(docs))
+        try:
+            text = "\n\n".join(part["text"] for part in load_file(path)
+                               if part["text"].strip())
+            if not text.strip():
+                skip += 1
+                continue
+            print(f"  + {name}")
+            await rag.ainsert(text, ids=[name], file_paths=[name])
+            ok += 1
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            errors.append((name, str(e)[:200]))
+            print(f"  ! ошибка {name}: {e}")
+            continue
+
+    print(f"Граф построен в {WORKING_DIR}. Добавлено: {ok}, пропущено: {skip}, ошибок: {len(errors)}")
+    if errors:
+        print("Файлы с ошибками:")
+        for s, e in errors[:50]:
+            print(f"  - {s}: {e}")
+    print(f"SUMMARY files_ok={ok} skipped={skip} errors={len(errors)}")
 
 
 if __name__ == "__main__":
