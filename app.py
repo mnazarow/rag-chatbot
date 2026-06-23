@@ -74,21 +74,25 @@ async def chat(req: ChatRequest):
                 yield json.dumps({"type": "sources",
                                   "items": [{"source": "граф знаний (LightRAG)", "page": None}]},
                                  ensure_ascii=False) + "\n"
-                rid = db.log_request(req.question, cat, 1, 1.0,
-                                     int((time.time() - t0) * 1000), len(text), True, [])
+                lat = int((time.time() - t0) * 1000)
+                rid = db.log_request(req.question, cat, 1, 1.0, lat, len(text), True, [],
+                                     retrieve_ms=0, gen_ms=lat)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
             return StreamingResponse(gstream(), media_type="application/x-ndjson")
         except Exception as e:
             print(f"LightRAG недоступен, фолбэк на вектор: {e}")
 
+    t_ret = time.time()
     hits = search(req.question, filters=req.filters)
+    retrieve_ms = int((time.time() - t_ret) * 1000)
     category = (req.filters or {}).get("doc_category") or infer_category(req.question)
 
     if not hits:
         msg = "В доступных документах нет точного ответа на этот вопрос."
         rid = db.log_request(req.question, category, 0, 0.0,
-                             int((time.time() - t0) * 1000), len(msg), False, [])
+                             int((time.time() - t0) * 1000), len(msg), False, [],
+                             retrieve_ms=retrieve_ms, gen_ms=0)
 
         async def empty():
             yield json.dumps({"type": "answer", "text": msg}, ensure_ascii=False) + "\n"
@@ -115,8 +119,10 @@ async def chat(req: ChatRequest):
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
+        latency = int((time.time() - t0) * 1000)
         rid = db.log_request(req.question, category, len(hits), hits[0]["score"],
-                             int((time.time() - t0) * 1000), len("".join(acc)), True, sources)
+                             latency, len("".join(acc)), True, sources,
+                             retrieve_ms=retrieve_ms, gen_ms=max(0, latency - retrieve_ms))
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
@@ -239,6 +245,12 @@ def api_system():
 def api_selftest(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.self_test()
+
+
+@app.post("/api/admin/benchmark")
+def api_benchmark(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.benchmark()
 
 
 @app.get("/api/analytics-components")

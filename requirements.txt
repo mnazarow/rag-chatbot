@@ -23,6 +23,7 @@ pymupdf==1.25.1            # PDF
 python-docx==1.1.2         # DOCX
 python-pptx==1.0.2         # PPTX
 openpyxl==3.1.5            # XLSX
+xlrd==2.0.1               # старый формат XLS (Excel 97-2003)
 pandas==2.2.3              # прайс-листы / таблицы
 unstructured==0.16.11      # универсальный фолбэк
 beautifulsoup4==4.12.3     # HTML

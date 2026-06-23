@@ -31,11 +31,12 @@ def init() -> None:
                 n_hits INTEGER, top_score REAL, latency_ms INTEGER,
                 answer_chars INTEGER, answered INTEGER, sources TEXT)"""
         )
-        # миграция: оценка ответа (1 — хорошо, -1 — плохо, NULL — без оценки)
-        try:
-            c.execute("ALTER TABLE requests ADD COLUMN rating INTEGER")
-        except Exception:
-            pass
+        # миграции колонок (идемпотентно)
+        for col in ("rating INTEGER", "retrieve_ms INTEGER", "gen_ms INTEGER"):
+            try:
+                c.execute(f"ALTER TABLE requests ADD COLUMN {col}")
+            except Exception:
+                pass
 
 
 init()
@@ -43,17 +44,19 @@ init()
 
 def log_request(question: str, category: str | None, n_hits: int,
                 top_score: float, latency_ms: int, answer_chars: int,
-                answered: bool, sources: list) -> int:
+                answered: bool, sources: list,
+                retrieve_ms: int = 0, gen_ms: int = 0) -> int:
     now = datetime.now()
     with _LOCK, _conn() as c:
         cur = c.execute(
             """INSERT INTO requests
                (ts,day,question,category,n_hits,top_score,latency_ms,
-                answer_chars,answered,sources)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                answer_chars,answered,sources,retrieve_ms,gen_ms)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (now.timestamp(), now.strftime("%Y-%m-%d"), question, category,
              n_hits, round(top_score, 4), latency_ms, answer_chars,
-             int(answered), json.dumps(sources, ensure_ascii=False)),
+             int(answered), json.dumps(sources, ensure_ascii=False),
+             int(retrieve_ms), int(gen_ms)),
         )
         return cur.lastrowid
 
@@ -107,13 +110,15 @@ def stats() -> dict:
             "SELECT COUNT(*) n FROM requests WHERE day=?", (today,)
         ).fetchone()["n"]
         agg = c.execute(
-            "SELECT AVG(latency_ms) lat, AVG(top_score) sc, AVG(answered) ans "
-            "FROM requests"
+            "SELECT AVG(latency_ms) lat, AVG(top_score) sc, AVG(answered) ans, "
+            "AVG(retrieve_ms) rt, AVG(gen_ms) gn FROM requests"
         ).fetchone()
     return {
         "total": total,
         "today": today_n,
         "avg_latency_ms": round(agg["lat"] or 0),
+        "avg_retrieve_ms": round(agg["rt"] or 0),
+        "avg_gen_ms": round(agg["gn"] or 0),
         "avg_top_score": round(agg["sc"] or 0, 3),
         "answer_rate": round((agg["ans"] or 0) * 100, 1),
     }
@@ -148,6 +153,8 @@ def analytics() -> dict:
         ).fetchall()
         lat_rows = c.execute("SELECT latency_ms FROM requests").fetchall()
         q_rows = c.execute("SELECT question FROM requests").fetchall()
+        tm = c.execute("SELECT AVG(retrieve_ms) rt, AVG(gen_ms) gn, AVG(latency_ms) lt "
+                       "FROM requests").fetchone()
 
     src = Counter()
     for r in answered_rows:
@@ -181,4 +188,6 @@ def analytics() -> dict:
         "top_keywords": [{"word": w, "n": n} for w, n in kw.most_common(15)],
         "latency_buckets": buckets,
         "ratings": rating_stats(),
+        "timings": {"retrieve": round(tm["rt"] or 0), "gen": round(tm["gn"] or 0),
+                    "total": round(tm["lt"] or 0)},
     }

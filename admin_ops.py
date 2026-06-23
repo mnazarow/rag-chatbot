@@ -38,6 +38,8 @@ _web_job = {"running": False, "started": None, "finished": None, "ok": None,
             "log": "", "summary": "", "logfile": ""}
 _test_job = {"running": False, "started": None, "finished": None, "ok": None,
              "log": "", "logfile": "", "results": []}
+_bench_job = {"running": False, "started": None, "finished": None, "ok": None,
+              "log": "", "logfile": "", "results": []}
 
 
 def _tail(path: str, n: int = 6000) -> str:
@@ -140,7 +142,105 @@ def status() -> dict:
     out["dep_job"] = _jobview(_dep_job)
     out["web_job"] = _jobview(_web_job)
     out["test_job"] = _jobview(_test_job)
+    out["bench_job"] = _jobview(_bench_job)
     return out
+
+
+# ============================ бенчмарк компонентов ============================
+def benchmark() -> dict:
+    if _bench_job["running"]:
+        return {"ok": False, "msg": "бенчмарк уже идёт"}
+    logfile = "/tmp/rag_benchmark.log"
+
+    def run():
+        _bench_job.update(running=True, started=time.time(), finished=None, ok=None,
+                          log="", logfile=logfile, results=[])
+        results = []
+        with open(logfile, "w", buffering=1, errors="ignore") as fp:
+            def add(component, ms, detail, extra=None):
+                row = {"component": component, "ms": round(ms), "detail": detail}
+                if extra:
+                    row.update(extra)
+                results.append(row)
+                _bench_job["results"] = list(results)
+                fp.write(f"{component}: {round(ms)} мс — {detail}\n")
+                fp.flush()
+
+            fp.write("=== Бенчмарк производительности ===\n")
+            # эмбеддер
+            try:
+                from retriever import _embedder
+                texts = [f"строка для эмбеддинга номер {i} с небольшим текстом" for i in range(16)]
+                t = time.time()
+                _embedder().encode(texts, normalize_embeddings=True)
+                dt = (time.time() - t) * 1000
+                add("Эмбеддер (bge-m3)", dt, f"16 текстов · {dt/16:.1f} мс/текст · {16/(dt/1000):.0f} текст/с")
+            except Exception as e:
+                add("Эмбеддер (bge-m3)", 0, f"ошибка: {e}")
+            # реранкер
+            try:
+                from retriever import _reranker
+                pairs = [["тестовый вопрос", f"кандидатный документ номер {i}"] for i in range(16)]
+                t = time.time()
+                _reranker().compute_score(pairs, normalize=True)
+                dt = (time.time() - t) * 1000
+                add("Реранкер (bge-reranker)", dt, f"16 пар · {dt/16:.1f} мс/пара")
+            except Exception as e:
+                add("Реранкер (bge-reranker)", 0, f"ошибка: {e}")
+            # поиск (end-to-end retrieval)
+            try:
+                from retriever import search
+                N = 5
+                t = time.time()
+                for _ in range(N):
+                    search("тестовый вопрос для замера поиска")
+                dt = (time.time() - t) * 1000
+                add("Поиск + реранк (search)", dt / N, f"среднее по {N} запросам")
+            except Exception as e:
+                add("Поиск + реранк (search)", 0, f"ошибка: {e}")
+            # Qdrant raw latency
+            try:
+                coll = settings.get("QDRANT_COLLECTION")
+                t = time.time()
+                httpx.get(f"{settings.get('QDRANT_URL')}/collections/{coll}", timeout=10)
+                add("Qdrant (REST)", (time.time() - t) * 1000, "запрос метаданных коллекции")
+            except Exception as e:
+                add("Qdrant (REST)", 0, f"ошибка: {e}")
+            # LLM генерация (tokens/sec)
+            try:
+                b = settings.get("LLM_BACKEND")
+                m = settings.get("LLM_MODEL")
+                if b == "openai":
+                    t = time.time()
+                    r = httpx.post(f"{settings.get('LLM_BASE_URL')}/chat/completions",
+                                   headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
+                                   json={"model": m, "messages": [{"role": "user", "content": "Напиши короткий абзац о тестировании."}],
+                                         "max_tokens": 64, "temperature": 0}, timeout=120)
+                    dt = time.time() - t
+                    ct = (r.json().get("usage", {}) or {}).get("completion_tokens", 0)
+                    tps = ct / dt if dt else 0
+                    add("LLM генерация", dt * 1000, f"{m}: {ct} токенов · {tps:.1f} ток/с")
+                else:
+                    r = httpx.post(f"{settings.get('OLLAMA_URL')}/api/generate",
+                                   json={"model": m, "prompt": "Напиши короткий абзац о тестировании.",
+                                         "stream": False, "options": {"num_predict": 64}}, timeout=180)
+                    j = r.json()
+                    ec = j.get("eval_count", 0)
+                    ed = (j.get("eval_duration", 0) or 0) / 1e9
+                    tps = ec / ed if ed else 0
+                    add("LLM генерация", ed * 1000, f"{m}: {ec} токенов · {tps:.1f} ток/с")
+            except Exception as e:
+                add("LLM генерация", 0, f"ошибка: {e}")
+
+            fp.write("\nГотово.\n")
+        _bench_job["results"] = results
+        _bench_job["log"] = _tail(logfile)
+        _bench_job["ok"] = True
+        _bench_job["running"] = False
+        _bench_job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": "бенчмарк запущен"}
 
 
 # ============================ самотесты компонентов ============================
