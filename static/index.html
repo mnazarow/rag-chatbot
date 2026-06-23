@@ -275,7 +275,7 @@
         <button class="act" onclick="ingestWeb()">🌐 Спарсить и добавить в базу</button>
         <span id="webmsg"></span>
       </div>
-      <div class="note">До 20 адресов. Страницы скачиваются, из них извлекается текст (в папку <code>web/</code> внутри папки документов) и добавляется в базу с последующей индексацией. Прогресс — в «Состояние и операции».</div>
+      <div class="note">До 50 адресов. Страницы скачиваются, из них извлекается текст (в папку <code>web/</code> внутри папки документов) и добавляется в базу с последующей индексацией. Прогресс — в «Состояние и операции».</div>
     </div>
 
     <!-- добавление файлов -->
@@ -761,7 +761,7 @@ async function loadWebUrls(){
 async function ingestWeb(){
   const urls=$('#weburls').value.split('\n').map(s=>s.trim()).filter(Boolean);
   if(!urls.length){ webMsg('добавьте хотя бы один URL',false); return; }
-  if(urls.length>20){ webMsg('максимум 20 адресов',false); return; }
+  if(urls.length>50){ webMsg('максимум 50 адресов',false); return; }
   webMsg('парсинг…'); const r=await adminPost('/api/admin/ingest-web',{urls});
   webMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false); pollJob();
 }
