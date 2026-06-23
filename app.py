@@ -26,6 +26,7 @@ import admin_ops
 import graph_rag
 import loaders
 import retriever
+import remote
 from ingest import chunk_text, SUPPORTED
 from retriever import search, infer_category
 
@@ -294,6 +295,12 @@ def admin_ingest_web(payload: dict = Body(...), x_admin_token: str | None = Head
     return admin_ops.ingest_web(payload.get("urls", []))
 
 
+@app.post("/api/admin/web-delete")
+def admin_web_delete(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.delete_web(payload.get("url", ""))
+
+
 @app.post("/api/admin/upload")
 async def admin_upload(files: list[UploadFile] = File(...),
                        x_admin_token: str | None = Header(None)):
@@ -395,6 +402,53 @@ def admin_reinstall_full(payload: dict = Body(...), x_admin_token: str | None = 
 def admin_restart(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.restart()
+
+
+# ============================ УДАЛЁННЫЕ ХОСТЫ ============================
+@app.get("/api/admin/remote/hosts")
+def remote_hosts(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {**remote.list_hosts(), "job": remote.status()}
+
+
+@app.post("/api/admin/remote/save")
+def remote_save(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return remote.save_host(payload)
+
+
+@app.post("/api/admin/remote/delete")
+def remote_delete(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return remote.delete_host(payload.get("name", ""))
+
+
+@app.post("/api/admin/remote/deploy")
+def remote_deploy(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return remote.deploy(payload.get("name", ""), payload.get("what", "qdrant"))
+
+
+@app.post("/api/admin/remote/transfer")
+def remote_transfer(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    kind = payload.get("kind", "docs")
+    direction = payload.get("direction", "push")
+    if kind == "snapshot":
+        return remote.transfer_snapshot(payload.get("name", ""), direction)
+    return remote.transfer_docs(payload.get("name", ""), direction)
+
+
+@app.post("/api/admin/remote/switch")
+def remote_switch(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return remote.switch(payload.get("name", ""))
+
+
+@app.post("/api/admin/remote/restore")
+def remote_restore(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return remote.restore()
 
 
 # ============================ статика ============================

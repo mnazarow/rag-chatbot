@@ -273,9 +273,16 @@
                 style="width:100%;min-height:110px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:13px monospace"></textarea>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <button class="act" onclick="ingestWeb()">🌐 Спарсить и добавить в базу</button>
+        <button class="act ghost" onclick="loadWebUrls()">Обновить список</button>
         <span id="webmsg"></span>
       </div>
-      <div class="note">До 50 адресов. Страницы скачиваются, из них извлекается текст (в папку <code>web/</code> внутри папки документов) и добавляется в базу с последующей индексацией. Прогресс — в «Состояние и операции».</div>
+      <div class="note">До 50 адресов. Страницы скачиваются, из них извлекается текст (в папку <code>web/</code> внутри папки документов) и добавляется в базу с последующей индексацией.</div>
+
+      <div style="margin-top:14px"><b style="font-size:13px">Сайты в базе:</b></div>
+      <div id="weblist" style="margin-top:6px"></div>
+
+      <div style="margin-top:12px"><b style="font-size:13px">Лог парсинга:</b></div>
+      <pre id="weblog" style="margin-top:6px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;display:none"></pre>
     </div>
 
     <!-- добавление файлов -->
@@ -370,6 +377,31 @@
       <button class="act" onclick="saveConfig()">💾 Сохранить настройки</button>
       <button class="act ghost" onclick="resetConfig()">Сбросить к умолчаниям</button>
       <span id="savemsg"></span>
+    </div>
+
+    <!-- удалённые хосты -->
+    <div class="box">
+      <h3>Удалённые хосты (Qdrant / LightRAG)</h3>
+      <div class="grid2">
+        <div class="field"><label>Имя профиля</label><input type="text" id="rh_name" placeholder="например prod-1"></div>
+        <div class="field"><label>ОС</label><select id="rh_os"><option value="linux">Linux</option><option value="macos">macOS</option><option value="windows">Windows</option></select></div>
+        <div class="field"><label>Хост (IP/домен)</label><input type="text" id="rh_host" placeholder="10.0.0.5"></div>
+        <div class="field"><label>SSH-порт</label><input type="number" id="rh_port" value="22"></div>
+        <div class="field"><label>SSH-логин</label><input type="text" id="rh_user" placeholder="root"></div>
+        <div class="field"><label>SSH-пароль</label><input type="password" id="rh_pass" placeholder="(пусто = не менять)"></div>
+        <div class="field"><label>Qdrant URL (для переключения/snapshot)</label><input type="text" id="rh_qurl" placeholder="http://10.0.0.5:6333"></div>
+        <div class="field"><label>vLLM URL (необязательно)</label><input type="text" id="rh_lurl" placeholder="http://10.0.0.5:8001/v1"></div>
+        <div class="field"><label>Папка документов на хосте</label><input type="text" id="rh_docs" placeholder="/opt/db"></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="rhSave()">💾 Сохранить хост</button>
+        <button class="act ghost" onclick="rhLoad()">Обновить</button>
+        <button class="act ghost" onclick="rhRestore()">↩︎ Вернуться на локальный</button>
+        <span id="rhmsg"></span>
+      </div>
+      <div id="rhlist" style="margin-top:12px"></div>
+      <pre id="rhlog" style="margin-top:10px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+      <div class="note">SSH по логину/паролю (paramiko). Linux: нужен root/passwordless sudo. macOS/Windows: Docker должен быть предустановлен, SSH включён. Пароли хранятся в <code>remote_hosts.json</code> — держите в доверенной сети. После «Переключиться»/«Вернуться» перезапустите сервис.</div>
     </div>
 
     <!-- обновления -->
@@ -613,7 +645,7 @@ async function loadConfig(){
   c.fields.forEach(f=>{ if(f.type==='range'){ const el=$('#f_'+f.key); el.oninput=()=>$('#o_'+f.key).textContent=el.value; }});
   renderEngine(c.values);
   renderGenModel(c.values);
-  loadMode(); loadOps(); loadModels(); loadWebUrls();
+  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad();
 }
 
 // ---- выбор/загрузка модели LLM ----
@@ -751,20 +783,104 @@ async function reinstallFull(kind){
   rsMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
 }
 
+// ---- удалённые хосты ----
+function rhMsg(t,ok=true){ $('#rhmsg').textContent=t; $('#rhmsg').className=ok?'saved':'note'; }
+async function rhLoad(){
+  let r; try{ r=await (await fetch('/api/admin/remote/hosts?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
+  const lst=$('#rhlist'); if(lst){
+    const hs=r.hosts||[];
+    lst.innerHTML = hs.length ? hs.map(h=>{
+      const act=(r.active===h.name);
+      return `<div style="border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <b>${esc(h.name)}</b> <span class="tag">${esc(h.os)}</span>
+          <span class="note">${esc(h.user)}@${esc(h.host)}:${h.port}</span>
+          ${act?'<span class="tag ok">активен</span>':''}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          <button class="dirbtn" onclick="rhDeploy('${escAttr(h.name)}','qdrant')">Развернуть Qdrant</button>
+          <button class="dirbtn" onclick="rhDeploy('${escAttr(h.name)}','lightrag')">Развернуть LightRAG</button>
+          <button class="dirbtn" onclick="rhTransfer('${escAttr(h.name)}','docs','push')">Данные →</button>
+          <button class="dirbtn" onclick="rhTransfer('${escAttr(h.name)}','docs','pull')">Данные ←</button>
+          <button class="dirbtn" onclick="rhTransfer('${escAttr(h.name)}','snapshot','push')">Snapshot →</button>
+          <button class="dirbtn" onclick="rhTransfer('${escAttr(h.name)}','snapshot','pull')">Snapshot ←</button>
+          <button class="dirbtn" style="border-color:var(--accent);color:var(--accent)" onclick="rhSwitch('${escAttr(h.name)}')">Переключиться</button>
+          <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="rhDelete('${escAttr(h.name)}')">Удалить</button>
+        </div></div>`;
+    }).join('') : '<span class="note">нет сохранённых хостов</span>';
+  }
+  const lg=$('#rhlog'), j=r.job||{};
+  if(lg){ if(j.log){ lg.style.display='block'; lg.textContent='— '+(j.label||'удалённая операция')+' —\n'+j.log; } else lg.style.display='none'; }
+  if(j.running){ clearTimeout(window.__rhT); window.__rhT=setTimeout(rhLoad,4000); }
+}
+async function rhSave(){
+  const body={name:$('#rh_name').value,os:$('#rh_os').value,host:$('#rh_host').value,
+    port:+$('#rh_port').value||22,user:$('#rh_user').value,password:$('#rh_pass').value,
+    qdrant_url:$('#rh_qurl').value,llm_url:$('#rh_lurl').value,docs_dir:$('#rh_docs').value};
+  const r=await adminPost('/api/admin/remote/save',body);
+  rhMsg(r.msg||(r.ok?'сохранено':'ошибка'),r.ok!==false); if(r.ok){ $('#rh_pass').value=''; rhLoad(); }
+}
+async function rhDelete(name){ if(!confirm('Удалить профиль хоста '+name+'?'))return;
+  const r=await adminPost('/api/admin/remote/delete',{name}); rhMsg(r.msg||'',r.ok!==false); rhLoad(); }
+async function rhDeploy(name,what){
+  if(!confirm('Развернуть '+what+' на '+name+'?'))return;
+  rhMsg('деплой '+what+'…'); const r=await adminPost('/api/admin/remote/deploy',{name,what});
+  rhMsg(r.msg||'',r.ok!==false); rhPoll();
+}
+async function rhTransfer(name,kind,direction){
+  const lbl=(kind==='snapshot'?'snapshot':'данные')+(direction==='push'?' →':' ←');
+  if(!confirm('Перенос ('+lbl+') для '+name+'?'))return;
+  rhMsg('перенос: '+lbl+'…'); const r=await adminPost('/api/admin/remote/transfer',{name,kind,direction});
+  rhMsg(r.msg||'',r.ok!==false); rhPoll();
+}
+async function rhSwitch(name){
+  if(!confirm('Переключить бэкенд на «'+name+'»? Затем потребуется перезапуск сервиса.'))return;
+  const r=await adminPost('/api/admin/remote/switch',{name});
+  rhMsg(r.msg||'',r.ok!==false); rhLoad(); loadConfig();
+}
+async function rhRestore(){
+  if(!confirm('Вернуться на локальный бэкенд?'))return;
+  const r=await adminPost('/api/admin/remote/restore'); rhMsg(r.msg||'',r.ok!==false); rhLoad(); loadConfig();
+}
+function rhPoll(){ clearTimeout(window.__rhT); window.__rhT=setTimeout(rhLoad,3000); }
+
 // ---- сайты в базе знаний ----
 function webMsg(t,ok=true){ $('#webmsg').textContent=t; $('#webmsg').className=ok?'saved':'note'; }
 async function loadWebUrls(){
-  try{ const r=await (await fetch('/api/admin/web-urls?t='+Date.now(),
-    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json();
-    if(r.urls && $('#weburls')) $('#weburls').value=r.urls.join('\n'); }catch(e){}
+  let r; try{ r=await (await fetch('/api/admin/web-urls?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
+  if(r.urls && $('#weburls')) $('#weburls').value=r.urls.join('\n');
+  // список сайтов с кнопками удаления
+  const lst=$('#weblist');
+  if(lst){
+    const sites=r.sites||[];
+    lst.innerHTML = sites.length ? sites.map(s=>
+      `<div style="display:flex;gap:8px;align-items:center;padding:6px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px">
+        <span style="flex:1;word-break:break-all">${esc(s.url)} ${s.indexed?'':'<span class="note">(нет файла)</span>'}</span>
+        <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="deleteWeb('${escAttr(s.url)}')">Удалить</button>
+      </div>`).join('') : '<span class="note">пока нет сайтов</span>';
+  }
+  // лог парсинга
+  const log=$('#weblog');
+  if(log){ if(r.log){ log.style.display='block'; log.textContent=r.log; } else log.style.display='none'; }
 }
 async function ingestWeb(){
   const urls=$('#weburls').value.split('\n').map(s=>s.trim()).filter(Boolean);
   if(!urls.length){ webMsg('добавьте хотя бы один URL',false); return; }
   if(urls.length>50){ webMsg('максимум 50 адресов',false); return; }
   webMsg('парсинг…'); const r=await adminPost('/api/admin/ingest-web',{urls});
-  webMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false); pollJob();
+  webMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
+  pollJob(); pollWeb();
 }
+async function deleteWeb(url){
+  if(!confirm('Удалить сайт из базы знаний?\n'+url))return;
+  webMsg('удаление…'); const r=await adminPost('/api/admin/web-delete',{url});
+  webMsg(r.msg||(r.ok?'удалено':'ошибка'),r.ok!==false); loadWebUrls(); loadOps();
+}
+let webT=null;
+function pollWeb(){ clearInterval(webT); webT=setInterval(loadWebUrls,4000);
+  setTimeout(()=>clearInterval(webT),600000); }
 
 // ---- установка компонентов ----
 function depMsg(t,ok=true){ $('#depmsg').textContent=t; $('#depmsg').className=ok?'saved':'note'; }

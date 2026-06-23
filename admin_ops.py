@@ -143,11 +143,56 @@ def status() -> dict:
 _WEB_SOURCES = ROOT / "web_sources.txt"
 
 
-def get_web_urls() -> dict:
+def _web_slug(url: str) -> str:
+    import re
+    return re.sub(r"[^a-zA-Z0-9._-]", "_", url)[:120] or "page"
+
+
+def _web_list() -> list:
+    """Список сохранённых сайтов: URL + файл + признак наличия в папке."""
     urls = []
     if _WEB_SOURCES.exists():
-        urls = [u for u in _WEB_SOURCES.read_text(encoding="utf-8").splitlines() if u.strip()]
-    return {"urls": urls}
+        urls = [u.strip() for u in _WEB_SOURCES.read_text(encoding="utf-8").splitlines() if u.strip()]
+    webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
+    out = []
+    for u in urls:
+        rel = f"web/{_web_slug(u)}.html"
+        out.append({"url": u, "source": rel, "indexed": (webdir / f"{_web_slug(u)}.html").exists()})
+    return out
+
+
+def get_web_urls() -> dict:
+    sites = _web_list()
+    return {"urls": [s["url"] for s in sites], "sites": sites,
+            "log": _tail(_web_job["logfile"]) if _web_job.get("logfile") else _web_job.get("log", "")}
+
+
+def delete_web(url: str) -> dict:
+    """Удалить сайт из списка, его файл и чанки из базы знаний (Qdrant)."""
+    url = (url or "").strip()
+    if not url:
+        return {"ok": False, "msg": "не указан URL"}
+    # 1) убрать из списка
+    sites = [s["url"] for s in _web_list() if s["url"] != url]
+    _WEB_SOURCES.write_text("\n".join(sites), encoding="utf-8")
+    # 2) удалить файл
+    slug = _web_slug(url)
+    f = Path(settings.get("DOCS_DIR")).expanduser() / "web" / f"{slug}.html"
+    if f.exists():
+        try:
+            f.unlink()
+        except Exception:
+            pass
+    # 3) удалить чанки из Qdrant по source
+    src = f"web/{slug}.html"
+    try:
+        httpx.post(
+            f"{settings.get('QDRANT_URL')}/collections/{settings.get('QDRANT_COLLECTION')}/points/delete",
+            json={"filter": {"must": [{"key": "source", "match": {"value": src}}]}},
+            timeout=30)
+    except Exception as e:
+        return {"ok": True, "msg": f"удалён из списка и папки; из Qdrant не удалён: {e}"}
+    return {"ok": True, "msg": "сайт удалён из базы знаний"}
 
 
 def ingest_web(urls: list) -> dict:
@@ -161,9 +206,7 @@ def ingest_web(urls: list) -> dict:
     _WEB_SOURCES.write_text("\n".join(urls), encoding="utf-8")
     webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
     logfile = "/tmp/rag_web.log"
-
-    def _slug(u):
-        return re.sub(r"[^a-zA-Z0-9._-]", "_", u)[:120] or "page"
+    _slug = _web_slug
 
     def run():
         _web_job.update(running=True, started=time.time(), finished=None, ok=None,

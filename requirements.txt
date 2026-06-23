@@ -5,6 +5,7 @@ pydantic==2.10.4
 python-dotenv==1.0.1
 httpx==0.28.1
 python-multipart==0.0.18   # загрузка файлов в админке (multipart/form-data)
+paramiko==3.5.0            # SSH/SFTP для удалённых хостов
 
 # --- векторная БД ---
 qdrant-client==1.12.2
