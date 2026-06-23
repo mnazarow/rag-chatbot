@@ -11,6 +11,30 @@
     --txt:#e8eaed; --muted:#9aa3b2; --accent:#3b82f6; --accent2:#22c55e;
     --warn:#f59e0b; --me:#2563eb; --bot:#222633;
   }
+  /* ===== Тема: Cyberpunk 2077 ===== */
+  body[data-theme="cyber"]{
+    --bg:#070a0f; --panel:#0e131c; --panel2:#13202b; --line:#1e3a44;
+    --txt:#eaffff; --muted:#5fd0e0; --accent:#fcee0a; --accent2:#00f0ff;
+    --warn:#ff003c; --me:#0b3a44; --bot:#10151f;
+  }
+  body[data-theme="cyber"] .logo,
+  body[data-theme="cyber"] h1{ color:#fcee0a; text-shadow:0 0 8px rgba(252,238,10,.45); }
+  body[data-theme="cyber"] nav button.active{ background:#fcee0a; color:#070a0f; }
+  body[data-theme="cyber"] button.act{ background:#fcee0a; color:#070a0f; }
+  body[data-theme="cyber"] .card,
+  body[data-theme="cyber"] .box{ box-shadow:0 0 0 1px rgba(0,240,255,.08); }
+  body[data-theme="cyber"] aside{ border-right:1px solid #00f0ff33; }
+  /* ===== Тема: Лето (светлая) ===== */
+  body[data-theme="summer"]{
+    --bg:#fff7ea; --panel:#ffffff; --panel2:#fff1d9; --line:#ffd9a8;
+    --txt:#2a2118; --muted:#9a7b56; --accent:#ff8a3d; --accent2:#22b07d;
+    --warn:#e8590c; --me:#ffe2c2; --bot:#fff3e0;
+  }
+  body[data-theme="summer"] .logo,
+  body[data-theme="summer"] h1{ color:#e8590c; }
+  body[data-theme="summer"] nav button.active{ background:#ff8a3d; color:#fff; }
+  body[data-theme="summer"] .msg.me{ color:#2a2118; }
+  body[data-theme="summer"] body{ background:linear-gradient(180deg,#fff7ea,#ffeccf); }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--txt);
     font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;display:flex;min-height:100vh}
@@ -111,6 +135,14 @@
     <button data-t="admin">⚙️ Администратор</button>
   </nav>
   <div class="spacer"></div>
+  <div class="pill" style="display:flex;gap:6px;align-items:center">
+    <span>🎨</span>
+    <select id="theme" onchange="setTheme(this.value)" style="flex:1;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:4px 6px;font:inherit;font-size:12px">
+      <option value="">Тёмная</option>
+      <option value="cyber">Cyberpunk 2077</option>
+      <option value="summer">Лето</option>
+    </select>
+  </div>
   <div class="pill" id="modeinfo">Режим: —</div>
   <div class="pill" id="footinfo">—</div>
 </aside>
@@ -1294,6 +1326,16 @@ async function pollTests(){
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function short(s){ s=s||''; return s.length>22? '…'+s.slice(-21):s; }
 function emptyRow(n){ return `<tr><td colspan="${n}" style="color:#9aa3b2">Пока нет данных</td></tr>`; }
+
+// ---- темы оформления ----
+function setTheme(name){
+  if(name) document.body.dataset.theme=name; else delete document.body.dataset.theme;
+  try{ localStorage.setItem('rag_theme', name||''); }catch(e){}
+}
+(function initTheme(){
+  let t=''; try{ t=localStorage.getItem('rag_theme')||''; }catch(e){}
+  if(t){ document.body.dataset.theme=t; const sel=document.getElementById('theme'); if(sel) sel.value=t; }
+})();
 
 // старт
 loadStats(); loadMode();
