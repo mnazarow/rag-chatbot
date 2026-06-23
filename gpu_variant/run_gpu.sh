@@ -74,7 +74,12 @@ cd "${ROOT_DIR}"
 chown -R "${RUN_USER}:${RUN_USER}" "${ROOT_DIR}"
 sudo -u "${RUN_USER}" "${PYBIN}" -m venv .venv
 sudo -u "${RUN_USER}" ./.venv/bin/pip install --upgrade pip wheel
-sudo -u "${RUN_USER}" ./.venv/bin/pip install "torch==2.5.1" --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
+# torch без жёсткой версии — pip подберёт совместимый с вашим Python и CUDA-каналом
+sudo -u "${RUN_USER}" ./.venv/bin/pip install torch --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}" || {
+  echo "Не удалось поставить torch из канала ${TORCH_CUDA}.";
+  echo "Попробуйте другой CUDA-канал: TORCH_CUDA=cu121 (или cu126) повторно запустите скрипт,";
+  echo "или используйте Python 3.10–3.12 (для самых новых версий Python колёс может не быть).";
+  exit 1; }
 sudo -u "${RUN_USER}" ./.venv/bin/pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
 chmod +x "${PROJECT_DIR}/apply_llm.sh"
 

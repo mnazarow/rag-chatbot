@@ -75,7 +75,7 @@ cd "${ROOT_DIR}"
 # shellcheck disable=SC1091
 source .venv/bin/activate
 pip install --upgrade pip wheel
-pip install "torch==2.5.1" --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
+pip install torch --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
 pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
 # приложение читает .env из текущей папки — кладём симлинк на gpu-конфиг
 ln -sf "${PROJECT_DIR}/.env" "${ROOT_DIR}/.env"
