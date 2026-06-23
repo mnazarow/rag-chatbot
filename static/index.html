@@ -215,6 +215,13 @@
       <div class="note">Режим разом включает связку улучшений. Тонкая настройка флагов — в группе «Расширенный поиск (hybrid+)» ниже.</div>
     </div>
 
+    <!-- движок ответов -->
+    <div class="box">
+      <h3>Движок ответов</h3>
+      <div class="cards" id="enginecards"></div>
+      <div class="note">«Векторный» — первый вариант (поиск + реранк). «LightRAG» направляет ВСЕ вопросы в граф знаний (нужен построенный граф: <code>setup_hybrid.sh</code>). При недоступности графа — автоматический откат на векторный.</div>
+    </div>
+
     <!-- модель генерации -->
     <div class="box">
       <h3>Модель генерации</h3>
@@ -379,8 +386,30 @@ async function loadConfig(){
   }
   $('#cfgroot').innerHTML=html;
   c.fields.forEach(f=>{ if(f.type==='range'){ const el=$('#f_'+f.key); el.oninput=()=>$('#o_'+f.key).textContent=el.value; }});
+  renderEngine(c.values);
   renderGenModel(c.values);
   loadMode(); loadOps();
+}
+
+// ---- движок ответов (векторный / LightRAG) ----
+function renderEngine(v){
+  const root=$('#enginecards'); if(!root) return;
+  const cur=v.ENGINE||'vector';
+  const cards=[
+    {key:'vector',label:'Векторный (первый вариант)',desc:'Поиск + реранк по документам. Быстрый, со ссылками на источники.'},
+    {key:'lightrag',label:'LightRAG (граф)',desc:'Все вопросы идут в граф знаний. Лучше для сводных, дороже.'},
+  ];
+  root.innerHTML=cards.map(c=>`<div class="card mode ${c.key===cur?'active':''}" onclick="setEngine('${c.key}')">
+    <div class="k">${c.label}</div>
+    <div style="font-size:12px;color:var(--muted);margin-top:6px">${c.desc}</div></div>`).join('');
+}
+async function setEngine(key){
+  const r=await fetch('/api/config',{method:'POST',
+    headers:{'Content-Type':'application/json','X-Admin-Token':($('#cfg_token')?$('#cfg_token').value:'')},
+    body:JSON.stringify({ENGINE:key})});
+  const j=await r.json().catch(()=>({}));
+  if(r.ok){ opsMsg('✓ Движок: '+(key==='lightrag'?'LightRAG':'векторный')); loadConfig(); }
+  else { opsMsg('✗ '+(j.detail||'ошибка'),false); }
 }
 
 // ---- браузер папок для DOCS_DIR ----

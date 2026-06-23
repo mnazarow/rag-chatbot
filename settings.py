@@ -96,6 +96,11 @@ FIELDS: list[dict] = [
      "type": "select", "scope": "live", "options": ["mix", "hybrid", "local", "global", "naive"],
      "default": "mix"},
 
+    # --- Движок ответов ---
+    {"key": "ENGINE", "label": "Движок ответов", "group": "Движок ответов",
+     "type": "select", "scope": "live", "options": ["vector", "lightrag"],
+     "default": "vector"},
+
     # --- Дообучение (fine-tuning) ---
     {"key": "USE_FINETUNED", "label": "Использовать дообученную модель",
      "group": "Дообучение (fine-tuning)", "type": "bool", "scope": "live", "default": False},
@@ -109,6 +114,7 @@ FIELDS: list[dict] = [
 
 DEFAULTS: dict = {f["key"]: f["default"] for f in FIELDS}
 _TYPES: dict = {f["key"]: f["type"] for f in FIELDS}
+_OPTIONS: dict = {f["key"]: f.get("options") for f in FIELDS if f["type"] == "select"}
 
 # Режимы работы — пресеты, которые разом включают связку улучшений.
 MODES: dict = {
@@ -193,6 +199,9 @@ def update(changes: dict) -> dict:
                 continue
             # пустой секрет = «не менять»
             if _TYPES[k] == "secret" and (v is None or v == ""):
+                continue
+            # select: только значения из списка опций
+            if _TYPES[k] == "select" and v not in (_OPTIONS.get(k) or []):
                 continue
             try:
                 _state[k] = _coerce(k, v)

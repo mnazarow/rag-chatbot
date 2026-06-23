@@ -49,10 +49,15 @@ def health():
 async def chat(req: ChatRequest):
     t0 = time.time()
 
-    # граф-RAG для «сводных» вопросов (если включён и LightRAG доступен)
-    if settings.get("GRAPH_RAG") and req.filters is None and graph_rag.is_global(req.question):
+    # Движок ответов: LightRAG целиком, либо граф только для сводных вопросов (hybrid)
+    engine = settings.get("ENGINE")
+    use_lightrag_all = engine == "lightrag"
+    use_graph_global = (settings.get("GRAPH_RAG") and req.filters is None
+                        and graph_rag.is_global(req.question))
+    if use_lightrag_all or use_graph_global:
         try:
             text = await graph_rag.answer(req.question)
+            cat = "lightrag" if use_lightrag_all else "graph"
 
             async def gstream():
                 for i in range(0, len(text), 40):
@@ -61,12 +66,12 @@ async def chat(req: ChatRequest):
                 yield json.dumps({"type": "sources",
                                   "items": [{"source": "граф знаний (LightRAG)", "page": None}]},
                                  ensure_ascii=False) + "\n"
-                db.log_request(req.question, "graph", 1, 1.0,
+                db.log_request(req.question, cat, 1, 1.0,
                                int((time.time() - t0) * 1000), len(text), True, [])
 
             return StreamingResponse(gstream(), media_type="application/x-ndjson")
         except Exception as e:
-            print(f"graph-RAG недоступен, фолбэк на вектор: {e}")
+            print(f"LightRAG недоступен, фолбэк на вектор: {e}")
 
     hits = search(req.question, filters=req.filters)
     category = (req.filters or {}).get("doc_category") or infer_category(req.question)
