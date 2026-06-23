@@ -337,6 +337,24 @@
       <button class="act ghost" onclick="resetConfig()">Сбросить к умолчаниям</button>
       <span id="savemsg"></span>
     </div>
+
+    <!-- переустановка и сброс -->
+    <div class="box">
+      <h3>Переустановка и сброс</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act ghost" onclick="resetData(['index'])">Сбросить индекс</button>
+        <button class="act ghost" onclick="resetData(['graph'])">Сбросить граф</button>
+        <button class="act ghost" onclick="resetData(['adapter'])">Сбросить адаптер</button>
+        <button class="act ghost" onclick="resetData(['logs'])">Очистить журнал</button>
+        <button class="act ghost" onclick="resetData(['settings'])">Сбросить настройки</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="resetData(['all'])">Сбросить всё</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <button class="act" onclick="reinstallEnv()">🔧 Переустановить окружение</button>
+        <span id="rsmsg"></span>
+      </div>
+      <div class="note">Сброс данных необратим (.env и сервис сохраняются). «Переустановить окружение» пересоздаёт .venv и зависимости, затем перезапускает сервис. Полная переустановка сервера с нуля — скрипт <code>reinstall_server.sh</code> (GPU) или <code>mac_variant/reinstall_mac.sh</code>.</div>
+    </div>
   </section>
 </main>
 
@@ -599,6 +617,25 @@ async function buildGraph(){
   if(!confirm('Построить граф знаний? Установит LightRAG и прогонит документы через LLM — это надолго.'))return;
   engMsg('установка LightRAG и построение графа…'); const r=await adminPost('/api/admin/build-graph');
   engMsg(r.msg||'запущено',r.ok!==false); pollJob();
+}
+
+// ---- переустановка и сброс ----
+function rsMsg(t,ok=true){ $('#rsmsg').textContent=t; $('#rsmsg').className=ok?'saved':'note'; }
+async function resetData(targets){
+  const names={index:'индекс',graph:'граф',adapter:'адаптер',logs:'журнал',settings:'настройки',all:'ВСЁ'};
+  const label=targets.map(t=>names[t]||t).join(', ');
+  if(!confirm('Сбросить: '+label+'? Действие необратимо.'))return;
+  rsMsg('сброс…');
+  const r=await adminPost('/api/admin/reset',{targets});
+  if(r.ok){ rsMsg('✓ сброшено: '+((r.done||[]).join(', ')||'—')); }
+  else { rsMsg('✗ '+((r.errors||[]).join('; ')||r.detail||'ошибка'),false); }
+  loadOps();
+}
+async function reinstallEnv(){
+  if(!confirm('Переустановить окружение (.venv + зависимости)? Сервис перезапустится.'))return;
+  rsMsg('переустановка окружения…');
+  const r=await adminPost('/api/admin/reinstall-env');
+  rsMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
 }
 
 // ---- загрузка файлов ----

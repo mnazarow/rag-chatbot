@@ -18,6 +18,7 @@ from pathlib import Path
 
 import importlib.util as _iu
 import json as _json
+import shutil
 
 import httpx
 
@@ -256,6 +257,63 @@ def apply_finetuned() -> dict:
                            capture_output=True, text=True, timeout=1800)
         return {"ok": p.returncode == 0,
                 "msg": (p.stdout + p.stderr)[-1500:].strip() or "vLLM перезапускается с адаптером"}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+
+def reset(targets: list) -> dict:
+    """Сброс выбранных данных. targets: index|graph|adapter|logs|settings|all."""
+    targets = set(targets or [])
+    if "all" in targets:
+        targets |= {"index", "graph", "adapter", "logs", "settings"}
+    done, errors = [], []
+
+    if "index" in targets:
+        base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
+        try:
+            httpx.delete(f"{base}/collections/{coll}", timeout=15)
+            # пересоздаём пустую коллекцию, чтобы чат не падал до переиндексации
+            httpx.put(f"{base}/collections/{coll}", timeout=15,
+                      json={"vectors": {"size": 1024, "distance": "Cosine"}})
+            done.append("индекс Qdrant")
+        except Exception as e:
+            errors.append(f"индекс: {e}")
+
+    if "graph" in targets:
+        shutil.rmtree(ROOT / "graph_storage", ignore_errors=True)
+        done.append("граф")
+
+    if "adapter" in targets:
+        shutil.rmtree(ROOT / "finetune" / "adapter", ignore_errors=True)
+        shutil.rmtree(ROOT / "finetune" / "data", ignore_errors=True)
+        done.append("адаптер и датасет")
+
+    if "logs" in targets:
+        try:
+            db.clear()
+            done.append("журнал")
+        except Exception as e:
+            errors.append(f"журнал: {e}")
+
+    if "settings" in targets:
+        settings.reset()
+        done.append("настройки")
+
+    return {"ok": not errors, "done": done, "errors": errors}
+
+
+def reinstall_env() -> dict:
+    """Переустановка окружения/зависимостей (фоновый detached-процесс reinstall.sh)."""
+    script = ROOT / "reinstall.sh"
+    if not script.exists():
+        return {"ok": False, "msg": "reinstall.sh не найден"}
+    try:
+        logf = open("/tmp/rag_reinstall.log", "ab")
+        subprocess.Popen(["bash", str(script)], cwd=ROOT,
+                         stdout=logf, stderr=subprocess.STDOUT,
+                         start_new_session=True)
+        return {"ok": True, "msg": "переустановка окружения запущена; сервис перезапустится. "
+                "Лог: /tmp/rag_reinstall.log"}
     except Exception as e:
         return {"ok": False, "msg": str(e)}
 

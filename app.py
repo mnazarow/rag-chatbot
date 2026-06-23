@@ -262,6 +262,18 @@ def admin_apply_finetuned(x_admin_token: str | None = Header(None)):
     return admin_ops.apply_finetuned()
 
 
+@app.post("/api/admin/reset")
+def admin_reset(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.reset(payload.get("targets", []))
+
+
+@app.post("/api/admin/reinstall-env")
+def admin_reinstall_env(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.reinstall_env()
+
+
 @app.post("/api/admin/restart")
 def admin_restart(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

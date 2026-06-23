@@ -85,6 +85,12 @@ def stats() -> dict:
     }
 
 
+def clear() -> None:
+    """Очистить журнал запросов."""
+    with _LOCK, _conn() as c:
+        c.execute("DELETE FROM requests")
+
+
 def engine_usage() -> dict:
     """Сколько ответов дано каждым движком (по полю category в журнале)."""
     with _conn() as c:
