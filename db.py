@@ -85,6 +85,15 @@ def stats() -> dict:
     }
 
 
+def engine_usage() -> dict:
+    """Сколько ответов дано каждым движком (по полю category в журнале)."""
+    with _conn() as c:
+        g = c.execute("SELECT COUNT(*) n FROM requests WHERE category='graph'").fetchone()["n"]
+        l = c.execute("SELECT COUNT(*) n FROM requests WHERE category='lightrag'").fetchone()["n"]
+        tot = c.execute("SELECT COUNT(*) n FROM requests").fetchone()["n"]
+    return {"graph": g, "lightrag": l, "vector": max(tot - g - l, 0), "total": tot}
+
+
 def analytics() -> dict:
     with _conn() as c:
         per_day = c.execute(

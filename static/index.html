@@ -105,6 +105,7 @@
     <button data-t="chat">💬 Чат</button>
     <button data-t="logs">📜 Журнал</button>
     <button data-t="analytics">📈 Аналитика</button>
+    <button data-t="system">🧩 Система</button>
     <button data-t="admin">⚙️ Администратор</button>
   </nav>
   <div class="spacer"></div>
@@ -203,6 +204,17 @@
     <div class="box"><h3>Частые слова в вопросах</h3><div id="kwcloud" style="display:flex;flex-wrap:wrap;gap:8px"></div></div>
   </section>
 
+  <!-- ===== СИСТЕМА ===== -->
+  <section id="system">
+    <h1>Система</h1>
+    <div class="sub">Подробная информация и статистика по компонентам
+      <button class="act ghost" onclick="loadSystem()">Обновить</button></div>
+    <div class="box"><h3>🗄 Qdrant (векторная база)</h3><div id="sys_qdrant"></div></div>
+    <div class="box"><h3>🧠 LightRAG (граф знаний)</h3><div id="sys_graph"></div></div>
+    <div class="box"><h3>🎓 Дообучение (LoRA)</h3><div id="sys_ft"></div></div>
+    <div class="box"><h3>⚡ Hybrid+ и использование движков</h3><div id="sys_hybrid"></div></div>
+  </section>
+
   <!-- ===== АДМИН ===== -->
   <section id="admin">
     <h1>Администратор</h1>
@@ -219,7 +231,11 @@
     <div class="box">
       <h3>Движок ответов</h3>
       <div class="cards" id="enginecards"></div>
-      <div class="note">«Векторный» — первый вариант (поиск + реранк). «LightRAG» направляет ВСЕ вопросы в граф знаний (нужен построенный граф: <code>setup_hybrid.sh</code>). При недоступности графа — автоматический откат на векторный.</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <button class="act ghost" onclick="buildGraph()">🧩 Построить граф знаний (LightRAG)</button>
+        <span id="engmsg"></span>
+      </div>
+      <div class="note">«Векторный» — первый вариант (поиск + реранк). «LightRAG» направляет ВСЕ вопросы в граф знаний. Кнопка «Построить граф» ставит LightRAG и прогоняет документы через LLM (долго). При недоступности графа — автоматический откат на векторный.</div>
     </div>
 
     <!-- модель генерации -->
@@ -291,7 +307,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('section').forEach(x=>x.classList.remove('active'));
   b.classList.add('active'); $('#'+b.dataset.t).classList.add('active');
-  ({dash:loadStats,logs:loadLogs,analytics:loadAnalytics,admin:loadConfig}[b.dataset.t]||(()=>{}))();
+  ({dash:loadStats,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,admin:loadConfig}[b.dataset.t]||(()=>{}))();
 });
 
 // ---- дашборд ----
@@ -348,6 +364,58 @@ async function loadAnalytics(){
   const max=Math.max(1,...a.top_keywords.map(k=>k.n));
   $('#kwcloud').innerHTML=a.top_keywords.map(k=>
     `<span class="tag" style="font-size:${12+18*k.n/max}px">${esc(k.word)} <b style="color:#3b82f6">${k.n}</b></span>`).join('')||'<span class="note">пока нет данных</span>';
+}
+
+// ---- система: сводка по компонентам ----
+function sysBool(v){ return v?'<span style="color:#4ade80">да</span>':'<span style="color:#9aa3b2">нет</span>'; }
+function sysCards(arr){ return '<div class="cards">'+arr.map(([k,v])=>
+  `<div class="card"><div class="k">${k}</div><div class="v" style="font-size:20px">${v}</div></div>`).join('')+'</div>'; }
+function sysJob(j){ j=j||{}; return j.running?'идёт…':(j.ok===true?'успешно':(j.ok===false?'ошибка':'—')); }
+function nz(v){ return (v===null||v===undefined)?'—':v; }
+async function loadSystem(){
+  let s; try{ s=await (await fetch('/api/system')).json(); }catch(e){ return; }
+  // Qdrant
+  const q=s.qdrant||{}; let qh;
+  if(q.online){
+    qh=sysCards([['Точек (чанков)',nz(q.points)],['Сегментов',nz(q.segments)],
+      ['Размерность',nz(q.vector_size)],['Метрика',nz(q.distance)],['Статус',nz(q.status)]]);
+    if(q.by_category) qh+='<div class="note" style="margin:12px 0 4px">Чанков по категориям:</div>'+
+      sysCards(Object.entries(q.by_category).map(([k,v])=>[k,v]));
+    qh+=`<div class="ro" style="margin-top:12px">
+      <div><span>Коллекция:</span> ${esc(q.collection)}</div>
+      <div><span>Чанков с LLM-метаданными:</span> ${nz(q.with_product)}</div>
+      <div style="grid-column:1/-1"><span>Поля payload:</span> ${esc((q.payload_fields||[]).join(', '))||'—'}</div></div>`;
+  } else qh='<div class="note">Qdrant недоступен'+(q.error?': '+esc(q.error):'')+'</div>';
+  $('#sys_qdrant').innerHTML=qh;
+  // Граф
+  const g=s.graph||{};
+  let gh=sysCards([['Установлен',sysBool(g.installed)],['Граф построен',sysBool(g.ready)],
+    ['Сущностей',nz(g.entities)],['Связей',nz(g.relations)],['Чанков',nz(g.chunks)],
+    ['Документов',nz(g.docs)],['Размер, МБ',nz(g.size_mb)]]);
+  gh+=`<div class="ro" style="margin-top:12px">
+    <div><span>Текущий движок:</span> ${g.engine==='lightrag'?'LightRAG':'векторный'}</div>
+    <div><span>Режим графа:</span> ${esc(nz(g.mode))}</div>
+    <div><span>Задача построения:</span> ${sysJob(g.job)}</div></div>`;
+  $('#sys_graph').innerHTML=gh;
+  // Дообучение
+  const f=s.finetune||{};
+  let fh=sysCards([['Зависимости',sysBool(f.deps_installed)],['Адаптер готов',sysBool(f.adapter_ready)],
+    ['Активна',sysBool(f.use_finetuned)],['Пар в датасете',nz(f.dataset_pairs)],
+    ['Адаптер, МБ',nz(f.adapter_size_mb)]]);
+  fh+=`<div class="ro" style="margin-top:12px">
+    <div><span>Базовая модель:</span> ${esc(nz(f.base_model))}</div>
+    <div><span>Имя адаптера:</span> ${esc(nz(f.finetuned_model))}</div>
+    <div><span>Задача обучения:</span> ${sysJob(f.job)}</div></div>`;
+  $('#sys_ft').innerHTML=fh;
+  // Hybrid + usage
+  const hb=s.hybrid||{}, u=s.usage||{};
+  let hh=sysCards([['Режим',esc(nz(hb.mode))],['LLM-метаданные',sysBool(hb.LLM_METADATA)],
+    ['Умные фильтры',sysBool(hb.SMART_FILTER)],['Граф для сводных',sysBool(hb.GRAPH_RAG)],
+    ['Авто-фильтр',sysBool(hb.AUTO_FILTER)]]);
+  hh+='<div class="note" style="margin:12px 0 4px">Ответов по движкам:</div>'+
+    sysCards([['Векторный',nz(u.vector)],['Граф (hybrid)',nz(u.graph)],
+      ['LightRAG (целиком)',nz(u.lightrag)],['Всего',nz(u.total)]]);
+  $('#sys_hybrid').innerHTML=hh;
 }
 
 // ---- админка: авто-рендер настроек из схемы ----
@@ -410,6 +478,12 @@ async function setEngine(key){
   const j=await r.json().catch(()=>({}));
   if(r.ok){ opsMsg('✓ Движок: '+(key==='lightrag'?'LightRAG':'векторный')); loadConfig(); }
   else { opsMsg('✗ '+(j.detail||'ошибка'),false); }
+}
+function engMsg(t,ok=true){ $('#engmsg').textContent=t; $('#engmsg').className=ok?'saved':'note'; }
+async function buildGraph(){
+  if(!confirm('Построить граф знаний? Установит LightRAG и прогонит документы через LLM — это надолго.'))return;
+  engMsg('установка LightRAG и построение графа…'); const r=await adminPost('/api/admin/build-graph');
+  engMsg(r.msg||'запущено',r.ok!==false); pollJob();
 }
 
 // ---- браузер папок для DOCS_DIR ----
@@ -526,12 +600,18 @@ async function loadOps(){
   const fj=s.finetune_job||{};
   const ftjob=fj.running?'идёт…':(fj.ok===true?'успешно':(fj.ok===false?'ошибка':'—'));
   const adapter=s.adapter_ready?(s.use_finetuned?'активна':'готова'):'нет';
+  const gj=s.graph_job||{};
+  const gjob=gj.running?'идёт…':(gj.ok===true?'успешно':(gj.ok===false?'ошибка':'—'));
+  const graph=s.graph_ready?(s.engine==='lightrag'?'активен':'готов'):'нет';
   $('#opsstatus').innerHTML=[
     ['Qdrant',dot(s.qdrant)],['LLM ('+s.backend+')',dot(s.llm)],
     ['Чанков в базе',s.chunks],['Индексация',job],
+    ['Граф',gjob],['Граф знаний',graph],
     ['Дообучение',ftjob],['Дообуч. модель',adapter],
   ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v" style="font-size:18px">${v}</div></div>`).join('');
-  const logtxt=(fj.log&&fj.running)?fj.log:(j.log||fj.log||'');
+  // показываем лог активной фоновой задачи (или последней с логом)
+  const running=[j,gj,fj].find(x=>x.running);
+  const logtxt=running?running.log:(gj.log||j.log||fj.log||'');
   if(logtxt){ $('#joblog').style.display='block'; $('#joblog').textContent=logtxt; }
 }
 async function adminPost(url,body){

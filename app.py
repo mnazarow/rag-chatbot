@@ -136,6 +136,11 @@ def api_analytics():
     return db.analytics()
 
 
+@app.get("/api/system")
+def api_system():
+    return admin_ops.system_info()
+
+
 @app.get("/api/config")
 def api_config():
     return {
@@ -194,6 +199,12 @@ def admin_reindex(payload: dict = Body(default={}),
 def admin_apply_llm(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.apply_llm()
+
+
+@app.post("/api/admin/build-graph")
+def admin_build_graph(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.build_graph()
 
 
 @app.post("/api/admin/finetune")
