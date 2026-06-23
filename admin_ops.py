@@ -27,13 +27,59 @@ import db
 
 ROOT = Path(__file__).resolve().parent
 
-_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": ""}
-_ft_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": ""}
-_graph_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": ""}
+_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": "", "logfile": ""}
+_ft_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": "", "logfile": ""}
+_graph_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": "", "logfile": ""}
 _pull_job = {"running": False, "started": None, "finished": None, "ok": None,
              "log": "", "model": ""}
 _dep_job = {"running": False, "started": None, "finished": None, "ok": None,
-            "log": "", "label": ""}
+            "log": "", "label": "", "logfile": ""}
+
+
+def _tail(path: str, n: int = 6000) -> str:
+    try:
+        with open(path, "r", errors="ignore") as f:
+            return f.read()[-n:]
+    except Exception:
+        return ""
+
+
+def _bg(job: dict, label: str, cmds: list, logfile: str, timeout: int = 24 * 3600) -> dict:
+    """Запустить команды последовательно в фоне, вывод — в logfile (живой лог).
+    cmds: список команд (каждая — list аргументов)."""
+    if job["running"]:
+        return {"ok": False, "msg": f"{label}: задача уже идёт"}
+
+    def run():
+        job.update(running=True, started=time.time(), finished=None, ok=None,
+                   log="", logfile=logfile)
+        if "summary" in job:
+            job["summary"] = ""
+        if "label" in job:
+            job["label"] = label
+        ok = True
+        try:
+            with open(logfile, "w", buffering=1, errors="ignore") as fp:
+                for cmd in cmds:
+                    fp.write("$ " + " ".join(str(c) for c in cmd) + "\n")
+                    fp.flush()
+                    rc = subprocess.Popen(cmd, cwd=ROOT, stdout=fp,
+                                          stderr=subprocess.STDOUT).wait(timeout=timeout)
+                    if rc != 0:
+                        ok = False
+                        break
+            job["log"] = _tail(logfile)
+            if "summary" in job:
+                job["summary"] = _extract_summary(job["log"])
+            job["ok"] = ok
+        except Exception as e:
+            job["ok"] = False
+            job["log"] = (_tail(logfile) + "\n" + str(e)).strip()
+        job["running"] = False
+        job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": f"{label}: запущено"}
 
 # зависимости LightRAG (как в lightrag_variant/requirements-lightrag.txt)
 _LIGHTRAG_DEPS = ["lightrag-hku==1.3.0", "nano-vectordb==0.0.4.3",
@@ -71,38 +117,29 @@ def status() -> dict:
     except Exception:
         out["llm"] = False
     out["backend"] = settings.get("LLM_BACKEND")
-    out["index_job"] = dict(_job)
-    out["finetune_job"] = dict(_ft_job)
+
+    def _jobview(jb):
+        d = dict(jb)
+        # живой лог: пока задача идёт, читаем хвост её logfile
+        if d.get("running") and d.get("logfile"):
+            d["log"] = _tail(d["logfile"])
+        return d
+
+    out["index_job"] = _jobview(_job)
+    out["finetune_job"] = _jobview(_ft_job)
     out["adapter_ready"] = (ROOT / "finetune" / "adapter").exists()
     out["use_finetuned"] = bool(settings.get("USE_FINETUNED"))
-    out["graph_job"] = dict(_graph_job)
+    out["graph_job"] = _jobview(_graph_job)
     out["graph_ready"] = (ROOT / "graph_storage").exists()
     out["engine"] = settings.get("ENGINE")
     out["pull_job"] = dict(_pull_job)
-    out["dep_job"] = dict(_dep_job)
+    out["dep_job"] = _jobview(_dep_job)
     return out
 
 
 def _run_dep_job(label: str, cmd: list, timeout: int = 3600) -> dict:
-    """Запустить установочную команду в фоне с записью статуса в _dep_job."""
-    if _dep_job["running"]:
-        return {"ok": False, "msg": "установка зависимостей уже идёт"}
-
-    def run():
-        _dep_job.update(running=True, started=time.time(), finished=None, ok=None,
-                        log="", label=label)
-        try:
-            p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
-            _dep_job["log"] = (p.stdout[-3000:] + "\n" + p.stderr[-2000:]).strip()
-            _dep_job["ok"] = p.returncode == 0
-        except Exception as e:
-            _dep_job["ok"] = False
-            _dep_job["log"] = str(e)
-        _dep_job["running"] = False
-        _dep_job["finished"] = time.time()
-
-    threading.Thread(target=run, daemon=True).start()
-    return {"ok": True, "msg": f"установка «{label}» запущена; статус — в «Состояние и операции»"}
+    """Установочная команда в фоне (живой лог в «Состояние и операции»)."""
+    return _bg(_dep_job, label, [cmd], "/tmp/rag_dep.log", timeout=timeout)
 
 
 def install_lightrag() -> dict:
@@ -224,28 +261,12 @@ def pull_model(name: str) -> dict:
 
 
 def reindex(reset: bool = False) -> dict:
-    if _job["running"]:
-        return {"ok": False, "msg": "индексация уже идёт"}
-
-    def run():
-        _job.update(running=True, started=time.time(), finished=None, ok=None,
-                    log="", summary="")
-        cmd = [sys.executable, "ingest.py"] + (["--reset"] if reset else [])
-        try:
-            p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                               timeout=24 * 3600)
-            _job["log"] = (p.stdout[-4000:] + "\n" + p.stderr[-2000:]).strip()
-            _job["summary"] = _extract_summary(p.stdout + "\n" + p.stderr)
-            _job["ok"] = p.returncode == 0
-        except Exception as e:
-            _job["ok"] = False
-            _job["log"] = str(e)
-            _job["summary"] = f"FATAL: {e}"[:200]
-        _job["running"] = False
-        _job["finished"] = time.time()
-
-    threading.Thread(target=run, daemon=True).start()
-    return {"ok": True, "msg": "индексация запущена"}
+    # python -u — небуферизованный вывод, чтобы лог индексации шёл вживую
+    cmd = [sys.executable, "-u", "ingest.py"] + (["--reset"] if reset else [])
+    r = _bg(_job, "Индексация", [cmd], "/tmp/rag_index.log")
+    if r.get("ok"):
+        r["msg"] = "индексация запущена"
+    return r
 
 
 def apply_llm() -> dict:
@@ -270,66 +291,24 @@ def apply_llm() -> dict:
 
 
 def build_graph() -> dict:
-    """Установить LightRAG и построить граф знаний из документов (в фоне).
-    Эквивалент gpu_variant/setup_hybrid.sh + `python -m graph_rag ingest`."""
-    if _graph_job["running"]:
-        return {"ok": False, "msg": "построение графа уже идёт"}
-
-    def run():
-        _graph_job.update(running=True, started=time.time(), finished=None, ok=None,
-                          log="", summary="")
-        log = []
-        try:
-            log.append("[1/2] Установка LightRAG...")
-            p1 = subprocess.run([sys.executable, "-m", "pip", "install", "-q",
-                                 *_LIGHTRAG_DEPS],
-                                cwd=ROOT, capture_output=True, text=True, timeout=3600)
-            log.append((p1.stdout[-1000:] + p1.stderr[-1500:]).strip())
-            if p1.returncode != 0:
-                _graph_job["summary"] = "FATAL: не удалось установить LightRAG"
-                raise RuntimeError("не удалось установить LightRAG")
-            log.append("[2/2] Построение графа (graph_rag ingest)...")
-            p2 = subprocess.run([sys.executable, "-m", "graph_rag", "ingest"],
-                                cwd=ROOT, capture_output=True, text=True, timeout=24 * 3600)
-            log.append((p2.stdout[-4000:] + p2.stderr[-2000:]).strip())
-            _graph_job["summary"] = _extract_summary(p2.stdout + "\n" + p2.stderr)
-            _graph_job["ok"] = p2.returncode == 0
-        except Exception as e:
-            _graph_job["ok"] = False
-            log.append(str(e))
-            if not _graph_job.get("summary"):
-                _graph_job["summary"] = f"FATAL: {e}"[:200]
-        _graph_job["log"] = "\n".join(log).strip()
-        _graph_job["running"] = False
-        _graph_job["finished"] = time.time()
-
-    threading.Thread(target=run, daemon=True).start()
-    return {"ok": True, "msg": "построение графа запущено (может занять часы)"}
+    """Установить LightRAG и построить граф знаний из документов (в фоне, живой лог)."""
+    cmds = [[sys.executable, "-m", "pip", "install", "-q", *_LIGHTRAG_DEPS],
+            [sys.executable, "-u", "-m", "graph_rag", "ingest"]]
+    r = _bg(_graph_job, "Граф", cmds, "/tmp/rag_graph.log")
+    if r.get("ok"):
+        r["msg"] = "построение графа запущено (может занять часы)"
+    return r
 
 
 def finetune() -> dict:
-    """Запустить пайплайн дообучения (датасет + LoRA) в фоне."""
+    """Запустить пайплайн дообучения (датасет + LoRA) в фоне (живой лог)."""
     script = ROOT / "finetune" / "run_pipeline.sh"
     if not script.exists():
         return {"ok": False, "msg": "run_pipeline.sh не найден"}
-    if _ft_job["running"]:
-        return {"ok": False, "msg": "дообучение уже идёт"}
-
-    def run():
-        _ft_job.update(running=True, started=time.time(), finished=None, ok=None, log="")
-        try:
-            p = subprocess.run(["bash", str(script)], cwd=ROOT,
-                               capture_output=True, text=True, timeout=24 * 3600)
-            _ft_job["log"] = (p.stdout[-4000:] + "\n" + p.stderr[-3000:]).strip()
-            _ft_job["ok"] = p.returncode == 0
-        except Exception as e:
-            _ft_job["ok"] = False
-            _ft_job["log"] = str(e)
-        _ft_job["running"] = False
-        _ft_job["finished"] = time.time()
-
-    threading.Thread(target=run, daemon=True).start()
-    return {"ok": True, "msg": "дообучение запущено (может занять часы)"}
+    r = _bg(_ft_job, "Дообучение", [["bash", str(script)]], "/tmp/rag_finetune.log")
+    if r.get("ok"):
+        r["msg"] = "дообучение запущено (может занять часы)"
+    return r
 
 
 def apply_finetuned() -> dict:
