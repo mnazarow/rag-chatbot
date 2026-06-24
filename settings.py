@@ -208,6 +208,14 @@ FIELDS: list[dict] = [
      "desc": "Если включено — любой написавший боту сразу получает доступ. По умолчанию "
              "выключено: новый пользователь попадает в «Запросы на доступ», и вы подтверждаете "
              "его вручную в разделе «Телеграм»."},
+    {"key": "TELEGRAM_PROXY", "label": "Прокси для бота (SOCKS5/HTTP)", "group": "Телеграм-бот",
+     "type": "text", "scope": "live", "default": config.TELEGRAM_PROXY,
+     "desc": "Прокси для доступа к <code>api.telegram.org</code>, если Telegram заблокирован в вашей "
+             "сети. Формат: <code>socks5://host:port</code>, <code>socks5h://user:pass@host:port</code>, "
+             "<code>http://host:port</code> или <code>https://…</code>. Пусто = без прокси. "
+             "<b>Важно:</b> бот использует HTTP Bot API, поэтому <b>MTProto-прокси</b> (tg://proxy-ссылки) "
+             "здесь НЕ подходят — они для приложений-клиентов Telegram; укажите обычный SOCKS5/HTTP-прокси. "
+             "После изменения нажмите «Перезапустить бота»."},
 
     # --- Доступ ---
     {"key": "ADMIN_TOKEN", "label": "Токен администратора", "group": "Доступ",

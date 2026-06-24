@@ -114,13 +114,26 @@ def check_data_dir() -> dict:
     logfile = "/tmp/rag_check.log"
 
     def run():
+        from concurrent.futures import ProcessPoolExecutor
+        from functools import partial
         import loaders
         _check_job.update(running=True, started=time.time(), finished=None, ok=None,
                           log="", logfile=logfile, results={})
-        counts = {"total": 0, "ok": 0, "empty": 0, "unsupported": 0, "failed": 0, "media": 0}
+        counts = {"total": 0, "ok": 0, "empty": 0, "unsupported": 0,
+                  "failed": 0, "media": 0, "timeout": 0}
         problems, unsupported = [], {}
+        to_parse = []  # (rel, abspath, ext) — файлы, которые надо разобрать
+
+        def _snapshot():
+            unsup = [{"ext": (k.lstrip(".") or "(без расширения)"), "count": v,
+                      "fix": _fix_for(k, "unsupported")}
+                     for k, v in sorted(unsupported.items(), key=lambda x: -x[1])]
+            _check_job["results"] = {"counts": dict(counts), "problems": problems[:300],
+                                     "problems_total": len(problems), "unsupported": unsup}
+
         with open(logfile, "w", buffering=1, errors="ignore") as fp:
             fp.write(f"=== Проверка каталога: {docs} ===\n")
+            # 1) быстрый обход и классификация (без парсинга)
             for p in docs.rglob("*"):
                 if not p.is_file():
                     continue
@@ -139,29 +152,62 @@ def check_data_dir() -> dict:
                     counts["unsupported"] += 1
                     unsupported[ext] = unsupported.get(ext, 0) + 1
                 elif ext in _AV_EXTS or ext in _OCR_EXTS or ext in _ARCHIVE_EXTS:
-                    counts["media"] += 1  # медиа/OCR/архивы не парсим при проверке (обрабатывается при индексации)
+                    counts["media"] += 1  # медиа/OCR/архивы не парсим при проверке
                 else:
-                    try:
-                        got = any(part.get("text", "").strip() for part in loaders.load_file(p))
-                        if got:
-                            counts["ok"] += 1
-                        else:
-                            counts["failed"] += 1
-                            problems.append({"path": rel, "ext": ext.lstrip("."),
-                                             "issue": "текст не извлечён", "fix": _fix_for(ext, "empty")})
-                    except Exception as e:
-                        counts["failed"] += 1
-                        problems.append({"path": rel, "ext": ext.lstrip("."),
-                                         "issue": str(e)[:200], "fix": _fix_for(ext, str(e))})
-                        fp.write(f"  ! {rel}: {str(e)[:150]}\n")
-                if counts["total"] % 200 == 0:
-                    fp.write(f"  …проверено {counts['total']}\n")
-                    fp.flush()
+                    to_parse.append((rel, str(p), ext))
+            _snapshot()  # обход завершён — показываем первичную статистику
+
+            # обработка одного результата разбора
+            def _apply(rel, ext, status, issue):
+                if status == "ok":
+                    counts["ok"] += 1
+                elif status == "timeout":
+                    counts["timeout"] += 1
+                    problems.append({"path": rel, "ext": ext.lstrip("."),
+                                     "issue": issue or "таймаут",
+                                     "fix": "большой/сложный файл — увеличьте FILE_PARSE_TIMEOUT или исключите его"})
+                    fp.write(f"  ⏱ {rel}: {issue}\n")
+                else:
+                    counts["failed"] += 1
+                    problems.append({"path": rel, "ext": ext.lstrip("."),
+                                     "issue": issue or "текст не извлечён",
+                                     "fix": _fix_for(ext, issue or "empty")})
+                    if issue and issue != "текст не извлечён":
+                        fp.write(f"  ! {rel}: {issue}\n")
+
+            # 2) ПАРАЛЛЕЛЬНЫЙ разбор файлов в пуле процессов (узкое место — парсинг)
+            timeout = int(settings.get("FILE_PARSE_TIMEOUT") or 0)
+            workers = max(2, min(8, (os.cpu_count() or 4)))
+            fp.write(f"Найдено {counts['total']} файлов; на разбор {len(to_parse)} "
+                     f"в {workers} процессах (таймаут на файл: {timeout or '—'} c)\n")
+            fp.flush()
+            done = 0
+            fn = partial(loaders.probe_file, timeout=timeout)
+            paths = [pp for (_r, pp, _e) in to_parse]
+            try:
+                with ProcessPoolExecutor(max_workers=workers) as ex:
+                    for (rel, _pp, ext), (status, issue) in zip(
+                            to_parse, ex.map(fn, paths, chunksize=8)):
+                        _apply(rel, ext, status, issue)
+                        done += 1
+                        if done % 100 == 0:
+                            fp.write(f"  …разобрано {done}/{len(to_parse)}\n")
+                            fp.flush()
+                            _snapshot()
+            except Exception as e:
+                # фолбэк: если пул процессов недоступен — дораскатываем последовательно
+                fp.write(f"  ~ параллельный режим недоступен ({e}); продолжаю последовательно\n")
+                for (rel, pp, ext) in to_parse[done:]:
+                    status, issue = loaders.probe_file(pp, timeout)
+                    _apply(rel, ext, status, issue)
+                    done += 1
+
             unsup = [{"ext": (k.lstrip(".") or "(без расширения)"), "count": v,
                       "fix": _fix_for(k, "unsupported")}
                      for k, v in sorted(unsupported.items(), key=lambda x: -x[1])]
             fp.write(f"\nИтог: всего {counts['total']}, ок {counts['ok']}, медиа {counts['media']}, "
-                     f"пустых {counts['empty']}, неподдерж. {counts['unsupported']}, ошибок {counts['failed']}\n")
+                     f"пустых {counts['empty']}, неподдерж. {counts['unsupported']}, "
+                     f"таймаут {counts['timeout']}, ошибок {counts['failed']}\n")
         _check_job["results"] = {"counts": counts, "problems": problems[:300],
                                  "problems_total": len(problems), "unsupported": unsup}
         _check_job["log"] = _tail(logfile)

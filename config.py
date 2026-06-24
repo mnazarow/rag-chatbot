@@ -71,6 +71,10 @@ FILE_PARSE_TIMEOUT = _int("FILE_PARSE_TIMEOUT", 0)  # лимит времени 
 # Телеграм-бот: токен от @BotFather (пусто = бот выключен) и авто-подтверждение
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_AUTO_APPROVE = _bool("TELEGRAM_AUTO_APPROVE", False)
+# Прокси для доступа к api.telegram.org (где Telegram заблокирован). Поддерживаются
+# socks5://, socks5h://, http://, https:// (можно с user:pass@). ВНИМАНИЕ: MTProto-прокси
+# (tg://proxy-ссылки) — для клиентов Telegram и НЕ работают с Bot API; нужен SOCKS5/HTTP.
+TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")
 
 # Доступ
 API_HOST = os.getenv("API_HOST", "0.0.0.0")

@@ -26,6 +26,38 @@ _ARCHIVE_MAX_FILES = 5000            # лимит файлов внутри од
 _ARCHIVE_MAX_BYTES = 4 * 1024 ** 3   # лимит суммарного распакованного объёма (4 ГБ)
 
 
+def probe_file(path_str: str, timeout: int = 0):
+    """Проверить, извлекается ли текст из файла. Возвращает (status, issue):
+    status ∈ {'ok','failed','timeout'}, issue — текст проблемы или None.
+    Используется пулом процессов для ПАРАЛЛЕЛЬНОЙ проверки каталога."""
+    import signal
+    p = Path(path_str)
+    use_alarm = bool(timeout) and hasattr(signal, "SIGALRM")
+
+    def _to(_s, _f):
+        raise TimeoutError()
+    try:
+        if use_alarm:
+            signal.signal(signal.SIGALRM, _to)
+            signal.alarm(int(timeout))
+        got = False
+        for part in load_file(p):
+            if (part.get("text", "") or "").strip():
+                got = True
+                break  # текст найден — дальше можно не читать
+        if use_alarm:
+            signal.alarm(0)
+        return ("ok", None) if got else ("failed", "текст не извлечён")
+    except TimeoutError:
+        if use_alarm:
+            signal.alarm(0)
+        return ("timeout", f"превышен лимит {timeout} c")
+    except Exception as e:
+        if use_alarm:
+            signal.alarm(0)
+        return ("failed", str(e)[:200])
+
+
 def load_file(path: Path, _depth: int = 0) -> Iterator[dict]:
     """Yield {'text', 'page'} для одного файла. Пустые куски пропускаются.
     `_depth` — внутренний счётчик вложенности для распаковки архивов."""

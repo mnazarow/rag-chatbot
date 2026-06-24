@@ -32,13 +32,19 @@ def _token() -> str:
     return (settings.get("TELEGRAM_BOT_TOKEN") or "").strip()
 
 
+def _proxy() -> str | None:
+    """SOCKS5/HTTP-прокси для доступа к api.telegram.org (если задан)."""
+    p = (settings.get("TELEGRAM_PROXY") or "").strip()
+    return p or None
+
+
 def _call(method: str, http_timeout: float = 40, **params):
     token = _token()
     if not token:
         return None
     try:
-        r = httpx.post(_API.format(token=token, method=method),
-                       json=params, timeout=http_timeout)
+        with httpx.Client(proxy=_proxy(), timeout=http_timeout) as c:
+            r = c.post(_API.format(token=token, method=method), json=params)
         return r.json()
     except Exception as e:
         _state["error"] = str(e)
@@ -218,6 +224,7 @@ def status() -> dict:
             "username": _state.get("username"),
             "token_set": bool(_token()),
             "auto_approve": bool(settings.get("TELEGRAM_AUTO_APPROVE")),
+            "proxy": _proxy() or "",
             "error": _state.get("error"),
             "started": _state.get("started"),
             **db.tg_counts()}

@@ -980,8 +980,8 @@ async function loadTelegram(){
     const dot=st.running?'<span style="color:#4ade80">● работает</span>':(st.token_set?'<span style="color:#f59e0b">● остановлен</span>':'<span style="color:#f87171">● выключен (нет токена)</span>');
     $('#tg_status').innerHTML=sysCards([
       ['Состояние',dot],['Бот',st.username?('@'+esc(st.username)):'—'],
-      ['Токен задан',sysBool(st.token_set)],['Подтверждено',nz(st.approved)],
-      ['Ожидают',nz(st.pending)],['Заблокировано',nz(st.blocked)]])
+      ['Токен задан',sysBool(st.token_set)],['Прокси',st.proxy?esc(st.proxy):'нет'],
+      ['Подтверждено',nz(st.approved)],['Ожидают',nz(st.pending)],['Заблокировано',nz(st.blocked)]])
       +(st.error?`<div class="note" style="margin-top:6px;color:#f59e0b">Последняя ошибка: ${esc(st.error)}</div>`:'');
     if($('#tg_auto')) $('#tg_auto').checked=!!st.auto_approve;
   }
@@ -1103,7 +1103,8 @@ async function pollCheck(){
   let s; try{ s=await (await fetch('/api/admin/status?t='+Date.now(),{cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
   const cj=s.check_job||{}, res=cj.results||{}, c=res.counts||{};
   if(c.total!=null) $('#chk_summary').innerHTML=sysCards([['Всего',c.total],['ОК',c.ok||0],
-    ['Медиа',c.media||0],['Пустых',c.empty||0],['Неподдерж.',c.unsupported||0],['Ошибок',c.failed||0]]);
+    ['Медиа',c.media||0],['Пустых',c.empty||0],['Неподдерж.',c.unsupported||0],
+    ['Таймаут',c.timeout||0],['Ошибок',c.failed||0]]);
   const us=res.unsupported||[];
   $('#chk_unsup').innerHTML = us.length
     ? '<div class="note">Неподдерживаемые типы и решения:</div>'+us.map(u=>
