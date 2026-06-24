@@ -297,6 +297,8 @@
     <div class="box"><h3>🎓 Дообучение (LoRA)</h3><div id="sys_ft"></div></div>
     <div class="box"><h3>⚡ Hybrid+ и использование движков</h3><div id="sys_hybrid"></div></div>
     <div class="box"><h3>⏱ Время обработки (индексация)</h3><div id="sys_ingest"></div></div>
+    <div class="box"><h3>🗃 Базы данных (SQLite / MySQL / PostgreSQL)</h3><div id="sys_db"></div></div>
+    <div class="box"><h3>⚡ Кэш Redis</h3><div id="sys_cache"></div></div>
 
     <div class="box"><h3>🔎 Проверка каталога данных</h3>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -999,7 +1001,72 @@ async function loadSystem(){
   } else {
     $('#sys_ingest').innerHTML='<div class="note">Время обработки появится после индексации (ingest.py).</div>';
   }
+  // Базы данных
+  renderSysDb(s.database||{});
+  renderSysCache(s.cache||{});
   loadFiles();
+}
+function dbStatusBadge(name,info){
+  if(name==='sqlite') return '<span style="color:#4ade80">● доступна</span>';
+  if(!info.configured) return '<span style="color:#9aa3b2">○ не настроена</span>';
+  if(!info.driver) return '<span style="color:#fbbf24">● нет драйвера</span>';
+  if(info.reachable) return '<span style="color:#4ade80">● доступна</span>';
+  return '<span style="color:#f87171">● недоступна</span>';
+}
+function renderSysDb(database){
+  const b=database.backends||{}, active=database.active||'sqlite';
+  const names=[['sqlite','SQLite'],['mysql','MySQL'],['postgresql','PostgreSQL']];
+  let html='<div class="note" style="margin-bottom:10px">Активная база: <b style="color:#60a5fa">'+esc(active)+'</b>. Журнал запросов, история Телеграм и аналитика хранятся в активной БД.</div>';
+  names.forEach(([key,lab])=>{
+    const info=b[key]||{};
+    const c=info.counts||{};
+    const total=(c.requests||0)+(c.tg_requests||0)+(c.tg_users||0);
+    html+='<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--panel2)">';
+    html+='<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'+
+      '<b style="font-size:14px">'+lab+(info.active?' <span style="color:#60a5fa">(активна)</span>':'')+'</b>'+
+      '<span>'+dbStatusBadge(key,info)+'</span></div>';
+    if(info.error) html+='<div class="note" style="color:#f87171;margin-top:4px">'+esc(info.error)+'</div>';
+    if(info.reachable){
+      html+=sysCards([
+        ['Версия',esc(nz(info.version))],
+        ['Размер БД',info.size_mb!=null?info.size_mb+' МБ':'—'],
+        ['Запросов (web)',nz(c.requests)],
+        ['Запросов (Телеграм)',nz(c.tg_requests)],
+        ['Пользователей бота',nz(c.tg_users)],
+        ['Всего записей',total],
+      ]);
+      html+='<div class="note" style="margin-top:6px">'+(key==='sqlite'?'Файл: ':'Хост: ')+esc(nz(info.host))+
+        (c.kv_store!=null?' · ключей настроек в kv_store: '+c.kv_store:'')+'</div>';
+    } else if(key!=='sqlite' && info.configured){
+      html+='<div class="note" style="margin-top:6px">Хост: '+esc(nz(info.host))+(info.driver?'':' · установите драйвер ('+(key==='mysql'?'PyMySQL':'psycopg2')+')')+'</div>';
+    } else if(key!=='sqlite'){
+      html+='<div class="note" style="margin-top:6px">Не настроена — заполните параметры в «Администратор» → «База данных и кэш».</div>';
+    }
+    html+='</div>';
+  });
+  $('#sys_db').innerHTML=html;
+}
+function fmtUptime(s){ s=+s||0; const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  if(d) return d+' д '+h+' ч'; if(h) return h+' ч '+m+' мин'; return m+' мин'; }
+function renderSysCache(c){
+  if(!c.enabled){ $('#sys_cache').innerHTML='<div class="note">Кэш Redis выключен. Включить: «Администратор» → «База данных и кэш» → флажок <code>REDIS_ENABLED</code>.</div>'; return; }
+  if(!c.reachable){ $('#sys_cache').innerHTML='<div class="note"><span style="color:#f87171">● Redis включён, но недоступен</span>'+(c.error?': '+esc(c.error):'')+(c.host?'<br>Адрес: '+esc(c.host):'')+'</div>'; return; }
+  let html=sysCards([
+    ['Статус','<span style="color:#4ade80">● в сети</span>'],
+    ['Версия',esc(nz(c.version))],
+    ['Память',esc(nz(c.used_memory))],
+    ['Ключей кэша',nz(c.keys)],
+    ['Всего ключей в БД',nz(c.total_keys)],
+    ['Клиентов',nz(c.clients)],
+    ['Аптайм',c.uptime_sec!=null?fmtUptime(c.uptime_sec):'—'],
+    ['Попаданий кэша',c.hit_rate!=null?c.hit_rate+'%':'—'],
+  ]);
+  html+='<div class="ro" style="margin-top:12px">'+
+    '<div><span>Адрес:</span> '+esc(nz(c.host))+'</div>'+
+    '<div><span>Hits / Misses:</span> '+nz(c.hits)+' / '+nz(c.misses)+'</div>'+
+    '<div><span>Вытеснено ключей:</span> '+nz(c.evicted_keys)+'</div>'+
+    (c.mode?'<div><span>Режим:</span> '+esc(c.mode)+'</div>':'')+'</div>';
+  $('#sys_cache').innerHTML=html;
 }
 
 // ---- загрузка сервера (CPU/память/диски/GPU) ----

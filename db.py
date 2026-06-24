@@ -731,6 +731,95 @@ def test_connection(backend: str) -> dict:
         return {"ok": False, "backend": d, "msg": f"{d}: ошибка подключения: {e}"}
 
 
+def _rv(row, key):
+    if row is None:
+        return None
+    try:
+        return row[key]
+    except Exception:
+        try:
+            return row[0]
+        except Exception:
+            return None
+
+
+def _backend_detail(dialect: str) -> dict:
+    """Расширенная статистика по одному бэкенду: версия сервера, размер БД,
+    число строк в таблицах (если доступен)."""
+    d = _norm(dialect)
+    cur = _dialect()
+    info = {"name": d, "active": cur == d, "configured": d == "sqlite",
+            "driver": True if d == "sqlite" else _driver_present(d),
+            "reachable": False, "error": "", "version": "", "size_mb": None,
+            "host": "", "counts": {}}
+    if d != "sqlite":
+        p = _params_for(d)
+        info["configured"] = bool(p.get("host") and p.get("db"))
+        if info["configured"]:
+            info["host"] = f"{p['host']}:{p['port']}/{p['db']}"
+    if d == "sqlite":
+        try:
+            info["host"] = str(DB_PATH)
+            if DB_PATH.exists():
+                info["size_mb"] = round(DB_PATH.stat().st_size / 1048576, 2)
+        except Exception:
+            pass
+    elif not info["configured"] or not info["driver"]:
+        return info
+    try:
+        dd, conn = _connect_for(d)
+    except Exception as e:
+        info["error"] = str(e)[:200]
+        return info
+    try:
+        c = _mk_cursor(dd, conn)
+        info["reachable"] = True
+        if dd == "sqlite":
+            c.execute("SELECT sqlite_version() v")
+            info["version"] = _rv(c.fetchone(), "v")
+        elif dd == "mysql":
+            c.execute("SELECT VERSION() v")
+            info["version"] = _rv(c.fetchone(), "v")
+            try:
+                c.execute("SELECT ROUND(SUM(data_length+index_length)/1048576,2) m "
+                          "FROM information_schema.tables WHERE table_schema=DATABASE()")
+                info["size_mb"] = _f(_rv(c.fetchone(), "m"))
+            except Exception:
+                pass
+        else:  # postgresql
+            try:
+                c.execute("SELECT current_setting('server_version') v")
+                info["version"] = _rv(c.fetchone(), "v")
+            except Exception:
+                pass
+            try:
+                c.execute("SELECT ROUND(pg_database_size(current_database())/1048576.0,2) m")
+                info["size_mb"] = _f(_rv(c.fetchone(), "m"))
+            except Exception:
+                pass
+        for t in ("requests", "tg_requests", "tg_users", "kv_store"):
+            try:
+                c.execute(f"SELECT COUNT(*) n FROM {t}")
+                info["counts"][t] = _rv(c.fetchone(), "n")
+            except Exception:
+                info["counts"][t] = None
+        conn.close()
+    except Exception as e:
+        info["error"] = str(e)[:200]
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return info
+
+
+def system_stats() -> dict:
+    """Развёрнутая статистика по всем бэкендам БД (для раздела «Система»)."""
+    return {"active": _dialect(),
+            "backends": {d: _backend_detail(d)
+                         for d in ("sqlite", "mysql", "postgresql")}}
+
+
 def db_status() -> dict:
     cur = _dialect()
     out = {"backend": cur, "backends": {}}

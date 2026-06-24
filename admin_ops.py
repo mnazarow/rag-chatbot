@@ -1399,9 +1399,21 @@ def system_info() -> dict:
         "GRAPH_MODE": settings.get("GRAPH_MODE"),
     }
 
+    # ---- База данных и кэш ----
+    try:
+        database = db.system_stats()
+    except Exception as e:
+        database = {"active": "sqlite", "backends": {}, "error": str(e)}
+    try:
+        import cache
+        cache_info = cache.status()
+    except Exception as e:
+        cache_info = {"enabled": False, "error": str(e)}
+
     return {"qdrant": qd, "graph": graph, "finetune": ft,
             "hybrid": hybrid, "usage": db.engine_usage(),
-            "ingest": _ingest_summary()}
+            "ingest": _ingest_summary(),
+            "database": database, "cache": cache_info}
 
 
 def _num(s):

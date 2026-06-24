@@ -144,6 +144,18 @@ def status() -> dict:
         info = c.info()
         out["used_memory"] = info.get("used_memory_human", "")
         out["version"] = info.get("redis_version", "")
+        out["mode"] = info.get("redis_mode", "")
+        out["clients"] = info.get("connected_clients")
+        out["uptime_sec"] = info.get("uptime_in_seconds")
+        out["total_keys"] = c.dbsize()
+        hits = info.get("keyspace_hits") or 0
+        misses = info.get("keyspace_misses") or 0
+        out["hits"] = hits
+        out["misses"] = misses
+        tot = hits + misses
+        out["hit_rate"] = round(hits / tot * 100, 1) if tot else None
+        out["evicted_keys"] = info.get("evicted_keys")
+        out["version_full"] = info.get("redis_version", "")
     except Exception:
         pass
     return out
