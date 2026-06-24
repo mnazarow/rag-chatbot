@@ -3,20 +3,22 @@
 FROM python:3.12-slim
 
 # Системные зависимости парсеров и OCR:
-#   ffmpeg            — аудио/видео для транскрибации
+#   ffmpeg            — аудио/видео для транскрибации + кадры/фрагменты видео
 #   tesseract + rus   — OCR изображений и RAW-фото
-#   libredwg-tools    — конвертация DWG в DXF (dwg2dxf)
 #   antiword          — чтение старого .doc
 #   p7zip-full, unar  — распаковка архивов (.7z/.rar и др.)
 #   libgl1/libglib    — зависимости OpenCV/pymupdf/rawpy
+# Обязательные пакеты ставим строго; опциональные (libredwg-tools для DWG→DXF —
+# его нет в репозиториях slim) — best-effort, чтобы сборка не падала.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         tesseract-ocr tesseract-ocr-rus \
-        libredwg-tools \
         antiword \
         p7zip-full unar \
         libgl1 libglib2.0-0 \
         curl ca-certificates \
+    && (apt-get install -y --no-install-recommends libredwg-tools \
+        || echo "libredwg-tools недоступен — DWG-конвертация пропущена") \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
