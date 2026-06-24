@@ -452,13 +452,19 @@ def _load_msg(path: Path):
     """Письмо Outlook (.msg) — тема, отправитель, тело."""
     import extract_msg
     m = extract_msg.Message(str(path))
-    head = []
-    for label, val in (("Тема", m.subject), ("От", m.sender),
-                       ("Кому", m.to), ("Дата", m.date)):
-        if val:
-            head.append(f"{label}: {val}")
-    body = (m.body or "").strip()
-    text = ("\n".join(head) + "\n\n" + body).strip()
+    try:
+        head = []
+        for label, val in (("Тема", m.subject), ("От", m.sender),
+                           ("Кому", m.to), ("Дата", m.date)):
+            if val:
+                head.append(f"{label}: {val}")
+        body = (m.body or "").strip()
+        text = ("\n".join(head) + "\n\n" + body).strip()
+    finally:
+        try:
+            m.close()
+        except Exception:
+            pass
     if text:
         yield {"text": text, "page": None}
 
@@ -490,10 +496,26 @@ def _extract_archive(path: Path, dest: Path) -> bool:
             with rarfile.RarFile(path) as r:
                 r.extractall(dest)
             return True
-        if ext in {".tar", ".gz", ".tgz", ".bz2"}:
+        if ext in {".tar", ".tgz"} or (ext in {".gz", ".bz2"} and ".tar" in path.name.lower()):
             import tarfile
             with tarfile.open(path) as t:
-                t.extractall(dest)
+                try:
+                    t.extractall(dest, filter="data")  # защита от path-traversal (3.12+)
+                except TypeError:
+                    t.extractall(dest)  # старые версии Python без параметра filter
+            return True
+        if ext in {".gz", ".bz2"}:
+            # одиночный поток (не tar-архив) — распаковываем в один файл
+            import bz2
+            import gzip
+            opener = gzip.open if ext == ".gz" else bz2.open
+            out = Path(dest) / path.stem  # отбрасываем .gz/.bz2
+            with opener(path, "rb") as src, open(out, "wb") as dst:
+                while True:
+                    block = src.read(1 << 20)
+                    if not block:
+                        break
+                    dst.write(block)
             return True
     except ImportError:
         pass  # нужной библиотеки нет — пробуем системные утилиты

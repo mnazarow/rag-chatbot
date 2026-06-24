@@ -279,6 +279,12 @@ def api_system():
     return admin_ops.system_info()
 
 
+@app.get("/api/server-load")
+def api_server_load():
+    """Текущая загрузка хоста: CPU, память, диски, GPU, сеть, аптайм."""
+    return admin_ops.server_load()
+
+
 @app.post("/api/admin/selftest")
 def api_selftest(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

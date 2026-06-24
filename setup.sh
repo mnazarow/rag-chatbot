@@ -63,7 +63,7 @@ ${PYTHON_BIN} -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip wheel
 pip install -r requirements.txt
-pip install -q ezdxf rawpy pytesseract Pillow extract-msg py7zr rarfile || true   # DWG/DXF + OCR (RAW/фото) + Outlook .msg + архивы
+pip install -q ezdxf rawpy pytesseract Pillow extract-msg py7zr rarfile psutil || true   # DWG/DXF + OCR (RAW/фото) + Outlook .msg + архивы + метрики сервера
 
 # ----- 6. .env --------------------------------------------------------------
 if [[ ! -f "${PROJECT_DIR}/.env" ]]; then

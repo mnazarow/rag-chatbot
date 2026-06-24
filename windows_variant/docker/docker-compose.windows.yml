@@ -1,0 +1,46 @@
+# Запуск RAG в Docker Desktop на Windows.
+#  - qdrant : векторная БД (контейнер)
+#  - app    : RAG-приложение (контейнер, CPU)
+# Генерация (LLM) — через Ollama, установленный на самом Windows-хосте,
+# контейнер обращается к нему по адресу host.docker.internal:11434.
+#
+# Перед запуском:
+#   1) скопируйте .env.docker.example -> .env.docker и при необходимости поправьте;
+#   2) создайте файл .env (рядом с этим compose) со строкой:
+#         DOCS_DIR_HOST=C:\путь\к\папке\с\документами
+#   3) docker compose -f docker-compose.windows.yml up -d --build
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: rag_qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    ports:
+      - "6333:6333"   # доступ к БД с хоста (необязательно, для диагностики)
+
+  app:
+    build:
+      context: ../..                              # корень репозитория
+      dockerfile: windows_variant/docker/Dockerfile
+    container_name: rag_app
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    env_file:
+      - .env.docker
+    environment:
+      - HF_HOME=/root/.cache/huggingface          # кеш моделей эмбеддингов/реранка
+    extra_hosts:
+      - "host.docker.internal:host-gateway"       # доступ к Ollama на хосте
+    ports:
+      - "8000:8000"                               # веб-интерфейс: http://localhost:8000
+    volumes:
+      - "${DOCS_DIR_HOST:-./docs}:/data/docs:ro"  # папка с документами (только чтение)
+      - hf_cache:/root/.cache/huggingface         # чтобы не качать модели заново
+      - ./state/runtime_config.json:/app/runtime_config.json  # настройки админки
+      - ./state/rag_logs.db:/app/rag_logs.db                   # логи/оценки
+
+volumes:
+  qdrant_storage:
+  hf_cache:

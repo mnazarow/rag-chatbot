@@ -31,7 +31,8 @@ _job = {"running": False, "started": None, "finished": None, "ok": None, "log": 
 _ft_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": "", "logfile": ""}
 _graph_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": "", "logfile": ""}
 _pull_job = {"running": False, "started": None, "finished": None, "ok": None,
-             "log": "", "model": ""}
+             "log": "", "model": "", "status": "", "percent": 0,
+             "completed": 0, "total": 0, "speed": 0}
 _dep_job = {"running": False, "started": None, "finished": None, "ok": None,
             "log": "", "label": "", "logfile": ""}
 _web_job = {"running": False, "started": None, "finished": None, "ok": None,
@@ -769,15 +770,59 @@ def pull_model(name: str) -> dict:
 
     def run():
         _pull_job.update(running=True, started=time.time(), finished=None,
-                         ok=None, log="", model=name)
+                         ok=None, log="", model=name, status="запуск…",
+                         percent=0, completed=0, total=0, speed=0)
+        last_completed, last_t = 0, time.time()
         try:
-            p = subprocess.run(["ollama", "pull", name], capture_output=True,
-                               text=True, timeout=6 * 3600)
-            _pull_job["log"] = (p.stdout[-2000:] + "\n" + p.stderr[-2000:]).strip()
-            _pull_job["ok"] = p.returncode == 0
+            url = settings.get("OLLAMA_URL").rstrip("/") + "/api/pull"
+            # Стримим прогресс из HTTP API Ollama (NDJSON: status/total/completed)
+            with httpx.stream("POST", url, json={"model": name, "stream": True},
+                              timeout=None) as r:
+                if r.status_code != 200:
+                    r.read()
+                    raise RuntimeError(f"Ollama вернул HTTP {r.status_code}: {r.text[:300]}")
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        d = _json.loads(line)
+                    except Exception:
+                        continue
+                    if d.get("error"):
+                        _pull_job["ok"] = False
+                        _pull_job["log"] = str(d["error"])
+                        _pull_job["status"] = "ошибка"
+                        break
+                    if d.get("status"):
+                        _pull_job["status"] = d["status"]
+                    total, completed = d.get("total"), d.get("completed")
+                    if total and completed is not None:
+                        _pull_job["total"] = total
+                        _pull_job["completed"] = completed
+                        _pull_job["percent"] = round(completed * 100 / total, 1)
+                        now = time.time()
+                        if now - last_t >= 1.0:
+                            _pull_job["speed"] = max(0, (completed - last_completed) / (now - last_t))
+                            last_completed, last_t = completed, now
+            if _pull_job["ok"] is None:
+                _pull_job["ok"] = True
+                _pull_job["status"] = "готово"
+                _pull_job["percent"] = 100
         except Exception as e:
-            _pull_job["ok"] = False
-            _pull_job["log"] = str(e)
+            # фолбэк: CLI-загрузка, если HTTP API недоступен
+            _pull_job["status"] = "через CLI…"
+            try:
+                p = subprocess.run(["ollama", "pull", name], capture_output=True,
+                                   text=True, timeout=6 * 3600)
+                _pull_job["log"] = (p.stdout[-2000:] + "\n" + p.stderr[-2000:]).strip()
+                _pull_job["ok"] = p.returncode == 0
+                _pull_job["status"] = "готово" if p.returncode == 0 else "ошибка"
+                if p.returncode == 0:
+                    _pull_job["percent"] = 100
+            except Exception as e2:
+                _pull_job["ok"] = False
+                _pull_job["log"] = f"{e}; CLI: {e2}"
+                _pull_job["status"] = "ошибка"
         _pull_job["running"] = False
         _pull_job["finished"] = time.time()
 
@@ -1217,6 +1262,172 @@ def system_info() -> dict:
 
     return {"qdrant": qd, "graph": graph, "finetune": ft,
             "hybrid": hybrid, "usage": db.engine_usage()}
+
+
+def _num(s):
+    try:
+        s = str(s).strip()
+        return float(s) if "." in s else int(s)
+    except Exception:
+        return None
+
+
+def _gpu_info() -> dict:
+    """Данные о GPU: NVIDIA (nvidia-smi), AMD (rocm-smi) или Apple Silicon."""
+    import platform
+    g: dict = {"vendor": "none", "devices": []}
+
+    # NVIDIA
+    if shutil.which("nvidia-smi"):
+        try:
+            q = ("index,name,utilization.gpu,utilization.memory,memory.used,"
+                 "memory.total,temperature.gpu,power.draw,power.limit,fan.speed")
+            r = subprocess.run(["nvidia-smi", f"--query-gpu={q}",
+                                "--format=csv,noheader,nounits"],
+                               capture_output=True, text=True, timeout=8)
+            if r.returncode == 0 and r.stdout.strip():
+                g["vendor"] = "nvidia"
+                for line in r.stdout.strip().splitlines():
+                    p = [x.strip() for x in line.split(",")]
+                    if len(p) >= 9:
+                        g["devices"].append({
+                            "index": p[0], "name": p[1], "util": _num(p[2]),
+                            "mem_util": _num(p[3]), "mem_used": _num(p[4]),
+                            "mem_total": _num(p[5]), "temp": _num(p[6]),
+                            "power": _num(p[7]), "power_limit": _num(p[8]),
+                            "fan": _num(p[9]) if len(p) > 9 else None,
+                        })
+                return g
+        except Exception as e:
+            g["error"] = str(e)
+
+    # AMD ROCm
+    if shutil.which("rocm-smi"):
+        g["vendor"] = "amd"
+        g["devices"].append({"name": "AMD GPU (rocm-smi доступен)"})
+        return g
+
+    # Apple Silicon — единая память, live-загрузку GPU без sudo не получить
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        g["vendor"] = "apple"
+        chip = "Apple Silicon"
+        try:
+            r = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                               capture_output=True, text=True, timeout=4)
+            if r.stdout.strip():
+                chip = r.stdout.strip()
+        except Exception:
+            pass
+        g["devices"].append({"name": f"{chip} — встроенный GPU (Metal), единая память"})
+    return g
+
+
+def server_load() -> dict:
+    """Подробная текущая загрузка хоста: CPU, память, диски, GPU, сеть, аптайм."""
+    import platform
+    out: dict = {"ts": time.time(), "platform": {
+        "system": platform.system(), "release": platform.release(),
+        "machine": platform.machine(), "python": platform.python_version(),
+        "hostname": platform.node(),
+    }}
+    try:
+        import psutil
+    except Exception:
+        psutil = None
+    out["psutil"] = psutil is not None
+
+    if psutil:
+        try:
+            freq = psutil.cpu_freq()
+        except Exception:
+            freq = None
+        loadavg = None
+        try:
+            loadavg = [round(x, 2) for x in psutil.getloadavg()]
+        except Exception:
+            pass
+        out["cpu"] = {
+            "percent": psutil.cpu_percent(interval=0.3),
+            "per_core": psutil.cpu_percent(interval=0.0, percpu=True),
+            "cores_logical": psutil.cpu_count(),
+            "cores_physical": psutil.cpu_count(logical=False),
+            "freq_mhz": round(freq.current) if freq and freq.current else None,
+            "loadavg": loadavg,
+        }
+        vm = psutil.virtual_memory()
+        sm = psutil.swap_memory()
+        out["memory"] = {
+            "total": vm.total, "used": vm.used, "available": vm.available,
+            "percent": vm.percent, "swap_total": sm.total,
+            "swap_used": sm.used, "swap_percent": sm.percent,
+        }
+        disks = []
+        for part in psutil.disk_partitions(all=False):
+            try:
+                u = psutil.disk_usage(part.mountpoint)
+            except Exception:
+                continue
+            disks.append({"device": part.device, "mount": part.mountpoint,
+                          "fstype": part.fstype, "total": u.total, "used": u.used,
+                          "free": u.free, "percent": u.percent})
+        out["disks"] = disks
+        try:
+            io = psutil.disk_io_counters()
+            out["disk_io"] = {"read_bytes": io.read_bytes, "write_bytes": io.write_bytes}
+        except Exception:
+            pass
+        try:
+            nio = psutil.net_io_counters()
+            out["net"] = {"sent": nio.bytes_sent, "recv": nio.bytes_recv}
+        except Exception:
+            pass
+        try:
+            out["uptime_sec"] = time.time() - psutil.boot_time()
+        except Exception:
+            pass
+        procs = []
+        for p in psutil.process_iter(["pid", "name", "memory_info", "cpu_percent"]):
+            try:
+                mi = p.info.get("memory_info")
+                procs.append({"pid": p.info["pid"], "name": p.info.get("name") or "",
+                              "rss": mi.rss if mi else 0,
+                              "cpu": p.info.get("cpu_percent") or 0})
+            except Exception:
+                continue
+        procs.sort(key=lambda x: x["rss"], reverse=True)
+        out["top_processes"] = procs[:8]
+    else:
+        # фолбэк без psutil (минимальный набор)
+        out["note"] = "Установите psutil для подробных метрик: pip install psutil"
+        out["cpu"] = {"cores_logical": os.cpu_count()}
+        try:
+            out["cpu"]["loadavg"] = [round(x, 2) for x in os.getloadavg()]
+        except Exception:
+            pass
+        try:
+            mem = {}
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                k, _, v = line.partition(":")
+                mem[k] = int(v.strip().split()[0]) * 1024
+            total, avail = mem.get("MemTotal", 0), mem.get("MemAvailable", 0)
+            out["memory"] = {
+                "total": total, "available": avail, "used": total - avail,
+                "percent": round((total - avail) * 100 / total, 1) if total else None,
+                "swap_total": mem.get("SwapTotal", 0),
+                "swap_used": mem.get("SwapTotal", 0) - mem.get("SwapFree", 0),
+            }
+        except Exception:
+            pass
+        try:
+            du = shutil.disk_usage("/")
+            out["disks"] = [{"mount": "/", "total": du.total, "used": du.used,
+                             "free": du.free,
+                             "percent": round(du.used * 100 / du.total, 1)}]
+        except Exception:
+            pass
+
+    out["gpu"] = _gpu_info()
+    return out
 
 
 def component_analytics() -> dict:

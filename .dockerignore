@@ -1,0 +1,21 @@
+# Не копировать в образ тяжёлые/ненужные каталоги (важно: иначе BD/ раздует образ)
+BD/
+.venv/
+venv/
+qdrant_storage/
+lightrag_variant/lightrag_storage/
+.git/
+__pycache__/
+*.pyc
+*.db
+*.db-journal
+runtime_config.json
+.env
+.env.docker
+windows_variant/docker/state/
+windows_variant/docker/docs/
+finetune/data/
+finetune/adapter/
+.DS_Store
+Thumbs.db
+*.log

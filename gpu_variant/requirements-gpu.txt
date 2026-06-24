@@ -48,3 +48,4 @@ faster-whisper==1.1.0
 # --- утилиты ---
 tqdm==4.67.1
 tenacity==9.0.0
+psutil==6.1.1

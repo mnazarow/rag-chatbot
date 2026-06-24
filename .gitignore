@@ -9,6 +9,12 @@ venv/
 .env
 gpu_variant/.env
 lightrag_variant/.env
+windows_variant/docker/.env
+windows_variant/docker/.env.docker
+
+# Docker на Windows: состояние и локальные данные
+windows_variant/docker/state/
+windows_variant/docker/docs/
 
 # Рантайм-данные (не версионируются)
 runtime_config.json

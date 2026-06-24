@@ -226,6 +226,23 @@ powershell -ExecutionPolicy Bypass -File windows_variant\deploy_windows.ps1 `
 `windows_variant\manage_windows.ps1 status|start|stop|restart|logs`. Подробности и
 ограничения — в `windows_variant/README_windows.md`.
 
+## 4b. Установка на Windows в Docker
+
+Полностью контейнерный вариант: приложение и Qdrant — в контейнерах, генерация —
+через Ollama на хосте Windows. Не «засоряет» систему, всё в Docker Desktop.
+
+```powershell
+# из папки windows_variant\docker
+powershell -ExecutionPolicy Bypass -File start_windows_docker.ps1 `
+    -DocsDir "C:\rag\BD" -LlmModel "qwen2.5:7b-instruct-q4_K_M"
+```
+
+Скрипт проверит Docker, скачает модель в Ollama, подготовит `.env`/состояние и
+выполнит `docker compose up -d --build`. Затем откройте `http://localhost:8000`
+и запустите переиндексацию из вкладки «Админ». Эмбеддинги/реранк в контейнере
+считаются на CPU; индекс и кеш моделей сохраняются в томах Docker. Подробности —
+в `windows_variant/README_windows.md` (раздел «Установка полностью в Docker»).
+
 ## 5a. Вариант с дообучением (fine-tuning, LoRA)
 
 Только GPU. Дообучает модель на ваших документах (QLoRA) и подаёт адаптер через
