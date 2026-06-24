@@ -362,6 +362,12 @@ def admin_files_catalog(limit: int = 500, offset: int = 0, q: str = "",
     return admin_ops.files_catalog(limit=limit, offset=offset, query=q)
 
 
+@app.post("/api/admin/check-data")
+def admin_check_data(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.check_data_dir()
+
+
 @app.get("/api/admin/models")
 def admin_models(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

@@ -40,6 +40,111 @@ _test_job = {"running": False, "started": None, "finished": None, "ok": None,
              "log": "", "logfile": "", "results": []}
 _bench_job = {"running": False, "started": None, "finished": None, "ok": None,
               "log": "", "logfile": "", "results": []}
+_check_job = {"running": False, "started": None, "finished": None, "ok": None,
+              "log": "", "logfile": "", "results": {}}
+
+_AV_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
+_UNSUPPORTED_FIX = {
+    ".doc": "Сконвертируйте в .docx (Word → «Сохранить как») или установите LibreOffice.",
+    ".rtf": "Сконвертируйте в .docx или .txt.",
+    ".odt": "Сконвертируйте в .docx.",
+    ".pages": "Apple Pages не читается — экспортируйте в PDF/DOCX.",
+    ".numbers": "Apple Numbers не читается — экспортируйте в XLSX/CSV.",
+    ".key": "Apple Keynote не читается — экспортируйте в PDF/PPTX.",
+    ".xlsb": "Бинарный Excel — сохраните как .xlsx или установите pyxlsb.",
+    ".epub": "Сконвертируйте в PDF/TXT.",
+    ".fb2": "Сконвертируйте в TXT/PDF.",
+    ".djvu": "Сконвертируйте в PDF.",
+    ".zip": "Архив — распакуйте; индексируются файлы, а не архивы.",
+    ".rar": "Архив — распакуйте.",
+    ".7z": "Архив — распакуйте.",
+}
+_IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
+
+
+def _fix_for(ext: str, context: str) -> str:
+    ext = (ext or "").lower()
+    c = (context or "").lower()
+    if "xlrd" in c:
+        return "Установите xlrd: pip install \"xlrd>=2.0.1\", затем переиндексируйте."
+    if "password" in c or "encrypt" in c or "decrypt" in c:
+        return "Снимите пароль/шифрование с файла и сохраните заново."
+    if context == "unsupported":
+        if ext in _IMG_EXTS:
+            return "Изображение без текста не индексируется; для сканов примените OCR и сохраните как PDF/текст."
+        return _UNSUPPORTED_FIX.get(ext, f"Формат {ext or 'без расширения'} не поддерживается — сконвертируйте в PDF/DOCX/XLSX/TXT.")
+    if context == "empty":
+        return "Не удалось извлечь текст (возможно скан/картинки внутри) — примените OCR или проверьте содержимое."
+    return "См. текст ошибки; при необходимости сконвертируйте файл в поддерживаемый формат."
+
+
+def check_data_dir() -> dict:
+    """Проверить весь каталог документов: проблемные файлы и неподдерживаемые типы."""
+    if _check_job["running"]:
+        return {"ok": False, "msg": "проверка уже идёт"}
+    docs = Path(settings.get("DOCS_DIR")).expanduser()
+    if not docs.exists():
+        return {"ok": False, "msg": f"папка не найдена: {docs}"}
+    logfile = "/tmp/rag_check.log"
+
+    def run():
+        import loaders
+        _check_job.update(running=True, started=time.time(), finished=None, ok=None,
+                          log="", logfile=logfile, results={})
+        counts = {"total": 0, "ok": 0, "empty": 0, "unsupported": 0, "failed": 0, "media": 0}
+        problems, unsupported = [], {}
+        with open(logfile, "w", buffering=1, errors="ignore") as fp:
+            fp.write(f"=== Проверка каталога: {docs} ===\n")
+            for p in docs.rglob("*"):
+                if not p.is_file():
+                    continue
+                counts["total"] += 1
+                rel = str(p.relative_to(docs))
+                ext = p.suffix.lower()
+                try:
+                    sz = p.stat().st_size
+                except Exception:
+                    sz = 0
+                if sz == 0:
+                    counts["empty"] += 1
+                    problems.append({"path": rel, "ext": ext.lstrip("."),
+                                     "issue": "пустой файл (0 байт)", "fix": "удалите или замените файл"})
+                elif ext not in _SUPPORTED:
+                    counts["unsupported"] += 1
+                    unsupported[ext] = unsupported.get(ext, 0) + 1
+                elif ext in _AV_EXTS:
+                    counts["media"] += 1  # медиа не парсим при проверке (транскрибируется при индексации)
+                else:
+                    try:
+                        got = any(part.get("text", "").strip() for part in loaders.load_file(p))
+                        if got:
+                            counts["ok"] += 1
+                        else:
+                            counts["failed"] += 1
+                            problems.append({"path": rel, "ext": ext.lstrip("."),
+                                             "issue": "текст не извлечён", "fix": _fix_for(ext, "empty")})
+                    except Exception as e:
+                        counts["failed"] += 1
+                        problems.append({"path": rel, "ext": ext.lstrip("."),
+                                         "issue": str(e)[:200], "fix": _fix_for(ext, str(e))})
+                        fp.write(f"  ! {rel}: {str(e)[:150]}\n")
+                if counts["total"] % 200 == 0:
+                    fp.write(f"  …проверено {counts['total']}\n")
+                    fp.flush()
+            unsup = [{"ext": (k.lstrip(".") or "(без расширения)"), "count": v,
+                      "fix": _fix_for(k, "unsupported")}
+                     for k, v in sorted(unsupported.items(), key=lambda x: -x[1])]
+            fp.write(f"\nИтог: всего {counts['total']}, ок {counts['ok']}, медиа {counts['media']}, "
+                     f"пустых {counts['empty']}, неподдерж. {counts['unsupported']}, ошибок {counts['failed']}\n")
+        _check_job["results"] = {"counts": counts, "problems": problems[:300],
+                                 "problems_total": len(problems), "unsupported": unsup}
+        _check_job["log"] = _tail(logfile)
+        _check_job["ok"] = True
+        _check_job["running"] = False
+        _check_job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": "проверка каталога запущена"}
 
 
 def _tail(path: str, n: int = 6000) -> str:
@@ -143,6 +248,7 @@ def status() -> dict:
     out["web_job"] = _jobview(_web_job)
     out["test_job"] = _jobview(_test_job)
     out["bench_job"] = _jobview(_bench_job)
+    out["check_job"] = _jobview(_check_job)
     return out
 
 

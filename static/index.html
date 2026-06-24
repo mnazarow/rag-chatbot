@@ -281,6 +281,18 @@
     <div class="box"><h3>🎓 Дообучение (LoRA)</h3><div id="sys_ft"></div></div>
     <div class="box"><h3>⚡ Hybrid+ и использование движков</h3><div id="sys_hybrid"></div></div>
 
+    <div class="box"><h3>🔎 Проверка каталога данных</h3>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="act" onclick="checkData()">▶ Проверить каталог с данными</button>
+        <span id="chkmsg"></span>
+      </div>
+      <div class="cards" id="chk_summary" style="margin-top:12px"></div>
+      <div id="chk_unsup" style="margin-top:10px"></div>
+      <div id="chk_problems" style="margin-top:10px"></div>
+      <pre id="chk_log" style="margin-top:10px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+      <div class="note">Сканирует всю папку, находит пустые/нечитаемые файлы и неподдерживаемые типы, предлагает решения. Медиа (аудио/видео) при проверке не транскрибируются.</div>
+    </div>
+
     <div class="box"><h3>📂 Каталог документов</h3>
       <div id="fc_summary"></div>
       <div style="display:flex;gap:8px;align-items:center;margin:10px 0">
@@ -743,6 +755,33 @@ async function loadSystem(){
   loadFiles();
 }
 function fcSize(b){ b=b||0; if(b<1024)return b+' Б'; if(b<1048576)return (b/1024).toFixed(0)+' КБ'; return (b/1048576).toFixed(1)+' МБ'; }
+function chkMsg(t,ok=true){ $('#chkmsg').textContent=t; $('#chkmsg').className=ok?'saved':'note'; }
+async function checkData(){
+  chkMsg('запуск проверки…'); const r=await adminPost('/api/admin/check-data');
+  chkMsg(r.msg||(r.ok?'идёт…':'ошибка'),r.ok!==false); if(r.ok!==false) pollCheck();
+}
+async function pollCheck(){
+  let s; try{ s=await (await fetch('/api/admin/status?t='+Date.now(),{cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
+  const cj=s.check_job||{}, res=cj.results||{}, c=res.counts||{};
+  if(c.total!=null) $('#chk_summary').innerHTML=sysCards([['Всего',c.total],['ОК',c.ok||0],
+    ['Медиа',c.media||0],['Пустых',c.empty||0],['Неподдерж.',c.unsupported||0],['Ошибок',c.failed||0]]);
+  const us=res.unsupported||[];
+  $('#chk_unsup').innerHTML = us.length
+    ? '<div class="note">Неподдерживаемые типы и решения:</div>'+us.map(u=>
+        `<div style="margin:5px 0;padding:6px 8px;border:1px solid var(--line);border-radius:6px">
+         <span class="tag">${esc(u.ext)}</span> × ${u.count} — <span style="color:var(--muted)">${esc(u.fix)}</span></div>`).join('')
+    : '';
+  const pr=res.problems||[];
+  $('#chk_problems').innerHTML = pr.length
+    ? '<div class="note">Проблемные файлы'+(res.problems_total>pr.length?(' (первые '+pr.length+' из '+res.problems_total+')'):'')+':</div>'+
+      '<div style="max-height:40vh;overflow:auto"><table><thead><tr><th>Файл</th><th>Проблема</th><th>Решение</th></tr></thead><tbody>'+
+      pr.map(p=>`<tr><td style="max-width:280px;word-break:break-all">${esc(p.path)}</td>
+        <td style="color:#f87171">${esc(p.issue)}</td><td class="note">${esc(p.fix)}</td></tr>`).join('')+'</tbody></table></div>'
+    : (cj.finished?'<div class="note">Проблемных файлов не найдено ✓</div>':'');
+  if(cj.log){ $('#chk_log').style.display='block'; $('#chk_log').textContent=cj.log; }
+  if(cj.running){ setTimeout(pollCheck,2500); chkMsg('проверка идёт…'); }
+  else if(cj.finished){ chkMsg('✓ проверка завершена'); }
+}
 async function loadFiles(){
   const q=$('#fc_q')?$('#fc_q').value.trim():'';
   let r; try{ r=await (await fetch('/api/admin/files-catalog?limit=500&q='+encodeURIComponent(q)+'&t='+Date.now(),
