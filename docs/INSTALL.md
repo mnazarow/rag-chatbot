@@ -202,6 +202,24 @@ python -m graph_rag ingest
 
 ---
 
+## 4a. Установка на Windows-сервер
+
+PowerShell от администратора (нужен winget; Qdrant — через Docker Desktop;
+генерация — Ollama для Windows):
+
+```powershell
+# локально из папки проекта
+powershell -ExecutionPolicy Bypass -File windows_variant\setup_windows.ps1 -AdminToken "пароль"
+
+# или деплой из GitHub
+powershell -ExecutionPolicy Bypass -File windows_variant\deploy_windows.ps1 `
+    -Repo "https://github.com/USER/rag-chatbot.git" -AdminToken "пароль"
+```
+
+С GPU NVIDIA добавьте `-Cuda`. Автозапуск — через Scheduled Task; управление —
+`windows_variant\manage_windows.ps1 status|start|stop|restart|logs`. Подробности и
+ограничения — в `windows_variant/README_windows.md`.
+
 ## 5a. Вариант с дообучением (fine-tuning, LoRA)
 
 Только GPU. Дообучает модель на ваших документах (QLoRA) и подаёт адаптер через
