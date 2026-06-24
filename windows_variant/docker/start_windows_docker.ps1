@@ -1,9 +1,11 @@
 # Запуск RAG в Docker на Windows одной командой.
-#   powershell -ExecutionPolicy Bypass -File start_windows_docker.ps1 -DocsDir "C:\path\to\BD"
+#   powershell -ExecutionPolicy Bypass -File start_windows_docker.ps1 `
+#       -DocsDir "C:\path\to\BD" -AdminToken "ваш-пароль"
 # Требуется: Docker Desktop и (для генерации) Ollama, установленные на Windows.
 param(
     [string]$DocsDir = "",                              # папка с документами (Windows-путь)
-    [string]$LlmModel = "qwen2.5:7b-instruct-q4_K_M"    # модель Ollama для генерации
+    [string]$LlmModel = "qwen2.5:7b-instruct-q4_K_M",   # модель Ollama для генерации
+    [string]$AdminToken = ""                            # пароль админ-панели (пусто = не менять)
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,6 +37,11 @@ if (-not (Test-Path ".env.docker")) {
 }
 # прописываем выбранную модель
 (Get-Content ".env.docker") -replace '^LLM_MODEL=.*', "LLM_MODEL=$LlmModel" | Set-Content ".env.docker"
+# пароль админ-панели (если задан параметром) — иначе оставляем как есть
+if ($AdminToken -ne "") {
+    (Get-Content ".env.docker") -replace '^ADMIN_TOKEN=.*', "ADMIN_TOKEN=$AdminToken" | Set-Content ".env.docker"
+    Log "Пароль админ-панели задан."
+}
 
 # ----- 4. Папка с документами -----
 if (-not $DocsDir) {
