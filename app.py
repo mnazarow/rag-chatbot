@@ -369,10 +369,13 @@ def admin_browse(path: str | None = None, x_admin_token: str | None = Header(Non
 
 
 @app.get("/api/admin/files-catalog")
-def admin_files_catalog(limit: int = 500, offset: int = 0, q: str = "",
+def admin_files_catalog(limit: int = 100, offset: int = 0, q: str = "",
+                        sort: str = "name", order: str = "asc",
+                        only_errors: bool = False,
                         x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
-    return admin_ops.files_catalog(limit=limit, offset=offset, query=q)
+    return admin_ops.files_catalog(limit=limit, offset=offset, query=q,
+                                   sort=sort, order=order, only_errors=only_errors)
 
 
 @app.post("/api/admin/check-data")

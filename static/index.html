@@ -302,13 +302,42 @@
 
     <div class="box"><h3>📂 Каталог документов</h3>
       <div id="fc_summary"></div>
-      <div style="display:flex;gap:8px;align-items:center;margin:10px 0">
-        <input type="text" id="fc_q" placeholder="поиск по имени файла…" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--txt)" onkeydown="if(event.key==='Enter')loadFiles()">
-        <button class="act ghost" onclick="loadFiles()">Найти</button>
+      <div style="display:flex;gap:8px;align-items:center;margin:10px 0;flex-wrap:wrap">
+        <input type="text" id="fc_q" placeholder="поиск по имени файла…" style="flex:1;min-width:180px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--txt)" onkeydown="if(event.key==='Enter'){fcState.offset=0;loadFiles();}">
+        <button class="act ghost" onclick="fcState.offset=0;loadFiles()">Найти</button>
+        <label class="note">Сортировка:
+          <select id="fc_sort" onchange="fcState.offset=0;fcState.sort=this.value;loadFiles()" style="padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--txt)">
+            <option value="name">по имени</option>
+            <option value="date">по дате</option>
+            <option value="size">по размеру</option>
+            <option value="chunks">по чанкам</option>
+          </select>
+        </label>
+        <button class="act ghost" id="fc_order" onclick="fcToggleOrder()" title="Направление сортировки">↑ A→Я</button>
+        <label class="note">на странице:
+          <select id="fc_psize" onchange="fcState.offset=0;fcState.limit=+this.value;loadFiles()" style="padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--txt)">
+            <option>50</option><option selected>100</option><option>200</option><option>500</option>
+          </select>
+        </label>
+        <label class="note" style="display:flex;gap:5px;align-items:center;cursor:pointer">
+          <input type="checkbox" id="fc_erronly" onchange="fcState.offset=0;fcState.only_errors=this.checked;loadFiles()"> только с ошибками
+        </label>
       </div>
       <div style="max-height:50vh;overflow:auto">
-        <table><thead><tr><th>Файл</th><th>Тип</th><th>Размер</th><th>Чанков</th><th>Статус</th><th>Изменён</th></tr></thead>
+        <table><thead><tr>
+          <th onclick="fcSort('name')" style="cursor:pointer" title="Сортировать по имени">Файл <span id="fc_ah_name"></span></th>
+          <th>Тип</th>
+          <th onclick="fcSort('size')" style="cursor:pointer" title="Сортировать по размеру">Размер <span id="fc_ah_size"></span></th>
+          <th onclick="fcSort('chunks')" style="cursor:pointer" title="Сортировать по числу чанков">Чанков <span id="fc_ah_chunks"></span></th>
+          <th onclick="fcSort('error')" style="cursor:pointer" title="Сначала файлы с ошибками">Статус <span id="fc_ah_error"></span></th>
+          <th onclick="fcSort('date')" style="cursor:pointer" title="Сортировать по дате">Изменён <span id="fc_ah_date"></span></th>
+        </tr></thead>
         <tbody id="fc_rows"></tbody></table>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">
+        <button class="act ghost" id="fc_prev" onclick="fcPage(-1)">← Назад</button>
+        <span id="fc_pageinfo" class="note"></span>
+        <button class="act ghost" id="fc_next" onclick="fcPage(1)">Вперёд →</button>
       </div>
     </div>
   </section>
@@ -340,6 +369,7 @@
 
     <div class="box"><h3>🗄 Qdrant</h3>
       <div id="cc_qstats"></div>
+      <div id="cc_qbars" style="margin-top:12px"></div>
       <div class="grid2" style="margin-top:12px">
         <div><div class="note">Чанков по категориям</div><canvas id="cc_cat" height="170"></canvas></div>
         <div><div class="note">Чанков по типам файлов</div><canvas id="cc_ftype" height="170"></canvas></div>
@@ -350,11 +380,13 @@
 
     <div class="box"><h3>🧠 Граф знаний (LightRAG)</h3>
       <div id="cc_gstats"></div>
+      <div id="cc_gbars" style="margin-top:12px"></div>
       <canvas id="cc_graph" height="150" style="margin-top:12px"></canvas>
     </div>
 
     <div class="box"><h3>🎓 Дообучение (LoRA)</h3>
       <div id="cc_fstats"></div>
+      <div id="cc_fbars" style="margin-top:12px"></div>
       <div class="note" style="margin-top:12px">Распределение длины ответов в датасете</div>
       <canvas id="cc_ans" height="150"></canvas>
     </div>
@@ -362,6 +394,7 @@
     <div class="box"><h3>⏱ Тайминги по компонентам</h3>
       <div class="note">Среднее время этапов запроса</div>
       <div class="cards" id="cc_tstages" style="margin-top:6px"></div>
+      <div id="cc_tbars" style="margin-top:12px"></div>
       <div class="note" style="margin-top:12px">Последний бенчмарк (мс по компонентам)</div>
       <canvas id="cc_tbench" height="150"></canvas>
       <div class="note" style="margin-top:12px">Длительность последних операций</div>
@@ -891,29 +924,67 @@ async function pollCheck(){
     : (cj.finished?'<div class="note">Проблемных файлов не найдено ✓</div>':'');
   if(cj.log){ $('#chk_log').style.display='block'; $('#chk_log').textContent=cj.log; }
   if(cj.running){ setTimeout(pollCheck,2500); chkMsg('проверка идёт…'); }
-  else if(cj.finished){ chkMsg('✓ проверка завершена'); }
+  else if(cj.finished){ chkMsg('✓ проверка завершена'); loadFiles(); }
+}
+let fcState={offset:0,limit:100,sort:'name',order:'asc',only_errors:false};
+function fcSort(col){
+  if(fcState.sort===col){ fcState.order=(fcState.order==='asc'?'desc':'asc'); }
+  else { fcState.sort=col; fcState.order=((col==='date'||col==='error')?'asc':'asc'); }
+  fcState.offset=0; if($('#fc_sort')&&col!=='error') $('#fc_sort').value=fcState.sort; loadFiles();
+}
+function fcToggleOrder(){ fcState.order=(fcState.order==='asc'?'desc':'asc'); fcState.offset=0; loadFiles(); }
+function fcPage(d){ fcState.offset=Math.max(0,fcState.offset+d*fcState.limit); loadFiles(); }
+function fcArrows(){
+  ['name','date','size','chunks','error'].forEach(c=>{ const el=$('#fc_ah_'+c); if(el) el.textContent=(fcState.sort===c?(fcState.order==='asc'?'▲':'▼'):''); });
+  const ob=$('#fc_order'); if(ob){ const asc=fcState.order==='asc';
+    ob.textContent = fcState.sort==='name' ? (asc?'↑ A→Я':'↓ Я→A')
+      : fcState.sort==='date' ? (asc?'↑ старые':'↓ новые')
+      : fcState.sort==='error' ? (asc?'↑ ошибки сверху':'↓ ошибки снизу') : (asc?'↑ меньше':'↓ больше'); }
 }
 async function loadFiles(){
   const q=$('#fc_q')?$('#fc_q').value.trim():'';
-  let r; try{ r=await (await fetch('/api/admin/files-catalog?limit=500&q='+encodeURIComponent(q)+'&t='+Date.now(),
-    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
+  const qs='/api/admin/files-catalog?limit='+fcState.limit+'&offset='+fcState.offset
+    +'&sort='+fcState.sort+'&order='+fcState.order+'&q='+encodeURIComponent(q)+'&t='+Date.now();
+  let r; try{ r=await (await fetch(qs,{cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
   if(!r.ok){ $('#fc_summary').innerHTML='<div class="note">'+esc(r.msg||r.detail||'ошибка')+'</div>'; $('#fc_rows').innerHTML=''; return; }
   const byext=Object.entries(r.by_ext||{}).sort((a,b)=>b[1]-a[1])
     .map(([k,v])=>`<span class="tag">${esc(k)}: ${v}</span>`).join(' ');
   $('#fc_summary').innerHTML=sysCards([['Всего файлов',r.total],
     ['Проиндексировано',r.indexed],['Не проиндексировано',r.not_indexed],
-    ['Объём',fcSize(r.total_size)]])+'<div class="note" style="margin-top:8px">По типам: '+byext+'</div>';
-  const rows=(r.files||[]).map(f=>`<tr>
-    <td style="max-width:340px;word-break:break-all">${esc(f.path)}</td>
+    ['С ошибками',r.checked?(r.error_count||0):'—'],
+    ['Объём',fcSize(r.total_size)]])+'<div class="note" style="margin-top:8px">По типам: '+byext+'</div>'
+    +(r.checked?'':'<div class="note" style="margin-top:6px;color:#f59e0b">Чтобы увидеть файлы с ошибками, запустите «Проверить каталог с данными» выше.</div>')
+    +(r.err_truncated?'<div class="note" style="margin-top:4px">Ошибок очень много — показаны первые из проверки; см. блок «Проверка каталога».</div>':'');
+  const rows=(r.files||[]).map(f=>{
+    const status=f.error
+      ? `<span class="tag no" title="${escAttr(f.error)}">⚠ ошибка</span>`
+      : (f.indexed?'<span class="tag ok">в базе</span>':'<span class="tag no">нет</span>');
+    return `<tr${f.error?' style="background:rgba(239,68,68,.08)"':''}>
+    <td style="max-width:340px;word-break:break-all">${esc(f.path)}${f.error?`<div class="note" style="color:#f87171;margin-top:2px">${esc(f.error)}</div>`:''}</td>
     <td><span class="tag">${esc(f.ext)}</span></td>
     <td>${fcSize(f.size)}</td><td>${f.chunks}</td>
-    <td>${f.indexed?'<span class="tag ok">в базе</span>':'<span class="tag no">нет</span>'}</td>
-    <td>${f.mtime?fmtTime(f.mtime):'—'}</td></tr>`).join('');
+    <td>${status}</td>
+    <td>${f.mtime?fmtTime(f.mtime):'—'}</td></tr>`;}).join('');
   $('#fc_rows').innerHTML=rows||emptyRow(6);
-  if(r.matched>r.files.length){ $('#fc_rows').innerHTML+=`<tr><td colspan="6" class="note">показаны первые ${r.files.length} из ${r.matched}; уточните поиск</td></tr>`; }
+  fcArrows();
+  // пагинация
+  const from=r.matched?fcState.offset+1:0, to=Math.min(fcState.offset+fcState.limit,r.matched);
+  $('#fc_pageinfo').textContent=`${from}–${to} из ${r.matched}`+(r.matched!==r.total?` (всего ${r.total})`:'');
+  $('#fc_prev').disabled=fcState.offset<=0;
+  $('#fc_next').disabled=to>=r.matched;
 }
 
 // ---- аналитика+ по компонентам ----
+// строка-прогрессбар: подпись слева, значение справа, полоса под ними.
+// Цвет нейтральный (акцент), т.к. высокое значение здесь не «тревога».
+function pbar(label,pct,right,color){ pct=Math.max(0,Math.min(100,Math.round(pct||0)));
+  color=color||C.a;
+  return `<div style="margin:7px 0">
+    <div style="display:flex;justify-content:space-between;gap:10px;font-size:13px;margin-bottom:3px">
+      <span>${esc(label)}</span><span class="note">${right!=null?right:pct+'%'}</span></div>
+    <div style="background:var(--panel2);border:1px solid var(--line);border-radius:6px;height:14px;overflow:hidden">
+      <div style="width:${pct}%;height:100%;background:${color};transition:width .4s"></div></div></div>`; }
+function pbarHead(t){ return `<div class="note" style="margin:6px 0 2px">${t}</div>`; }
 async function loadComponents(){
   let s; try{ s=await (await fetch('/api/analytics-components?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
   const q=s.qdrant||{}, g=s.graph||{}, f=s.finetune||{}, u=s.usage||{};
@@ -922,6 +993,19 @@ async function loadComponents(){
   $('#cc_qstats').innerHTML = q.online
     ? sysCards([['Точек (чанков)',nz(q.points)],['Сегментов',nz(q.segments)]])
     : '<div class="note">Qdrant недоступен'+(q.error?': '+esc(q.error):'')+'</div>';
+  // прогресс-бары Qdrant: покрытие метаданными и распределение по категориям
+  let qb='';
+  const pts=q.points||0;
+  if(q.online && pts){
+    if(q.meta){ qb+=pbarHead('Покрытие LLM-метаданными (доля чанков)');
+      qb+=pbar('product',100*(q.meta.product||0)/pts,(q.meta.product||0)+' / '+pts);
+      qb+=pbar('topic',100*(q.meta.topic||0)/pts,(q.meta.topic||0)+' / '+pts);
+      qb+=pbar('doc_type',100*(q.meta.doc_type||0)/pts,(q.meta.doc_type||0)+' / '+pts); }
+    if(q.by_category){ const cats=Object.entries(q.by_category); const sum=cats.reduce((a,[,v])=>a+v,0)||1;
+      qb+=pbarHead('Распределение чанков по категориям');
+      cats.sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{ qb+=pbar(k,100*v/sum,v+' ('+Math.round(100*v/sum)+'%)'); }); }
+  }
+  $('#cc_qbars').innerHTML=qb;
   if(q.by_category) mkChart('cc_cat',{type:'doughnut',data:{labels:Object.keys(q.by_category),
     datasets:[{data:Object.values(q.by_category),backgroundColor:C.palette}]},options:dough});
   if(q.by_ftype){ const e=Object.entries(q.by_ftype);
@@ -937,6 +1021,19 @@ async function loadComponents(){
         ['Связей/сущность',nz(g.rel_per_entity)],['Чанки',nz(g.chunks)],
         ['Документы',nz(g.docs)],['Размер, МБ',nz(g.size_mb)]])
     : '<div class="note">Граф не построен</div>';
+  // прогресс-бары графа: величины относительно максимума + охват чанков из Qdrant
+  let gb='';
+  if(g.ready){
+    const vals=[['Сущности',g.entities||0],['Связи',g.relations||0],['Чанки',g.chunks||0],['Документы',g.docs||0]];
+    const mx=Math.max(1,...vals.map(v=>v[1]));
+    gb+=pbarHead('Относительная величина (от максимума)');
+    vals.forEach(([k,v])=>{ gb+=pbar(k,100*v/mx,nz(v)); });
+    if(q.online && (q.points||0)){
+      gb+=pbarHead('Охват базы графом (чанков в графе от чанков в Qdrant)');
+      gb+=pbar('Чанки в графе',100*(g.chunks||0)/q.points,(g.chunks||0)+' / '+q.points);
+    }
+  }
+  $('#cc_gbars').innerHTML=gb;
   if(g.ready) mkChart('cc_graph',{type:'bar',data:{labels:['Сущности','Связи','Чанки','Документы'],
     datasets:[{data:[g.entities||0,g.relations||0,g.chunks||0,g.docs||0],backgroundColor:C.palette}]},options:axes});
   // Дообучение
@@ -944,6 +1041,15 @@ async function loadComponents(){
   $('#cc_fstats').innerHTML = sysCards([['Пар в датасете',nz(d.pairs)],
     ['Ср. длина вопроса',nz(d.avg_q)],['Ср. длина ответа',nz(d.avg_a)],
     ['LoRA r',nz(l.r)],['LoRA alpha',nz(l.alpha)],['Адаптер, МБ',nz(f.adapter_size_mb)]]);
+  // прогресс-бары дообучения: готовность по этапам + наполнение датасета
+  const hasData=(d.pairs||0)>0, hasLora=!!(l.r), hasAdapter=(f.adapter_size_mb||0)>0;
+  const steps=[hasData,hasLora,hasAdapter].filter(Boolean).length;
+  let fb=pbarHead('Готовность к дообучению');
+  fb+=pbar('Этапы готовы ('+steps+'/3): датасет · параметры · адаптер',100*steps/3,steps+'/3',steps===3?'#22c55e':C.a);
+  // наполнение датасета относительно ориентира (500 пар = 100%)
+  fb+=pbarHead('Наполнение датасета (ориентир 500 пар)');
+  fb+=pbar('Пары вопрос/ответ',100*Math.min(1,(d.pairs||0)/500),nz(d.pairs)+' / 500');
+  $('#cc_fbars').innerHTML=fb;
   if(d.ans_hist) mkChart('cc_ans',{type:'bar',data:{labels:Object.keys(d.ans_hist),
     datasets:[{data:Object.values(d.ans_hist),backgroundColor:C.a}]},options:axes});
   // тайминги
@@ -951,6 +1057,17 @@ async function loadComponents(){
   const stg=tm.stages||{};
   $('#cc_tstages').innerHTML=sysCards([['Поиск',nz(stg.retrieve)+' мс'],
     ['Генерация',nz(stg.gen)+' мс'],['Всего',nz(stg.total)+' мс']]);
+  // прогресс-бары таймингов: доли этапов в общем времени + бенчмарк относительно медленного
+  let tb='';
+  const tot=stg.total||((stg.retrieve||0)+(stg.gen||0));
+  if(tot){ tb+=pbarHead('Доля этапов в общем времени ответа');
+    tb+=pbar('Поиск + реранк',100*(stg.retrieve||0)/tot,(stg.retrieve||0)+' мс');
+    tb+=pbar('Генерация LLM',100*(stg.gen||0)/tot,(stg.gen||0)+' мс'); }
+  const bmj=tm.benchmark||[];
+  if(bmj.length){ const mx=Math.max(1,...bmj.map(x=>x.ms||0));
+    tb+=pbarHead('Бенчмарк компонентов (относительно самого медленного)');
+    bmj.forEach(x=>{ tb+=pbar(x.component,100*(x.ms||0)/mx,(x.ms||0)+' мс'); }); }
+  $('#cc_tbars').innerHTML=tb;
   const bm=tm.benchmark||[];
   if(bm.length) mkChart('cc_tbench',{type:'bar',data:{labels:bm.map(x=>x.component),
     datasets:[{data:bm.map(x=>x.ms),backgroundColor:C.a}]},options:{...axes,indexAxis:'y'}});

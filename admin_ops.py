@@ -1559,12 +1559,23 @@ def component_analytics() -> dict:
             "usage": db.engine_usage(), "timings": timings}
 
 
-def files_catalog(limit: int = 500, offset: int = 0, query: str = "") -> dict:
+def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
+                  sort: str = "name", order: str = "asc",
+                  only_errors: bool = False) -> dict:
     """Расширенный каталог документов: файлы папки знаний с размером, датой,
-    числом чанков и статусом индексации; сводка по типам."""
+    числом чанков и статусом индексации; сводка по типам.
+    Поддерживает пагинацию (limit/offset), сортировку (sort=name|date|size|chunks,
+    order=asc|desc) и фильтр файлов с ошибками (only_errors).
+    Ошибки берутся из последней «Проверки каталога» (check_data_dir)."""
     docs = Path(settings.get("DOCS_DIR")).expanduser()
     if not docs.exists():
         return {"ok": False, "msg": f"папка документов не найдена: {docs}"}
+
+    # карта «файл -> проблема» из последней завершённой проверки каталога
+    cres = _check_job.get("results") or {}
+    err_map = {p.get("path"): p.get("issue") for p in (cres.get("problems") or [])}
+    checked = bool(cres) and _check_job.get("ok") is True
+    err_truncated = (cres.get("problems_total") or 0) > len(cres.get("problems") or [])
 
     # число чанков по каждому источнику — одним фасет-запросом к Qdrant
     counts = {}
@@ -1596,17 +1607,37 @@ def files_catalog(limit: int = 500, offset: int = 0, query: str = "") -> dict:
         total_size += sz
         by_ext[ext] = by_ext.get(ext, 0) + 1
         files.append({"path": rel, "ext": ext, "size": sz, "mtime": mt,
-                      "chunks": ch, "indexed": bool(ch)})
+                      "chunks": ch, "indexed": bool(ch),
+                      "error": err_map.get(rel)})
 
     total = len(files)
+    error_count = sum(1 for f in files if f["error"])
     if query:
         ql = query.lower()
         files = [f for f in files if ql in f["path"].lower()]
+    if only_errors:
+        files = [f for f in files if f["error"]]
     matched = len(files)
-    page = files[offset:offset + max(1, limit)]
+
+    # сортировка
+    keymap = {"name": lambda f: f["path"].lower(),
+              "date": lambda f: f["mtime"],
+              "size": lambda f: f["size"],
+              "chunks": lambda f: f["chunks"],
+              "error": lambda f: (0 if f["error"] else 1, f["path"].lower())}
+    keyfn = keymap.get(sort, keymap["name"])
+    files.sort(key=keyfn, reverse=(order == "desc"))
+
+    offset = max(0, offset)
+    limit = max(1, min(limit, 1000))
+    page = files[offset:offset + limit]
     return {"ok": True, "total": total, "matched": matched, "indexed": indexed,
             "not_indexed": total - indexed, "total_size": total_size,
-            "by_ext": by_ext, "files": page, "dir": str(docs)}
+            "error_count": error_count, "checked": checked,
+            "err_truncated": err_truncated,
+            "by_ext": by_ext, "files": page, "dir": str(docs),
+            "offset": offset, "limit": limit, "sort": sort, "order": order,
+            "only_errors": only_errors}
 
 
 def browse(path: str | None = None) -> dict:
