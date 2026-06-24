@@ -32,7 +32,8 @@ def init() -> None:
                 answer_chars INTEGER, answered INTEGER, sources TEXT)"""
         )
         # миграции колонок (идемпотентно)
-        for col in ("rating INTEGER", "retrieve_ms INTEGER", "gen_ms INTEGER"):
+        for col in ("rating INTEGER", "retrieve_ms INTEGER", "gen_ms INTEGER",
+                    "session_id TEXT"):
             try:
                 c.execute(f"ALTER TABLE requests ADD COLUMN {col}")
             except Exception:
@@ -45,18 +46,19 @@ init()
 def log_request(question: str, category: str | None, n_hits: int,
                 top_score: float, latency_ms: int, answer_chars: int,
                 answered: bool, sources: list,
-                retrieve_ms: int = 0, gen_ms: int = 0) -> int:
+                retrieve_ms: int = 0, gen_ms: int = 0,
+                session_id: str = "") -> int:
     now = datetime.now()
     with _LOCK, _conn() as c:
         cur = c.execute(
             """INSERT INTO requests
                (ts,day,question,category,n_hits,top_score,latency_ms,
-                answer_chars,answered,sources,retrieve_ms,gen_ms)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                answer_chars,answered,sources,retrieve_ms,gen_ms,session_id)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (now.timestamp(), now.strftime("%Y-%m-%d"), question, category,
              n_hits, round(top_score, 4), latency_ms, answer_chars,
              int(answered), json.dumps(sources, ensure_ascii=False),
-             int(retrieve_ms), int(gen_ms)),
+             int(retrieve_ms), int(gen_ms), session_id or ""),
         )
         return cur.lastrowid
 
@@ -124,10 +126,30 @@ def stats() -> dict:
     }
 
 
-def clear() -> None:
-    """Очистить журнал запросов."""
+def clear() -> int:
+    """Очистить журнал запросов (история всех чатов и их статистика). Возвращает
+    число удалённых записей."""
     with _LOCK, _conn() as c:
+        n = c.execute("SELECT COUNT(*) n FROM requests").fetchone()["n"]
         c.execute("DELETE FROM requests")
+    return n
+
+
+def session_history(session_id: str) -> list[dict]:
+    """Все записи одного чата (по session_id), от старых к новым — для экспорта."""
+    if not session_id:
+        return []
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM requests WHERE session_id=? ORDER BY id ASC",
+            (session_id,)
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["sources"] = json.loads(d.get("sources") or "[]")
+        out.append(d)
+    return out
 
 
 def engine_usage() -> dict:

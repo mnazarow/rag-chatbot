@@ -39,6 +39,7 @@ class ChatRequest(BaseModel):
     history: list[dict] = []
     filters: dict | None = None
     debug: bool = False
+    session_id: str = ""
 
 
 def _debug_params() -> dict:
@@ -99,7 +100,8 @@ async def chat(req: ChatRequest):
                         "timings": {"retrieve_ms": 0, "gen_ms": lat, "total_ms": lat},
                         "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
                 rid = db.log_request(req.question, cat, 1, 1.0, lat, len(text), True, [],
-                                     retrieve_ms=0, gen_ms=lat)
+                                     retrieve_ms=0, gen_ms=lat,
+                                     session_id=req.session_id)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
             return StreamingResponse(gstream(), media_type="application/x-ndjson")
@@ -115,7 +117,8 @@ async def chat(req: ChatRequest):
         msg = "В доступных документах нет точного ответа на этот вопрос."
         rid = db.log_request(req.question, category, 0, 0.0,
                              int((time.time() - t0) * 1000), len(msg), False, [],
-                             retrieve_ms=retrieve_ms, gen_ms=0)
+                             retrieve_ms=retrieve_ms, gen_ms=0,
+                             session_id=req.session_id)
 
         async def empty():
             yield json.dumps({"type": "answer", "text": msg}, ensure_ascii=False) + "\n"
@@ -153,7 +156,8 @@ async def chat(req: ChatRequest):
                 "params": _debug_params(), "chunks": _debug_chunks(hits)}}, ensure_ascii=False) + "\n"
         rid = db.log_request(req.question, category, len(hits), hits[0]["score"],
                              latency, len("".join(acc)), True, sources,
-                             retrieve_ms=retrieve_ms, gen_ms=max(0, latency - retrieve_ms))
+                             retrieve_ms=retrieve_ms, gen_ms=max(0, latency - retrieve_ms),
+                             session_id=req.session_id)
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
@@ -180,7 +184,8 @@ def api_rate(payload: dict = Body(...)):
 # ============================ ЧАТ С ПРИЛОЖЕННЫМ ДОКУМЕНТОМ ============================
 @app.post("/chat-doc")
 async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
-                   history: str = Form("[]"), debug: str = Form("")):
+                   history: str = Form("[]"), debug: str = Form(""),
+                   session_id: str = Form("")):
     """Ответ на основе приложенного к вопросу документа (Excel и др.), без индексации."""
     t0 = time.time()
     name = os.path.basename(file.filename or "файл")
@@ -216,7 +221,8 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
             yield json.dumps({"type": "answer", "text": msg}, ensure_ascii=False) + "\n"
             yield json.dumps({"type": "sources", "items": []}, ensure_ascii=False) + "\n"
         db.log_request(question, "attached", 0, 0.0,
-                       int((time.time() - t0) * 1000), 0, False, [])
+                       int((time.time() - t0) * 1000), 0, False, [],
+                       session_id=session_id)
         return StreamingResponse(empty(), media_type="application/x-ndjson")
 
     context = prompts.build_context(hits)
@@ -243,7 +249,8 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
                 "timings": {"retrieve_ms": 0, "gen_ms": latency, "total_ms": latency},
                 "params": _debug_params(), "chunks": _debug_chunks(hits)}}, ensure_ascii=False) + "\n"
         rid = db.log_request(question, "attached", len(hits), hits[0]["score"],
-                             latency, len("".join(acc)), True, sources)
+                             latency, len("".join(acc)), True, sources,
+                             session_id=session_id)
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
@@ -481,6 +488,20 @@ def admin_apply_finetuned(x_admin_token: str | None = Header(None)):
 def admin_reset(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.reset(payload.get("targets", []))
+
+
+@app.post("/api/admin/clear-history")
+def admin_clear_history(x_admin_token: str | None = Header(None)):
+    """Очистить историю всех чатов и их статистику (журнал запросов и оценки)."""
+    _check_admin(x_admin_token)
+    n = db.clear()
+    return {"ok": True, "deleted": n, "msg": f"удалено записей: {n}"}
+
+
+@app.get("/api/chat-history")
+def api_chat_history(session_id: str):
+    """История одного чата (по session_id) — для сохранения в файл."""
+    return {"session_id": session_id, "items": db.session_history(session_id)}
 
 
 @app.get("/api/admin/check-updates")
