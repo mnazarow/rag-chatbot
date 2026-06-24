@@ -11,22 +11,22 @@
 # который копируется в финальный образ — при проблеме его видно в чеклисте.
 FROM ubuntu:24.04 AS dwgbuild
 ENV DEBIAN_FRONTEND=noninteractive
-ARG LIBREDWG_REF=master
+# python3 нужен configure для кодогенерации (даже с --disable-bindings)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential git ca-certificates pkg-config perl \
+        build-essential git ca-certificates pkg-config perl python3 \
         autoconf automake libtool gperf texinfo \
     && rm -rf /var/lib/apt/lists/*
+# Шаги связаны через && — любая ошибка останавливает сборку (без ложного «OK»).
+# Весь вывод пишется в лог, который копируется в финальный образ для диагностики.
 RUN mkdir -p /dwgout/usr/local && \
-    ( set -e; \
-      git clone --depth 1 --branch "${LIBREDWG_REF}" https://github.com/LibreDWG/libredwg /tmp/libredwg 2>/dev/null \
-        || git clone --depth 1 https://github.com/LibreDWG/libredwg /tmp/libredwg; \
-      cd /tmp/libredwg; \
-      sh autogen.sh; \
-      ./configure --disable-bindings --disable-werror --prefix=/usr/local; \
-      make -j"$(nproc)"; \
-      make install DESTDIR=/dwgout; \
-      echo "OK: dwg2dxf собран" ) > /dwgout/libredwg-build.log 2>&1 \
-    || echo "FAILED: сборка libredwg не удалась (см. лог ниже)" >> /dwgout/libredwg-build.log
+    ( git clone --depth 1 https://github.com/LibreDWG/libredwg /tmp/libredwg \
+      && cd /tmp/libredwg \
+      && sh autogen.sh \
+      && ./configure --disable-bindings --disable-werror --prefix=/usr/local \
+      && make -j"$(nproc)" \
+      && make install DESTDIR=/dwgout \
+      && echo "RESULT: OK — dwg2dxf собран" ) > /dwgout/libredwg-build.log 2>&1 \
+    || echo "RESULT: FAILED — сборка libredwg не удалась (подробности в логе выше)" >> /dwgout/libredwg-build.log
 
 # ---------- стадия 2: приложение ----------
 FROM ubuntu:24.04
