@@ -16,20 +16,58 @@ Set-Location $Here
 
 function Log($m){ Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn($m){ Write-Host "[!] $m" -ForegroundColor Yellow }
-
-# ----- 1. Проверки окружения -----
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw "Docker не найден. Установите Docker Desktop: winget install -e --id Docker.DockerDesktop"
+function Refresh-Path {
+    $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+                [Environment]::GetEnvironmentVariable("Path","User")
 }
-try { docker info *> $null } catch { throw "Docker Desktop не запущен — запустите его и повторите." }
 
-# ----- 2. Ollama на хосте (генерация) -----
+# ----- 1. Docker: установка (winget) + запуск + ожидание движка -----
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Warn "Docker Desktop не установлен."
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Log "Устанавливаю Docker Desktop (winget; может потребоваться подтверждение прав)..."
+        winget install -e --id Docker.DockerDesktop --silent --accept-source-agreements --accept-package-agreements
+        Refresh-Path
+    } else {
+        Warn "winget не найден. Установите Docker Desktop вручную:"
+        Warn "  https://www.docker.com/products/docker-desktop/  затем повторите start.cmd."
+        exit 1
+    }
+}
+docker info *> $null
+if (-not $?) {
+    $dd = Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
+    if (Test-Path $dd) { Log "Запускаю Docker Desktop..."; Start-Process $dd }
+    Log "Жду запуска движка Docker (до ~5 минут)..."
+    $ready = $false
+    for ($i = 0; $i -lt 60; $i++) { docker info *> $null; if ($?) { $ready = $true; break }; Start-Sleep -Seconds 5 }
+    if (-not $ready) {
+        Warn "Docker ещё не запустился. Если это первая установка — нужна ПЕРЕЗАГРУЗКА (WSL2/Hyper-V)."
+        Warn "Перезагрузите Windows и снова запустите start.cmd — всё уже установлено, он просто продолжит."
+        exit 1
+    }
+}
+Log "Docker готов."
+
+# ----- 2. Ollama: установка (winget) + модель -----
+if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Log "Устанавливаю Ollama (winget)..."
+        winget install -e --id Ollama.Ollama --silent --accept-source-agreements --accept-package-agreements
+        Refresh-Path
+        Start-Sleep -Seconds 5
+    }
+}
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
     Log "Скачиваю модель Ollama: $LlmModel (при первом запуске долго)..."
-    try { ollama pull $LlmModel } catch { Warn "Не удалось скачать модель — проверьте, запущен ли Ollama." }
+    $pulled = $false
+    for ($i = 0; $i -lt 6; $i++) {
+        try { ollama pull $LlmModel; $pulled = $true; break } catch { Start-Sleep -Seconds 5 }
+    }
+    if (-not $pulled) { Warn "Модель не скачалась. Запустите Ollama (значок в трее) и выполните: ollama pull $LlmModel" }
 } else {
-    Warn "Ollama не найдена на хосте. Установите: winget install -e --id Ollama.Ollama"
-    Warn "Без неё контейнер поднимется, но отвечать на вопросы не сможет."
+    Warn "Ollama не установлена — контейнер поднимется, но отвечать на вопросы не сможет."
+    Warn "Установите вручную: winget install -e --id Ollama.Ollama"
 }
 
 # ----- 3. Конфиг .env.docker -----
