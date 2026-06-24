@@ -114,6 +114,8 @@ FIELDS: list[dict] = [
      "group": "Дообучение (fine-tuning)", "type": "bool", "scope": "live", "default": False},
     {"key": "FINETUNED_MODEL", "label": "Имя дообученной модели (LoRA в vLLM)",
      "group": "Дообучение (fine-tuning)", "type": "text", "scope": "live", "default": "company-lora"},
+    {"key": "FINETUNE_BASE", "label": "Базовая модель для дообучения (пусто = из VLLM_MODEL)",
+     "group": "Дообучение (fine-tuning)", "type": "text", "scope": "live", "default": config.FINETUNE_BASE},
 
     # --- Доступ ---
     {"key": "ADMIN_TOKEN", "label": "Токен администратора", "group": "Доступ",

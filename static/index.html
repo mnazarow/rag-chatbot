@@ -287,6 +287,7 @@
     <div class="box"><h3>🧠 LightRAG (граф знаний)</h3><div id="sys_graph"></div></div>
     <div class="box"><h3>🎓 Дообучение (LoRA)</h3><div id="sys_ft"></div></div>
     <div class="box"><h3>⚡ Hybrid+ и использование движков</h3><div id="sys_hybrid"></div></div>
+    <div class="box"><h3>⏱ Время обработки (индексация)</h3><div id="sys_ingest"></div></div>
 
     <div class="box"><h3>🔎 Проверка каталога данных</h3>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -329,6 +330,7 @@
           <th>Тип</th>
           <th onclick="fcSort('size')" style="cursor:pointer" title="Сортировать по размеру">Размер <span id="fc_ah_size"></span></th>
           <th onclick="fcSort('chunks')" style="cursor:pointer" title="Сортировать по числу чанков">Чанков <span id="fc_ah_chunks"></span></th>
+          <th onclick="fcSort('proc')" style="cursor:pointer" title="Сортировать по времени обработки">Время обр. <span id="fc_ah_proc"></span></th>
           <th onclick="fcSort('error')" style="cursor:pointer" title="Сначала файлы с ошибками">Статус <span id="fc_ah_error"></span></th>
           <th onclick="fcSort('date')" style="cursor:pointer" title="Сортировать по дате">Изменён <span id="fc_ah_date"></span></th>
         </tr></thead>
@@ -394,6 +396,8 @@
     <div class="box"><h3>⏱ Тайминги по компонентам</h3>
       <div class="note">Среднее время этапов запроса</div>
       <div class="cards" id="cc_tstages" style="margin-top:6px"></div>
+      <div class="note" style="margin-top:12px">Время обработки (индексация)</div>
+      <div class="cards" id="cc_tingest" style="margin-top:6px"></div>
       <div id="cc_tbars" style="margin-top:12px"></div>
       <div class="note" style="margin-top:12px">Последний бенчмарк (мс по компонентам)</div>
       <canvas id="cc_tbench" height="150"></canvas>
@@ -499,7 +503,7 @@
         <button class="act ghost" onclick="loadModels()">Обновить список</button>
         <span id="llmmsg"></span>
       </div>
-      <div class="note">Сверху — установленные модели (выбор для генерации). Каталог — рекомендованные модели: для Ollama скачиваются, для vLLM имя подставляется в VLLM_MODEL (затем «Применить модель LLM»).</div>
+      <div class="note">Сверху — установленные модели (выбор для генерации). Каталог — рекомендованные модели: для Ollama скачиваются, для vLLM имя подставляется в VLLM_MODEL (затем «Применить модель LLM»). Для vLLM есть отдельный выпадающий список и кнопка «Обновить список» прямо у поля <code>VLLM_MODEL</code> в настройках.</div>
       <details class="note" style="margin-top:10px">
         <summary style="cursor:pointer"><b>📌 Рекомендации по выбору модели</b></summary>
         <div style="margin-top:8px;line-height:1.6">
@@ -526,12 +530,19 @@
     <div class="box">
       <h3>Модель генерации</h3>
       <div class="cards" id="genmodelcards"></div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
+      <div style="margin-top:14px"><b style="font-size:13px">Базовая модель для дообучения (QLoRA):</b></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">
+        <select id="ftbase_select" onchange="setFinetuneBase(this.value)" style="flex:1;min-width:260px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:inherit"><option value="">— выбрать модель —</option></select>
+        <button class="act ghost" onclick="loadFinetuneModels()">🔄 Обновить список моделей</button>
+        <span id="ftbasemsg" class="note"></span>
+      </div>
+      <div class="note" id="ftbase_hint" style="margin-top:6px"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px">
         <button class="act ghost" onclick="runFinetune()">🎓 Запустить дообучение</button>
         <button class="act ghost" onclick="applyFinetuned()">📥 Применить дообученную модель (рестарт vLLM)</button>
         <span id="ftmsg"></span>
       </div>
-      <div class="note">Дообучение строит LoRA-адаптер из ваших документов (долго, грузит GPU). После применения переключите «Дообученная».</div>
+      <div class="note">Дообучение строит LoRA-адаптер из ваших документов на выбранной базовой fp16-модели (долго, грузит GPU). После применения переключите «Дообученная».</div>
     </div>
 
     <!-- операции -->
@@ -822,6 +833,21 @@ async function loadSystem(){
     sysCards([['Векторный',nz(u.vector)],['Граф (hybrid)',nz(u.graph)],
       ['LightRAG (целиком)',nz(u.lightrag)],['Всего',nz(u.total)]]);
   $('#sys_hybrid').innerHTML=hh;
+  // Время обработки (индексация)
+  const ing=s.ingest||{};
+  if(ing.last_duration_sec!=null||ing.total_ms!=null){
+    let ih=sysCards([
+      ['Последняя индексация',ing.last_duration_sec!=null?fmtMs(ing.last_duration_sec*1000):'—'],
+      ['Обработано файлов',nz(ing.files_processed)],
+      ['Чанков',nz(ing.chunks)],
+      ['Среднее на файл',ing.avg_ms!=null?fmtMs(ing.avg_ms):'—'],
+      ['Суммарно по файлам',ing.total_ms!=null?fmtMs(ing.total_ms):'—'],
+      ['Файлов с таймингом',nz(ing.timed_files)]]);
+    if(ing.updated) ih+='<div class="note" style="margin-top:8px">Обновлено: '+fmtTime(ing.updated)+'</div>';
+    $('#sys_ingest').innerHTML=ih;
+  } else {
+    $('#sys_ingest').innerHTML='<div class="note">Время обработки появится после индексации (ingest.py).</div>';
+  }
   loadFiles();
 }
 
@@ -935,12 +961,17 @@ function fcSort(col){
 function fcToggleOrder(){ fcState.order=(fcState.order==='asc'?'desc':'asc'); fcState.offset=0; loadFiles(); }
 function fcPage(d){ fcState.offset=Math.max(0,fcState.offset+d*fcState.limit); loadFiles(); }
 function fcArrows(){
-  ['name','date','size','chunks','error'].forEach(c=>{ const el=$('#fc_ah_'+c); if(el) el.textContent=(fcState.sort===c?(fcState.order==='asc'?'▲':'▼'):''); });
+  ['name','date','size','chunks','proc','error'].forEach(c=>{ const el=$('#fc_ah_'+c); if(el) el.textContent=(fcState.sort===c?(fcState.order==='asc'?'▲':'▼'):''); });
   const ob=$('#fc_order'); if(ob){ const asc=fcState.order==='asc';
     ob.textContent = fcState.sort==='name' ? (asc?'↑ A→Я':'↓ Я→A')
       : fcState.sort==='date' ? (asc?'↑ старые':'↓ новые')
+      : fcState.sort==='proc' ? (asc?'↑ быстрые':'↓ медленные')
       : fcState.sort==='error' ? (asc?'↑ ошибки сверху':'↓ ошибки снизу') : (asc?'↑ меньше':'↓ больше'); }
 }
+function fmtMs(ms){ if(ms==null) return '—'; ms=+ms;
+  if(ms<1000) return ms+' мс';
+  if(ms<60000) return (ms/1000).toFixed(1)+' с';
+  const m=Math.floor(ms/60000), s=Math.round(ms%60000/1000); return m+' м '+s+' с'; }
 async function loadFiles(){
   const q=$('#fc_q')?$('#fc_q').value.trim():'';
   const qs='/api/admin/files-catalog?limit='+fcState.limit+'&offset='+fcState.offset
@@ -949,10 +980,15 @@ async function loadFiles(){
   if(!r.ok){ $('#fc_summary').innerHTML='<div class="note">'+esc(r.msg||r.detail||'ошибка')+'</div>'; $('#fc_rows').innerHTML=''; return; }
   const byext=Object.entries(r.by_ext||{}).sort((a,b)=>b[1]-a[1])
     .map(([k,v])=>`<span class="tag">${esc(k)}: ${v}</span>`).join(' ');
+  const lr=r.last_run||{};
+  const lrNote=lr.duration_sec!=null
+    ? `<div class="note" style="margin-top:4px">Последняя индексация: ${fmtMs((lr.duration_sec||0)*1000)} · обработано файлов ${nz(lr.files_processed)} · среднее ${fmtMs(lr.avg_ms)} на файл</div>`
+    : '<div class="note" style="margin-top:4px">Время обработки появится после индексации.</div>';
   $('#fc_summary').innerHTML=sysCards([['Всего файлов',r.total],
     ['Проиндексировано',r.indexed],['Не проиндексировано',r.not_indexed],
     ['С ошибками',r.checked?(r.error_count||0):'—'],
-    ['Объём',fcSize(r.total_size)]])+'<div class="note" style="margin-top:8px">По типам: '+byext+'</div>'
+    ['Общее время обработки',fmtMs(r.total_proc_ms)],
+    ['Объём',fcSize(r.total_size)]])+'<div class="note" style="margin-top:8px">По типам: '+byext+'</div>'+lrNote
     +(r.checked?'':'<div class="note" style="margin-top:6px;color:#f59e0b">Чтобы увидеть файлы с ошибками, запустите «Проверить каталог с данными» выше.</div>')
     +(r.err_truncated?'<div class="note" style="margin-top:4px">Ошибок очень много — показаны первые из проверки; см. блок «Проверка каталога».</div>':'');
   const rows=(r.files||[]).map(f=>{
@@ -963,9 +999,10 @@ async function loadFiles(){
     <td style="max-width:340px;word-break:break-all">${esc(f.path)}${f.error?`<div class="note" style="color:#f87171;margin-top:2px">${esc(f.error)}</div>`:''}</td>
     <td><span class="tag">${esc(f.ext)}</span></td>
     <td>${fcSize(f.size)}</td><td>${f.chunks}</td>
+    <td>${fmtMs(f.proc_ms)}</td>
     <td>${status}</td>
     <td>${f.mtime?fmtTime(f.mtime):'—'}</td></tr>`;}).join('');
-  $('#fc_rows').innerHTML=rows||emptyRow(6);
+  $('#fc_rows').innerHTML=rows||emptyRow(7);
   fcArrows();
   // пагинация
   const from=r.matched?fcState.offset+1:0, to=Math.min(fcState.offset+fcState.limit,r.matched);
@@ -1057,6 +1094,13 @@ async function loadComponents(){
   const stg=tm.stages||{};
   $('#cc_tstages').innerHTML=sysCards([['Поиск',nz(stg.retrieve)+' мс'],
     ['Генерация',nz(stg.gen)+' мс'],['Всего',nz(stg.total)+' мс']]);
+  // время обработки (индексация)
+  const ing=tm.ingest||{};
+  $('#cc_tingest').innerHTML=sysCards([
+    ['Последняя индексация',ing.last_duration_sec!=null?fmtMs(ing.last_duration_sec*1000):'—'],
+    ['Обработано файлов',nz(ing.files_processed)],
+    ['Среднее на файл',ing.avg_ms!=null?fmtMs(ing.avg_ms):'—'],
+    ['Суммарно по файлам',ing.total_ms!=null?fmtMs(ing.total_ms):'—']]);
   // прогресс-бары таймингов: доли этапов в общем времени + бенчмарк относительно медленного
   let tb='';
   const tot=stg.total||((stg.retrieve||0)+(stg.gen||0));
@@ -1080,6 +1124,47 @@ async function loadComponents(){
 // ---- админка: авто-рендер настроек из схемы ----
 const SCOPE={live:['на лету','#22c55e'],reindex:['после реиндекса','#f59e0b'],
   restart:['после рестарта','#ef4444'],vllm:['рестарт vLLM','#a855f7'],secret:['','']};
+// Пояснения и рекомендации по выбору моделей — показываются под заголовком группы
+const GROUP_HELP={
+  'Генерация (LLM)': `<details class="note" style="margin:2px 0 12px" open>
+    <summary style="cursor:pointer"><b>ℹ️ Описание и рекомендации по выбору модели генерации</b></summary>
+    <div style="margin-top:8px;line-height:1.6">
+      <b>Бэкенд.</b> <code>ollama</code> — для Apple Silicon (Metal) и CPU, модели качаются по имени
+      (напр. <code>qwen2.5:14b-instruct</code>); <code>openai</code> — для vLLM на NVIDIA GPU
+      (высокий throughput, OpenAI-совместимый API). Имя модели для запросов задаёт <code>LLM_MODEL</code>
+      (Ollama) или обслуживаемая vLLM модель.<br><br>
+      <b>Выбор по железу (Ollama):</b><br>
+      • 8–16 ГБ ОЗУ/VRAM: <code>qwen3:8b</code>, <code>qwen3.6:35b-a3b-q4_K_M</code> (MoE, быстрая), <code>gemma3:12b</code>.<br>
+      • 24 ГБ: <code>qwen3.6:35b-a3b</code> ✅ (лучший баланс RU/скорость), <code>qwen2.5:32b</code>, <code>gemma3:27b</code>.<br>
+      • 48–96 ГБ (Mac Studio): <code>qwen2.5:72b</code>, <code>qwen3.6:27b</code>, <code>llama3.3:70b</code>.<br>
+      • Слабый сервер/CPU: <code>qwen3:1.7b</code>–<code>qwen3:4b</code>, <code>llama3.2:3b</code>.<br><br>
+      <b>Для русского и RAG:</b> Qwen3.6 / Qwen3 / Qwen2.5 — самый сильный русский; Gemma 3 — 140+ языков;
+      Mistral-Small — точные фактологические ответы; Command-R — заточена под цитирование.<br>
+      <b>Reasoning</b> (Qwen3.6, DeepSeek-R1) «думают» перед ответом — точнее на сложных вопросах, но
+      медленнее; для простого справочного RAG берите обычные instruct-модели.<br><br>
+      <b>Правило:</b> для RAG качество поиска (эмбеддер + чанкинг) важнее размера LLM — хороший эмбеддер
+      с моделью 8–14B часто лучше гигантской модели со слабым поиском. Модель можно скачать/выбрать в
+      блоке «Модель LLM» выше.
+    </div></details>`,
+  'vLLM (GPU)': `<details class="note" style="margin:2px 0 12px" open>
+    <summary style="cursor:pointer"><b>ℹ️ Описание и рекомендации по моделям vLLM</b></summary>
+    <div style="margin-top:8px;line-height:1.6">
+      <b>VLLM_MODEL</b> — HuggingFace-идентификатор модели, которую обслуживает контейнер vLLM.
+      Для экономии VRAM берите квантованные сборки <code>-AWQ</code>/<code>-GPTQ-Int4</code>.
+      Выбрать можно из выпадающего списка у поля ниже (каталог + обслуживаемые сейчас), кнопка
+      «🔄 Обновить список» подтянет актуальное.<br><br>
+      <b>Выбор по VRAM:</b><br>
+      • 24 ГБ (RTX 3090/4090): <code>Qwen/Qwen2.5-14B-Instruct-AWQ</code> ✅, <code>Qwen/Qwen3-8B</code>, <code>Qwen/Qwen3.6-35B-A3B</code> (MoE Q4).<br>
+      • 48 ГБ (A6000/2×24): <code>Qwen/Qwen2.5-32B-Instruct-AWQ</code>, <code>Qwen/Qwen3-32B-AWQ</code>, <code>google/gemma-3-27b-it</code>.<br>
+      • 80 ГБ (A100/H100): <code>Qwen/Qwen2.5-72B-Instruct-AWQ</code>, <code>Qwen/Qwen3-32B</code>, <code>llama-3.1-70b-AWQ</code>.<br><br>
+      <b>VLLM_MAX_LEN</b> — макс. длина контекста (токенов): больше = длиннее история/контекст, но
+      выше расход VRAM. 8192–16384 — разумно для RAG.<br>
+      <b>VLLM_TP</b> — tensor-parallel: число GPU, между которыми «распилена» модель. 1 для одной карты;
+      2+ для больших моделей на нескольких GPU.<br><br>
+      <b>Reasoning vs instruct:</b> Qwen3.6/Qwen3 — гибридные (умеют «думать»); для быстрого RAG это не
+      обязательно. Изменения здесь применяются кнопкой «Применить модель LLM (рестарт vLLM)».
+    </div></details>`,
+};
 let FIELDS=[];
 function badge(sc){ const s=SCOPE[sc]; return s&&s[0]?`<span class="tag" style="background:${s[1]}22;color:${s[1]}">${s[0]}</span>`:''; }
 function tk(k){ return `<span style="color:#5b6472;font-weight:400">${k}</span>`; }
@@ -1095,8 +1180,30 @@ function renderField(f,val,tokenSet){
   else if(f.key==='DOCS_DIR') inp=`<div style="display:flex;gap:8px">
       <input type="text" id="f_${f.key}" value="${esc(String(val))}" style="flex:1">
       <button class="act ghost" type="button" onclick="openBrowser()">📁 Обзор…</button></div>`;
+  else if(f.key==='VLLM_MODEL') inp=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="text" id="f_${f.key}" value="${esc(String(val))}" style="flex:1;min-width:220px">
+      <select id="vllm_select" onchange="if(this.value)document.getElementById('f_VLLM_MODEL').value=this.value" style="min-width:240px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:inherit"><option value="">— выбрать из списка —</option></select>
+      <button class="act ghost" type="button" onclick="loadVllmModels()">🔄 Обновить список</button>
+      <div class="note" style="width:100%">Выберите модель vLLM из каталога или из обслуживаемых сейчас; имя подставится в поле. Затем «Сохранить настройки» и «Применить модель LLM (рестарт vLLM)».</div>
+    </div>`;
   else inp=`<input type="text" id="f_${f.key}" value="${esc(String(val))}">`;
   return `<div class="field">${lab}${inp}</div>`;
+}
+async function loadVllmModels(){
+  const sel=document.getElementById('vllm_select'); if(!sel) return;
+  sel.innerHTML='<option value="">загрузка…</option>';
+  let c; try{ c=await (await fetch('/api/admin/vllm-models?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }
+  catch(e){ sel.innerHTML='<option value="">ошибка загрузки</option>'; return; }
+  const cur=(document.getElementById('f_VLLM_MODEL')||{}).value||c.current||'';
+  let html='<option value="">— выбрать из списка —</option>';
+  if(c.served&&c.served.length){
+    html+='<optgroup label="Обслуживаются сейчас vLLM">'+c.served.map(n=>
+      `<option value="${escAttr(n)}" ${n===cur?'selected':''}>${esc(n)}</option>`).join('')+'</optgroup>';
+  }
+  html+='<optgroup label="Каталог (рекомендованные)">'+(c.catalog||[]).map(m=>
+    `<option value="${escAttr(m.name)}" ${m.name===cur?'selected':''}>${esc(m.name)} — ${esc(m.note||'')}</option>`).join('')+'</optgroup>';
+  sel.innerHTML=html;
 }
 async function loadConfig(){
   const c=await (await fetch('/api/config')).json(); FIELDS=c.fields;
@@ -1108,6 +1215,7 @@ async function loadConfig(){
   let html='';
   for(const g in groups){
     html+=`<div class="box"><h3>${esc(g)}</h3>`;
+    if(GROUP_HELP[g]) html+=GROUP_HELP[g];
     groups[g].forEach(f=>{ html+=renderField(f,c.values[f.key],c.admin_token_set); });
     html+='</div>';
   }
@@ -1116,6 +1224,8 @@ async function loadConfig(){
   renderEngine(c.values);
   renderGenModel(c.values);
   if($('#cal_auto')) $('#cal_auto').checked=!!c.values.AUTO_CALIBRATE;
+  if(document.getElementById('vllm_select')) loadVllmModels();
+  if(document.getElementById('ftbase_select')) loadFinetuneModels();
   loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad();
 }
 
@@ -1474,6 +1584,29 @@ async function setGenModel(useFt){
   else { opsMsg('✗ '+(j.detail||'ошибка'),false); }
 }
 function ftMsg(t,ok=true){ $('#ftmsg').textContent=t; $('#ftmsg').className=ok?'saved':'note'; }
+function ftBaseMsg(t,ok=true){ const e=$('#ftbasemsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+async function loadFinetuneModels(){
+  const sel=$('#ftbase_select'); if(!sel) return;
+  sel.innerHTML='<option value="">загрузка…</option>';
+  let c; try{ c=await (await fetch('/api/admin/finetune-models?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }
+  catch(e){ sel.innerHTML='<option value="">ошибка загрузки</option>'; return; }
+  const cur=c.current||'';
+  let html='<option value="">— из VLLM_MODEL (авто): '+esc(c.derived||'')+' —</option>';
+  html+=(c.catalog||[]).map(m=>`<option value="${escAttr(m.name)}" ${m.name===c.explicit?'selected':''}>${esc(m.name)} — ${esc(m.note||'')}</option>`).join('');
+  sel.innerHTML=html;
+  $('#ftbase_hint').innerHTML = c.from_vllm
+    ? 'Сейчас база берётся автоматически из <code>VLLM_MODEL</code> ('+esc(c.vllm_model||'')+') → <b>'+esc(c.derived||'')+'</b>. Выберите модель, чтобы задать явно.'
+    : 'Явно задана база: <b>'+esc(c.explicit||'')+'</b>. Выберите «из VLLM_MODEL (авто)», чтобы вернуть автоопределение.';
+}
+async function setFinetuneBase(name){
+  const r=await fetch('/api/config',{method:'POST',
+    headers:{'Content-Type':'application/json','X-Admin-Token':tok()},
+    body:JSON.stringify({FINETUNE_BASE:name||''})});
+  const j=await r.json().catch(()=>({}));
+  if(r.ok){ ftBaseMsg('✓ база: '+(name||'авто из VLLM_MODEL')); const f=$('#f_FINETUNE_BASE'); if(f) f.value=name||''; loadFinetuneModels(); }
+  else { ftBaseMsg('✗ '+(j.detail||'ошибка'),false); }
+}
 async function runFinetune(){
   if(!confirm('Запустить дообучение? Это надолго и нагрузит GPU.'))return;
   ftMsg('запуск дообучения…'); const r=await adminPost('/api/admin/finetune');

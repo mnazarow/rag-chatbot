@@ -22,7 +22,7 @@ docker compose -f docker-compose.yml down 2>/dev/null || true
 
 echo "[reinstall-mac] Удаляю окружение и данные..."
 rm -rf .venv graph_storage finetune/adapter finetune/data \
-       runtime_config.json rag_logs.db rag_logs.db-journal qdrant_storage
+       runtime_config.json ingest_stats.json rag_logs.db rag_logs.db-journal qdrant_storage
 
 echo "[reinstall-mac] Запускаю установку заново..."
 ./setup.sh

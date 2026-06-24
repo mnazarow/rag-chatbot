@@ -46,6 +46,7 @@ if (-not (Test-Path $DocsDir)) { throw "Папка не найдена: $DocsDir
 # ----- 5. Файлы состояния (настройки + логи) -----
 New-Item -ItemType Directory -Force -Path "state" | Out-Null
 if (-not (Test-Path "state\runtime_config.json")) { "{}" | Set-Content "state\runtime_config.json" }
+if (-not (Test-Path "state\ingest_stats.json"))   { "{}" | Set-Content "state\ingest_stats.json" }
 if (-not (Test-Path "state\rag_logs.db"))         { New-Item -ItemType File -Force -Path "state\rag_logs.db" | Out-Null }
 
 # ----- 6. Сборка и запуск -----

@@ -757,6 +757,62 @@ def available_models() -> dict:
             "catalog": _OLLAMA_CATALOG if b == "ollama" else _VLLM_CATALOG}
 
 
+def vllm_models() -> dict:
+    """Модели для vLLM: курируемый каталог + реально обслуживаемые сервером сейчас
+    (через OpenAI-совместимый /v1/models). Доступно независимо от текущего бэкенда —
+    чтобы можно было выбрать модель vLLM заранее."""
+    served, err = [], None
+    try:
+        r = httpx.get(f"{settings.get('LLM_BASE_URL')}/models",
+                      headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
+                      timeout=4)
+        if r.status_code == 200:
+            served = [m.get("id") for m in r.json().get("data", []) if m.get("id")]
+        else:
+            err = f"vLLM вернул HTTP {r.status_code}"
+    except Exception as e:
+        err = str(e)
+    return {"catalog": _VLLM_CATALOG, "served": served,
+            "current": settings.get("VLLM_MODEL"),
+            "base_url": settings.get("LLM_BASE_URL"), "error": err}
+
+
+# Базовые (не-квантованные) fp16 HF-модели, пригодные для QLoRA-дообучения
+_FINETUNE_CATALOG = [
+    {"name": "Qwen/Qwen2.5-1.5B-Instruct", "note": "~8 ГБ VRAM · быстро, для проб"},
+    {"name": "Qwen/Qwen2.5-3B-Instruct", "note": "~10 ГБ VRAM"},
+    {"name": "Qwen/Qwen2.5-7B-Instruct", "note": "~16 ГБ VRAM · хороший баланс RU (рекоменд.)"},
+    {"name": "Qwen/Qwen2.5-14B-Instruct", "note": "~24 ГБ VRAM"},
+    {"name": "Qwen/Qwen2.5-32B-Instruct", "note": "~40 ГБ VRAM (QLoRA 4-bit)"},
+    {"name": "Qwen/Qwen3-8B", "note": "~18 ГБ VRAM · гибрид reasoning"},
+    {"name": "Qwen/Qwen3-14B", "note": "~24 ГБ VRAM"},
+    {"name": "meta-llama/Llama-3.1-8B-Instruct", "note": "~16 ГБ VRAM · нужен доступ HF"},
+    {"name": "meta-llama/Llama-3.2-3B-Instruct", "note": "~10 ГБ VRAM · лёгкая"},
+    {"name": "google/gemma-2-9b-it", "note": "~18 ГБ VRAM · многоязычная"},
+    {"name": "google/gemma-3-12b-it", "note": "~24 ГБ VRAM · 140+ языков"},
+    {"name": "mistralai/Mistral-7B-Instruct-v0.3", "note": "~16 ГБ VRAM"},
+    {"name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506", "note": "~40 ГБ VRAM"},
+    {"name": "microsoft/Phi-4", "note": "~20 ГБ VRAM · сильная логика"},
+]
+
+
+def _strip_quant(m: str) -> str:
+    for s in ("-AWQ", "-GPTQ", "-Int4", "-int4", "-GPTQ-Int4"):
+        m = m.replace(s, "")
+    return m
+
+
+def finetune_models() -> dict:
+    """Модели для дообучения (QLoRA): курируемый каталог fp16-баз + текущая
+    выбранная база (FINETUNE_BASE или производная от VLLM_MODEL)."""
+    explicit = (settings.get("FINETUNE_BASE") or "").strip()
+    derived = _strip_quant(settings.get("VLLM_MODEL") or "Qwen/Qwen2.5-7B-Instruct")
+    return {"catalog": _FINETUNE_CATALOG,
+            "explicit": explicit, "derived": derived,
+            "current": explicit or derived,
+            "from_vllm": not explicit, "vllm_model": settings.get("VLLM_MODEL")}
+
+
 def pull_model(name: str) -> dict:
     """Скачать новую модель в Ollama (фоном). Для vLLM — не применимо."""
     if settings.get("LLM_BACKEND") != "ollama":
@@ -918,6 +974,8 @@ def reset(targets: list) -> dict:
             # пересоздаём пустую коллекцию, чтобы чат не падал до переиндексации
             httpx.put(f"{base}/collections/{coll}", timeout=15,
                       json={"vectors": {"size": 1024, "distance": "Cosine"}})
+            # сбрасываем накопленное время обработки — оно относится к старому индексу
+            _INGEST_STATS.unlink(missing_ok=True)
             done.append("индекс Qdrant")
         except Exception as e:
             errors.append(f"индекс: {e}")
@@ -1261,7 +1319,8 @@ def system_info() -> dict:
     }
 
     return {"qdrant": qd, "graph": graph, "finetune": ft,
-            "hybrid": hybrid, "usage": db.engine_usage()}
+            "hybrid": hybrid, "usage": db.engine_usage(),
+            "ingest": _ingest_summary()}
 
 
 def _num(s):
@@ -1553,20 +1612,48 @@ def component_analytics() -> dict:
             {"name": "Парсинг сайтов", "sec": _dur(_web_job)},
         ],
         "benchmark": [{"component": r["component"], "ms": r["ms"]} for r in _bench_job.get("results", [])],
+        "ingest": _ingest_summary(),
     }
 
     return {"qdrant": qd, "graph": graph, "finetune": ft,
             "usage": db.engine_usage(), "timings": timings}
 
 
+_INGEST_STATS = ROOT / "ingest_stats.json"
+
+
+def _ingest_stats() -> dict:
+    """Время обработки файлов из последней индексации (ingest_stats.json)."""
+    if _INGEST_STATS.exists():
+        try:
+            return _json.loads(_INGEST_STATS.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _ingest_summary() -> dict:
+    """Краткая сводка по времени обработки для разделов «Система» и «Аналитика+»."""
+    ist = _ingest_stats()
+    lr = ist.get("last_run") or {}
+    return {
+        "last_duration_sec": lr.get("duration_sec"),
+        "files_processed": lr.get("files_processed"),
+        "chunks": lr.get("chunks"),
+        "avg_ms": lr.get("avg_ms"),
+        "total_ms": ist.get("total_ms"),
+        "timed_files": ist.get("total_files_timed"),
+        "updated": ist.get("updated"),
+    }
+
+
 def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
                   sort: str = "name", order: str = "asc",
                   only_errors: bool = False) -> dict:
     """Расширенный каталог документов: файлы папки знаний с размером, датой,
-    числом чанков и статусом индексации; сводка по типам.
-    Поддерживает пагинацию (limit/offset), сортировку (sort=name|date|size|chunks,
-    order=asc|desc) и фильтр файлов с ошибками (only_errors).
-    Ошибки берутся из последней «Проверки каталога» (check_data_dir)."""
+    числом чанков, статусом индексации и временем обработки; сводка по типам.
+    Поддерживает пагинацию (limit/offset), сортировку
+    (sort=name|date|size|chunks|proc, order=asc|desc) и фильтр файлов с ошибками."""
     docs = Path(settings.get("DOCS_DIR")).expanduser()
     if not docs.exists():
         return {"ok": False, "msg": f"папка документов не найдена: {docs}"}
@@ -1576,6 +1663,11 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
     err_map = {p.get("path"): p.get("issue") for p in (cres.get("problems") or [])}
     checked = bool(cres) and _check_job.get("ok") is True
     err_truncated = (cres.get("problems_total") or 0) > len(cres.get("problems") or [])
+
+    # время обработки по файлам из последней индексации
+    istats = _ingest_stats()
+    proc_map = {k: (v.get("ms") if isinstance(v, dict) else None)
+                for k, v in (istats.get("files") or {}).items()}
 
     # число чанков по каждому источнику — одним фасет-запросом к Qdrant
     counts = {}
@@ -1608,10 +1700,13 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
         by_ext[ext] = by_ext.get(ext, 0) + 1
         files.append({"path": rel, "ext": ext, "size": sz, "mtime": mt,
                       "chunks": ch, "indexed": bool(ch),
-                      "error": err_map.get(rel)})
+                      "error": err_map.get(rel), "proc_ms": proc_map.get(rel)})
 
     total = len(files)
     error_count = sum(1 for f in files if f["error"])
+    # суммарное время обработки по всем известным файлам (мс) и сводка последнего прогона
+    total_proc_ms = sum(v for v in proc_map.values() if isinstance(v, (int, float)))
+    last_run = istats.get("last_run") or {}
     if query:
         ql = query.lower()
         files = [f for f in files if ql in f["path"].lower()]
@@ -1624,6 +1719,7 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
               "date": lambda f: f["mtime"],
               "size": lambda f: f["size"],
               "chunks": lambda f: f["chunks"],
+              "proc": lambda f: (f["proc_ms"] if f["proc_ms"] is not None else -1),
               "error": lambda f: (0 if f["error"] else 1, f["path"].lower())}
     keyfn = keymap.get(sort, keymap["name"])
     files.sort(key=keyfn, reverse=(order == "desc"))
@@ -1635,6 +1731,8 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
             "not_indexed": total - indexed, "total_size": total_size,
             "error_count": error_count, "checked": checked,
             "err_truncated": err_truncated,
+            "total_proc_ms": total_proc_ms, "timed_files": len(proc_map),
+            "last_run": last_run,
             "by_ext": by_ext, "files": page, "dir": str(docs),
             "offset": offset, "limit": limit, "sort": sort, "order": order,
             "only_errors": only_errors}

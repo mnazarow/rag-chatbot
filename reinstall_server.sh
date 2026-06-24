@@ -24,7 +24,7 @@ docker compose -f gpu_variant/docker-compose.gpu.yml down 2>/dev/null || true
 
 echo "[reinstall-server] Удаляю окружение и данные..."
 rm -rf .venv graph_storage finetune/adapter finetune/data \
-       runtime_config.json rag_logs.db rag_logs.db-journal \
+       runtime_config.json ingest_stats.json rag_logs.db rag_logs.db-journal \
        gpu_variant/qdrant_storage
 
 echo "[reinstall-server] Запускаю установку заново..."

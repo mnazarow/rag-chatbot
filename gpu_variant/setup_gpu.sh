@@ -7,7 +7,11 @@
 set -euo pipefail
 
 # ----- настройки (можно переопределить через env) ---------------------------
-VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}"   # см. таблицу в README
+# Выбор модели vLLM по VRAM (подробно — docs/MODELS.md):
+#   24 ГБ (3090/4090): Qwen/Qwen2.5-14B-Instruct-AWQ, Qwen/Qwen3-8B, Qwen/Qwen3.6-35B-A3B
+#   48 ГБ (A6000)    : Qwen/Qwen2.5-32B-Instruct-AWQ, Qwen/Qwen3-32B-AWQ, google/gemma-3-27b-it
+#   80 ГБ (A100/H100): Qwen/Qwen2.5-72B-Instruct-AWQ, Qwen/Qwen3-32B, Llama-3.1-70B-AWQ-INT4
+VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}"   # см. docs/MODELS.md
 VLLM_MAX_LEN="${VLLM_MAX_LEN:-16384}"
 VLLM_TP="${VLLM_TP:-1}"                                      # = число GPU
 TORCH_CUDA="${TORCH_CUDA:-cu124}"                            # cu121 / cu124 ...

@@ -40,6 +40,7 @@ services:
       - hf_cache:/root/.cache/huggingface         # чтобы не качать модели заново
       - ./state/runtime_config.json:/app/runtime_config.json  # настройки админки
       - ./state/rag_logs.db:/app/rag_logs.db                   # логи/оценки
+      - ./state/ingest_stats.json:/app/ingest_stats.json       # время обработки файлов
 
 volumes:
   qdrant_storage:

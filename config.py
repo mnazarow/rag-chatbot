@@ -48,6 +48,10 @@ VLLM_MODEL = os.getenv("VLLM_MODEL", "Qwen/Qwen2.5-14B-Instruct-AWQ")
 VLLM_MAX_LEN = _int("VLLM_MAX_LEN", 16384)
 VLLM_TP = _int("VLLM_TP", 1)
 
+# Дообучение (QLoRA): базовая fp16-модель. Пусто = берётся из VLLM_MODEL
+# (с отбрасыванием суффиксов квантизации -AWQ/-GPTQ/-Int4).
+FINETUNE_BASE = os.getenv("FINETUNE_BASE", "")
+
 # Доступ
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = _int("API_PORT", 8000)

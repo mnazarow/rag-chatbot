@@ -310,12 +310,6 @@ def api_benchmark_stop(x_admin_token: str | None = Header(None)):
     return admin_ops.stop_benchmark()
 
 
-@app.post("/api/admin/benchmark/stop")
-def api_benchmark_stop(x_admin_token: str | None = Header(None)):
-    _check_admin(x_admin_token)
-    return admin_ops.stop_benchmark()
-
-
 @app.get("/api/analytics-components")
 def api_analytics_components():
     return admin_ops.component_analytics()
@@ -394,6 +388,18 @@ def admin_models(x_admin_token: str | None = Header(None)):
 def admin_available_models(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.available_models()
+
+
+@app.get("/api/admin/vllm-models")
+def admin_vllm_models(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.vllm_models()
+
+
+@app.get("/api/admin/finetune-models")
+def admin_finetune_models(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.finetune_models()
 
 
 @app.post("/api/admin/pull-model")

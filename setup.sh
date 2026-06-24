@@ -7,6 +7,11 @@
 set -euo pipefail
 
 # ----- настройки ------------------------------------------------------------
+# Выбор модели генерации (Ollama, по памяти) — подробно в docs/MODELS.md:
+#   8–16 ГБ : qwen3:8b, qwen3.6:35b-a3b-q4_K_M (MoE), gemma3:12b
+#   24 ГБ   : qwen3.6:35b-a3b, qwen2.5:32b, gemma3:27b
+#   48–96 ГБ: qwen2.5:72b, qwen3.6:27b, llama3.3:70b   (Mac Studio)
+#   CPU/слаб: qwen3:1.7b–qwen3:4b, llama3.2:3b
 LLM_MODEL="${LLM_MODEL:-qwen2.5:32b-instruct-q4_K_M}"   # основная модель генерации
 EMBED_MODEL_HF="${EMBED_MODEL_HF:-BAAI/bge-m3}"          # эмбеддинги (многоязычные, сильный RU)
 RERANK_MODEL_HF="${RERANK_MODEL_HF:-BAAI/bge-reranker-v2-m3}"

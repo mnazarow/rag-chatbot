@@ -16,6 +16,8 @@
 param(
   [string]$AdminToken = "",
   [string]$DocsDir    = "C:\rag\db",
+  # Модель генерации Ollama. Выбор по памяти — см. docs/MODELS.md:
+  #   8–16 ГБ: qwen3:8b, gemma3:12b ; 24 ГБ: qwen2.5:32b, qwen3.6:35b-a3b ; CPU: qwen3:4b, llama3.2:3b
   [string]$Model      = "qwen2.5:14b-instruct",
   [switch]$Cuda,
   [string]$TorchCuda  = "cu124"

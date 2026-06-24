@@ -11,6 +11,7 @@
 from __future__ import annotations
 import argparse
 import hashlib
+import json
 import time
 import uuid
 from pathlib import Path
@@ -30,6 +31,9 @@ from loaders import load_file
 # процесс ingest запускается заново на каждую переиндексацию и читает свежие значения
 COLLECTION = settings.get("QDRANT_COLLECTION")
 DOCS_DIR = Path(settings.get("DOCS_DIR")).expanduser()
+
+# Время обработки по файлам (записывается при индексации, читается админкой/каталогом)
+INGEST_STATS = Path(__file__).resolve().parent / "ingest_stats.json"
 
 SUPPORTED = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xlsm", ".xls", ".csv",
              ".txt", ".md", ".html", ".htm", ".mhtml", ".mht",
@@ -139,10 +143,23 @@ def main():
              if p.is_file() and p.suffix.lower() in SUPPORTED]
     print(f"Найдено файлов: {len(files)}")
 
+    # время обработки по файлам: сохраняем прошлые значения (для пропущенных
+    # неизменённых файлов), при --reset считаем заново
+    prev_stats = {}
+    if INGEST_STATS.exists() and not args.reset:
+        try:
+            prev_stats = json.loads(INGEST_STATS.read_text(encoding="utf-8"))
+        except Exception:
+            prev_stats = {}
+    file_times = dict(prev_stats.get("files", {})) if not args.reset else {}
+
+    run_start = time.time()
+    run_proc_ms = 0
     n_new = n_chunks = n_skip = 0
     errors = []  # (файл, причина)
     for path in tqdm(files, desc="Индексация"):
         source = str(path.relative_to(DOCS_DIR))
+        t_file = time.time()
         try:
             fhash = file_hash(path)
             if not args.reset and already_indexed(client, source, fhash):
@@ -200,6 +217,10 @@ def main():
                 )
             n_new += 1
             n_chunks += len(points)
+            proc_ms = int((time.time() - t_file) * 1000)
+            run_proc_ms += proc_ms
+            file_times[source] = {"ms": proc_ms, "chunks": len(points),
+                                  "ts": time.time()}
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -216,6 +237,30 @@ def main():
             print(f"  - {s}: {e}")
         if len(errors) > 50:
             print(f"  … и ещё {len(errors) - 50}")
+    # время обработки: чистим записи об удалённых файлах и сохраняем сводку
+    cur_sources = {str(p.relative_to(DOCS_DIR)) for p in files}
+    file_times = {k: v for k, v in file_times.items() if k in cur_sources}
+    run_end = time.time()
+    stats_out = {
+        "files": file_times,
+        "last_run": {
+            "started": run_start, "finished": run_end,
+            "duration_sec": round(run_end - run_start, 1),
+            "files_processed": n_new, "chunks": n_chunks,
+            "skipped": n_skip, "errors": len(errors),
+            "processed_ms": run_proc_ms,
+            "avg_ms": round(run_proc_ms / n_new) if n_new else 0,
+        },
+        "total_ms": sum(v.get("ms", 0) for v in file_times.values()),
+        "total_files_timed": len(file_times),
+        "updated": run_end,
+    }
+    try:
+        INGEST_STATS.write_text(json.dumps(stats_out, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+    except Exception as e:
+        print(f"  ~ не удалось записать {INGEST_STATS.name}: {e}")
+
     # машиночитаемая сводка (последняя строка) — её разбирает админка
     print(f"SUMMARY files_ok={n_new} chunks={n_chunks} skipped={n_skip} errors={len(errors)}")
 

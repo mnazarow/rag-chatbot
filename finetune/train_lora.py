@@ -21,7 +21,11 @@ ADAPTER_DIR = Path(__file__).resolve().parent / "adapter"
 
 def _default_base() -> str:
     """Базовая (не-квантованная) HF-модель для обучения.
-    Берём VLLM_MODEL, но убираем суффикс -AWQ/-GPTQ — обучать нужно fp16-базу."""
+    Если задан FINETUNE_BASE — берём его. Иначе VLLM_MODEL, но убираем суффиксы
+    квантизации -AWQ/-GPTQ/-Int4 — обучать нужно fp16-базу."""
+    explicit = (settings.get("FINETUNE_BASE") or "").strip()
+    if explicit:
+        return explicit
     m = settings.get("VLLM_MODEL") or "Qwen/Qwen2.5-7B-Instruct"
     return m.replace("-AWQ", "").replace("-GPTQ", "").replace("-Int4", "")
 
