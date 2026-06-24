@@ -258,6 +258,25 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
+@app.post("/api/transcribe")
+async def api_transcribe(file: UploadFile = File(...)):
+    """Голосовой ввод: записанный в браузере звук → текст через локальный Whisper
+    (тот же бэкенд, что и для индексации аудио/видео). Данные не покидают сервер."""
+    name = file.filename or "voice.webm"
+    ext = os.path.splitext(name)[1].lower() or ".webm"
+    tmp = Path(tempfile.gettempdir()) / f"rag_voice_{int(time.time())}{ext}"
+    try:
+        tmp.write_bytes(await file.read())
+        text = " ".join(p.get("text", "") for p in loaders.load_file(tmp)).strip()
+        if not text:
+            return {"ok": False, "msg": "речь не распознана (тихо или пусто)"}
+        return {"ok": True, "text": text}
+    except Exception as e:
+        return {"ok": False, "msg": f"ошибка распознавания: {e}"}
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 # ============================ API для UI ============================
 @app.get("/api/stats")
 def api_stats():

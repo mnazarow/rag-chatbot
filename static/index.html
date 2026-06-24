@@ -47,6 +47,8 @@
     cursor:pointer;font-size:14px;margin-bottom:2px}
   nav button:hover{background:var(--panel2);color:var(--txt)}
   nav button.active{background:var(--accent);color:#fff}
+  #micbtn.rec{background:#ef4444;color:#fff;animation:micpulse 1s infinite}
+  @keyframes micpulse{0%,100%{opacity:1}50%{opacity:.55}}
   .spacer{flex:1}
   .pill{font-size:12px;color:var(--muted);padding:8px 12px;border-top:1px solid var(--line)}
   /* ---- контент ---- */
@@ -243,12 +245,18 @@
                onchange="document.getElementById('chatfileinfo').textContent=this.files[0]?('📎 '+this.files[0].name):''">
         <button class="act ghost" id="attach" title="Подложить документ к вопросу"
                 onclick="document.getElementById('chatfile').click()">📎</button>
+        <button class="act ghost" id="micbtn" title="Голосовой ввод (нажмите, говорите, нажмите снова)"
+                onclick="toggleMic()">🎤</button>
         <input id="q" placeholder="Ваш вопрос..." autofocus>
         <button class="act" id="send" onclick="ask()">Отправить</button>
       </div>
       <div id="chatfileinfo" class="note" style="margin-top:4px"></div>
+      <div id="micmsg" class="note" style="margin-top:4px"></div>
       <label class="note" style="margin-top:6px;display:flex;gap:6px;align-items:center;cursor:pointer">
         <input type="checkbox" id="chatdebug" onchange="saveDebug()"> Подробно об источниках и алгоритме формирования ответа
+      </label>
+      <label class="note" style="margin-top:4px;display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="checkbox" id="chattts" onchange="saveTts()"> 🔊 Озвучивать ответы голосом
       </label>
     </div>
   </section>
@@ -1287,8 +1295,9 @@ let FIELDS=[];
 function badge(sc){ const s=SCOPE[sc]; return s&&s[0]?`<span class="tag" style="background:${s[1]}22;color:${s[1]}">${s[0]}</span>`:''; }
 function tk(k){ return `<span style="color:#5b6472;font-weight:400">${k}</span>`; }
 function renderField(f,val,tokenSet){
+  const desc=f.desc?`<div class="note" style="margin-top:3px;line-height:1.5">${f.desc}</div>`:'';
   if(f.type==='bool')
-    return `<div class="field"><label><input type="checkbox" id="f_${f.key}" ${val?'checked':''}> ${esc(f.label)} ${tk(f.key)} ${badge(f.scope)}</label></div>`;
+    return `<div class="field"><label><input type="checkbox" id="f_${f.key}" ${val?'checked':''}> ${esc(f.label)} ${tk(f.key)} ${badge(f.scope)}</label>${desc}</div>`;
   const lab=`<label>${esc(f.label)} ${tk(f.key)} ${badge(f.scope)}</label>`;
   let inp;
   if(f.type==='range') inp=`<div class="range"><input type="range" id="f_${f.key}" min="${f.min}" max="${f.max}" step="${f.step}" value="${val}"><output id="o_${f.key}">${val}</output></div>`;
@@ -1305,7 +1314,7 @@ function renderField(f,val,tokenSet){
       <div class="note" style="width:100%">Выберите модель vLLM из каталога или из обслуживаемых сейчас; имя подставится в поле. Затем «Сохранить настройки» и «Применить модель LLM (рестарт vLLM)».</div>
     </div>`;
   else inp=`<input type="text" id="f_${f.key}" value="${esc(String(val))}">`;
-  return `<div class="field">${lab}${inp}</div>`;
+  return `<div class="field">${lab}${inp}${desc}</div>`;
 }
 async function loadVllmModels(){
   const sel=document.getElementById('vllm_select'); if(!sel) return;
@@ -2049,6 +2058,8 @@ async function ask(){
     }
     history.push({role:'user',content:q}); history.push({role:'assistant',content:ans});
     chatLog.push({role:'assistant',content:ans,sources:curSources});
+    addSpeak(bot);                       // кнопка «озвучить» под ответом
+    if(ttsOn() && ans.trim()) speak(ans); // авто-озвучка, если включена
   }catch(e){ bot.firstChild.textContent='Ошибка: '+e.message;
     chatLog.push({role:'assistant',content:'Ошибка: '+e.message}); }
   $('#send').disabled=false; $('#q').focus();
@@ -2108,6 +2119,61 @@ $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask();});
 function saveDebug(){ try{ localStorage.setItem('rag_chatdebug',$('#chatdebug').checked?'1':''); }catch(e){} }
 (function initDebug(){ try{ const v=localStorage.getItem('rag_chatdebug'); if(v&&$('#chatdebug')) $('#chatdebug').checked=true; }catch(e){} })();
 chatSessInfo();
+
+// ---- голосовой ввод (запись → Whisper на сервере) ----
+function micMsg(t,ok=true){ const e=$('#micmsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+let _mediaRec=null, _recChunks=[];
+async function toggleMic(){
+  if(_mediaRec && _mediaRec.state==='recording'){ _mediaRec.stop(); return; }
+  if(!navigator.mediaDevices || !window.MediaRecorder){
+    micMsg(window.isSecureContext===false
+      ? 'микрофон доступен только по https:// или с localhost (откройте сайт через HTTPS)'
+      : 'браузер не поддерживает запись звука',false); return; }
+  let stream;
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){ micMsg('нет доступа к микрофону (разрешите в браузере)',false); return; }
+  _recChunks=[]; try{ _mediaRec=new MediaRecorder(stream); }catch(e){ _mediaRec=new MediaRecorder(stream,{}); }
+  _mediaRec.ondataavailable=e=>{ if(e.data && e.data.size) _recChunks.push(e.data); };
+  _mediaRec.onstop=async()=>{
+    stream.getTracks().forEach(t=>t.stop());
+    $('#micbtn').classList.remove('rec');
+    const blob=new Blob(_recChunks,{type:(_mediaRec&&_mediaRec.mimeType)||'audio/webm'});
+    if(!blob.size){ micMsg('пустая запись',false); return; }
+    micMsg('распознаю речь…');
+    const fd=new FormData(); fd.append('file',blob,'voice.webm');
+    try{
+      const r=await fetch('/api/transcribe',{method:'POST',body:fd});
+      const j=await r.json().catch(()=>({}));
+      if(j && j.text){ const cur=$('#q').value.trim(); $('#q').value=(cur?cur+' ':'')+j.text; micMsg('✓ распознано'); $('#q').focus(); }
+      else micMsg('✗ '+((j&&(j.msg||j.detail))||'речь не распознана'),false);
+    }catch(e){ micMsg('✗ '+e.message,false); }
+  };
+  _mediaRec.start();
+  $('#micbtn').classList.add('rec');
+  micMsg('🔴 запись… нажмите 🎤 ещё раз, чтобы остановить');
+}
+
+// ---- ответ голосом (синтез речи браузера) ----
+let _ttsVoice=null;
+function pickVoice(){ try{ const vs=window.speechSynthesis.getVoices()||[];
+  _ttsVoice=vs.find(v=>/ru[-_]/i.test(v.lang))||vs.find(v=>/^ru/i.test(v.lang))||null; }catch(e){} }
+if('speechSynthesis' in window){ pickVoice(); try{ window.speechSynthesis.onvoiceschanged=pickVoice; }catch(e){} }
+function speak(text){ if(!('speechSynthesis' in window)||!text||!text.trim()) return;
+  try{ window.speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(text.slice(0,4000)); u.lang='ru-RU';
+    if(_ttsVoice) u.voice=_ttsVoice; u.rate=1.0; window.speechSynthesis.speak(u); }catch(e){} }
+function stopSpeak(){ try{ window.speechSynthesis.cancel(); }catch(e){} }
+function ttsOn(){ const c=$('#chattts'); return c && c.checked; }
+function saveTts(){ try{ localStorage.setItem('rag_chattts',ttsOn()?'1':''); }catch(e){} if(!ttsOn()) stopSpeak(); }
+(function initTts(){ try{ if(localStorage.getItem('rag_chattts')&&$('#chattts')) $('#chattts').checked=true; }catch(e){} })();
+// кнопка «озвучить» под ответом
+function addSpeak(bot){
+  if(!('speechSynthesis' in window)) return;
+  const b=document.createElement('button'); b.className='dirbtn'; b.title='Озвучить ответ'; b.textContent='🔊';
+  b.onclick=()=>{ const t=bot.firstChild?bot.firstChild.textContent:'';
+    if(window.speechSynthesis.speaking){ stopSpeak(); b.textContent='🔊'; } else { speak(t); b.textContent='⏹'; } };
+  bot.appendChild(b);
+}
 function addDebug(bot,info){
   const d=document.createElement('details'); d.className='src'; d.open=true;
   const t=info.timings||{};
