@@ -31,6 +31,10 @@ services:
       - .env.docker
     environment:
       - HF_HOME=/root/.cache/huggingface          # кеш моделей эмбеддингов/реранка
+      # адрес Qdrant в сети compose — фиксируем здесь (имеет приоритет над .env.docker),
+      # чтобы приложение всегда обращалось к сервису qdrant, а не к localhost
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=company_kb
     extra_hosts:
       - "host.docker.internal:host-gateway"       # доступ к Ollama на хосте
     ports:

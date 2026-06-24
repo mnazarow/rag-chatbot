@@ -206,6 +206,26 @@ if ($appOk) {
     if ($appUp) { ShowLog "docker logs rag_app (последние 60 строк)" { docker logs --tail 60 rag_app } }
 }
 
+# 5b. Приложение видит Qdrant (проверка реального соединения app -> qdrant)
+if ($appOk) {
+    $qOnline = $false
+    try {
+        $sys = (Invoke-WebRequest -UseBasicParsing -Uri "http://localhost:8000/api/system" -TimeoutSec 6).Content | ConvertFrom-Json
+        $qOnline = [bool]$sys.qdrant.online
+    } catch {}
+    if ($qOnline) {
+        Item ok "Приложение видит Qdrant" "QDRANT_URL=http://qdrant:6333"
+    } else {
+        Item fail "Приложение НЕ видит Qdrant (хотя контейнер БД работает)"; $fails++
+        Write-Host "     Причина обычно — неверный QDRANT_URL у приложения." -ForegroundColor Gray
+        Write-Host "     Этот образ фиксирует QDRANT_URL=http://qdrant:6333 в compose." -ForegroundColor Gray
+        Write-Host "     Если адрес был сохранён ранее в админке — откройте Администратор -> QDRANT_URL," -ForegroundColor Gray
+        Write-Host "     поставьте http://qdrant:6333, сохраните и «Перезапустить сервис»;" -ForegroundColor Gray
+        Write-Host "     либо очистите state\runtime_config.json (сделайте его '{}') и пересоздайте контейнер." -ForegroundColor Gray
+        ShowLog "QDRANT_URL внутри контейнера приложения (должно быть http://qdrant:6333)" { docker exec rag_app printenv QDRANT_URL }
+    }
+}
+
 # 6. Ollama на хосте
 if ($ollamaUp) {
     if ($ollamaHasModel) { Item ok "Ollama на хосте, модель загружена" $ollamaModel }
