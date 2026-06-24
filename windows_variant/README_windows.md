@@ -89,18 +89,28 @@ powershell -File windows_variant\manage_windows.ps1 start|stop|restart|logs
   `winget install -e --id Ollama.Ollama`. Без неё контейнеры поднимутся, но
   отвечать на вопросы приложение не сможет.
 
-### Запуск одной командой
+### Запуск одной командой (или двойным кликом)
 
-PowerShell из папки `windows_variant\docker`:
+Самый простой способ — файл **`windows_variant\docker\start.cmd`**: дважды кликните
+по нему в проводнике, либо запустите из терминала:
+
+```bat
+start.cmd
+start.cmd -DocsDir "C:\rag\BD" -AdminToken "ваш-пароль"
+```
+
+`start.cmd` сам приводит `.ps1` к UTF-8 с BOM (чтобы Windows PowerShell 5.1 не
+ломался на кириллице) и запускает установку. Если путь к документам не задан —
+спросит его в консоли. Дальше всё делает автоматически: проверяет Docker, качает
+модель в Ollama, создаёт `.env.docker`/`.env`, готовит тома и выполняет
+`docker compose up -d --build`. По завершении откройте `http://localhost:8000`.
+
+То же напрямую через PowerShell (если предпочитаете):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File start_windows_docker.ps1 `
-    -DocsDir "C:\rag\BD" -LlmModel "qwen2.5:7b-instruct-q4_K_M"
+    -DocsDir "C:\rag\BD" -AdminToken "ваш-пароль"
 ```
-
-Скрипт проверит Docker, скачает модель в Ollama, создаст `.env.docker` и `.env`
-(с путём к документам), подготовит файлы состояния и выполнит
-`docker compose up -d --build`. По завершении откройте `http://localhost:8000`.
 
 ### Запуск вручную
 
