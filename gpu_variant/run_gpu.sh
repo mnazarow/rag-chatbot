@@ -11,7 +11,7 @@ set -euo pipefail
 
 # ----- параметры первого запуска (дальше всё меняется в админке) -------------
 # Модель vLLM по VRAM (см. docs/MODELS.md): 24 ГБ → 14B-AWQ; 48 ГБ → 32B-AWQ; 80 ГБ → 72B-AWQ.
-VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}"
+VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen3.6-35B-A3B}"
 VLLM_MAX_LEN="${VLLM_MAX_LEN:-16384}"
 VLLM_TP="${VLLM_TP:-1}"
 TORCH_CUDA="${TORCH_CUDA:-cu124}"

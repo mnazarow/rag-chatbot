@@ -48,7 +48,7 @@ WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "mlx")  # mlx (Apple) | faster (G
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
 
 # vLLM (GPU-вариант): параметры контейнера генерации
-VLLM_MODEL = os.getenv("VLLM_MODEL", "Qwen/Qwen2.5-14B-Instruct-AWQ")
+VLLM_MODEL = os.getenv("VLLM_MODEL", "Qwen/Qwen3.6-35B-A3B")
 VLLM_MAX_LEN = _int("VLLM_MAX_LEN", 16384)
 VLLM_TP = _int("VLLM_TP", 1)
 

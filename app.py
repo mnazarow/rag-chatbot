@@ -20,6 +20,21 @@ from qdrant_client import QdrantClient
 import config
 import prompts
 import settings
+
+# В Docker-контейнере адрес Qdrant и коллекция задаются окружением (compose) и должны
+# иметь приоритет над сохранёнными настройками — иначе устаревший runtime_config.json
+# мог бы указывать на localhost, и приложение «не видело» бы Qdrant. Делаем это ДО
+# импорта retriever/admin_ops (они создают клиент Qdrant при импорте). Только в контейнере.
+if os.path.exists("/.dockerenv"):
+    for _k in ("QDRANT_URL", "QDRANT_COLLECTION"):
+        _v = os.environ.get(_k)
+        if _v and settings.get(_k) != _v:
+            try:
+                settings.update({_k: _v})
+                print(f"[docker] {_k} зафиксирован из окружения: {_v}")
+            except Exception as _e:
+                print(f"[docker] не удалось зафиксировать {_k}: {_e}")
+
 import db
 import llm_backend
 import admin_ops

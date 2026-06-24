@@ -12,7 +12,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GV="${ROOT}/gpu_variant"
-VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}"
+VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen3.6-35B-A3B}"
 VLLM_MAX_LEN="${VLLM_MAX_LEN:-16384}"
 VLLM_TP="${VLLM_TP:-1}"
 APP_HOST="${APP_HOST:-}"

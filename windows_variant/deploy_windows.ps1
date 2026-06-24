@@ -12,7 +12,7 @@ param(
   [string]$Branch     = "main",
   [string]$TargetDir  = "C:\rag-chatbot",
   [string]$AdminToken = "",
-  [string]$Model      = "qwen2.5:14b-instruct",
+  [string]$Model      = "qwen3.6:35b-a3b-q4_K_M",
   [switch]$Cuda
 )
 $ErrorActionPreference = "Stop"

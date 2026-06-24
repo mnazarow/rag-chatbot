@@ -6,7 +6,7 @@
 # Требуется: Docker Desktop и (для генерации) Ollama, установленные на Windows.
 param(
     [string]$DocsDir = "",                              # папка с документами (Windows-путь)
-    [string]$LlmModel = "qwen2.5:7b-instruct-q4_K_M",   # модель Ollama для генерации
+    [string]$LlmModel = "qwen3.6:35b-a3b-q4_K_M",   # модель Ollama для генерации
     [string]$AdminToken = ""                            # пароль админ-панели (пусто = не менять)
 )
 
@@ -222,7 +222,7 @@ if ($appOk) {
         Write-Host "     Если адрес был сохранён ранее в админке — откройте Администратор -> QDRANT_URL," -ForegroundColor Gray
         Write-Host "     поставьте http://qdrant:6333, сохраните и «Перезапустить сервис»;" -ForegroundColor Gray
         Write-Host "     либо очистите state\runtime_config.json (сделайте его '{}') и пересоздайте контейнер." -ForegroundColor Gray
-        ShowLog "QDRANT_URL внутри контейнера приложения (должно быть http://qdrant:6333)" { docker exec rag_app printenv QDRANT_URL }
+        ShowLog "QDRANT_URL: окружение и эффективное значение (должно быть http://qdrant:6333)" { docker exec rag_app printenv QDRANT_URL; docker exec rag_app /opt/venv/bin/python -c "import settings;print('effective:', settings.get('QDRANT_URL'))" }
     }
 }
 

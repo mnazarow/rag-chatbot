@@ -16,7 +16,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_HOST="${BACKEND_HOST:-${1:-}}"
-BACKEND_MODEL="${BACKEND_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}"
+BACKEND_MODEL="${BACKEND_MODEL:-Qwen/Qwen3.6-35B-A3B}"
 DEVICE="${DEVICE:-cpu}"
 TORCH_CUDA="${TORCH_CUDA:-cu124}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-}"

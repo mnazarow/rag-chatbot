@@ -5,11 +5,11 @@
 #
 #  Запуск (PowerShell от администратора):
 #     powershell -ExecutionPolicy Bypass -File windows_variant\setup_windows.ps1 `
-#         -AdminToken "пароль" -Model "qwen2.5:14b-instruct"
+#         -AdminToken "пароль" -Model "qwen3.6:35b-a3b-q4_K_M"
 #  Параметры:
 #     -AdminToken  пароль админ-панели (рекомендуется)
 #     -DocsDir     папка с документами (по умолчанию C:\rag\db)
-#     -Model       модель Ollama (по умолчанию qwen2.5:14b-instruct)
+#     -Model       модель Ollama (по умолчанию qwen3.6:35b-a3b-q4_K_M)
 #     -Cuda        ставить torch под CUDA (нужна видеокарта NVIDIA + драйвер)
 # =============================================================================
 #Requires -RunAsAdministrator
@@ -18,7 +18,7 @@ param(
   [string]$DocsDir    = "C:\rag\db",
   # Модель генерации Ollama. Выбор по памяти — см. docs/MODELS.md:
   #   8–16 ГБ: qwen3:8b, gemma3:12b ; 24 ГБ: qwen2.5:32b, qwen3.6:35b-a3b ; CPU: qwen3:4b, llama3.2:3b
-  [string]$Model      = "qwen2.5:14b-instruct",
+  [string]$Model      = "qwen3.6:35b-a3b-q4_K_M",
   [switch]$Cuda,
   [string]$TorchCuda  = "cu124"
 )

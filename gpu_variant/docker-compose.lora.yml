@@ -9,8 +9,8 @@ services:
     volumes:
       - ../finetune/adapter:/adapter:ro
     command: >
-      --model ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}
-      --served-model-name ${VLLM_MODEL:-Qwen/Qwen2.5-14B-Instruct-AWQ}
+      --model ${VLLM_MODEL:-Qwen/Qwen3.6-35B-A3B}
+      --served-model-name ${VLLM_MODEL:-Qwen/Qwen3.6-35B-A3B}
       --max-model-len ${VLLM_MAX_LEN:-16384}
       --tensor-parallel-size ${VLLM_TP:-1}
       --gpu-memory-utilization 0.90
