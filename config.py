@@ -52,6 +52,18 @@ VLLM_TP = _int("VLLM_TP", 1)
 # (с отбрасыванием суффиксов квантизации -AWQ/-GPTQ/-Int4).
 FINETUNE_BASE = os.getenv("FINETUNE_BASE", "")
 
+
+def _bool(name: str, default: bool) -> bool:
+    return os.getenv(name, "1" if default else "0") not in ("0", "false", "False", "no", "")
+
+
+# Индексация: какие тяжёлые экстракторы включать (отключение ускоряет индексацию).
+OCR_IMAGES = _bool("OCR_IMAGES", True)        # OCR изображений (jpg/png/…) — самый долгий
+OCR_RAW = _bool("OCR_RAW", True)              # OCR RAW-фото (CR2/NEF/…)
+PARSE_CAD = _bool("PARSE_CAD", True)          # чертежи DXF/DWG и 3D-CAD (конвертация DWG долгая)
+TRANSCRIBE_AV = _bool("TRANSCRIBE_AV", True)  # транскрибация аудио/видео (Whisper, минуты на файл)
+FILE_PARSE_TIMEOUT = _int("FILE_PARSE_TIMEOUT", 0)  # лимит времени на файл, c (0 = без лимита)
+
 # Доступ
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = _int("API_PORT", 8000)

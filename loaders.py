@@ -4,9 +4,14 @@
 аудио/видео (обучающие записи -> транскрибация Whisper).
 """
 from __future__ import annotations
+import warnings
 from pathlib import Path
 from typing import Iterator
 import settings
+
+# шумные предупреждения парсеров (openpyxl Data Validation и т.п.)
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+warnings.filterwarnings("ignore", message=".*Data Validation extension.*")
 
 # Какие расширения к какому обработчику
 AUDIO_VIDEO = {".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
@@ -53,19 +58,34 @@ def load_file(path: Path, _depth: int = 0) -> Iterator[dict]:
             yield from _load_msg(path)
         elif ext == ".svg":
             yield from _load_svg(path)
-        elif ext in {".dxf", ".dwg"}:
-            yield from _load_cad(path)
-        elif ext in {".stp", ".step", ".igs", ".iges"}:
-            yield from _load_cad_exchange(path)
+        elif ext in {".dxf", ".dwg", ".stp", ".step", ".igs", ".iges"}:
+            # чертежи/3D-CAD — тяжёлая конвертация DWG; можно отключить ради скорости
+            if _enabled("PARSE_CAD"):
+                if ext in {".dxf", ".dwg"}:
+                    yield from _load_cad(path)
+                else:
+                    yield from _load_cad_exchange(path)
         elif ext in IMAGE_EXTS:
-            yield from _load_image(path)
+            if _enabled("OCR_IMAGES"):   # OCR изображений — самый долгий этап
+                yield from _load_image(path)
         elif ext in RAW_PHOTO:
-            yield from _load_raw(path)
+            if _enabled("OCR_RAW"):
+                yield from _load_raw(path)
         elif ext in AUDIO_VIDEO:
-            yield from _load_av(path)
+            if _enabled("TRANSCRIBE_AV"):  # транскрибация Whisper — минуты на файл
+                yield from _load_av(path)
         # остальное молча пропускаем
     except Exception as e:  # один битый файл не должен ронять индексацию
         print(f"  ! ошибка чтения {path.name}: {e}")
+
+
+def _enabled(key: str) -> bool:
+    """Включён ли тяжёлый экстрактор (по рантайм-настройке, по умолчанию True)."""
+    try:
+        v = settings.get(key)
+        return True if v is None else bool(v)
+    except Exception:
+        return True
 
 
 def _load_pdf(path: Path):

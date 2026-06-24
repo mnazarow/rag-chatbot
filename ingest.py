@@ -12,9 +12,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import signal
 import time
 import uuid
+import warnings
 from pathlib import Path
+
+# шумные предупреждения библиотек парсинга — не засоряем лог индексации
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+warnings.filterwarnings("ignore", message=".*Data Validation extension.*")
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qm
@@ -26,6 +32,14 @@ import settings
 import metadata as meta
 import enrich
 from loaders import load_file
+
+
+class _Timeout(Exception):
+    """Превышен лимит времени обработки одного файла."""
+
+
+def _timeout_handler(signum, frame):
+    raise _Timeout()
 
 # параметры индексации берутся из рантайм-настроек (правятся в админке),
 # процесс ingest запускается заново на каждую переиндексацию и читает свежие значения
@@ -153,9 +167,17 @@ def main():
             prev_stats = {}
     file_times = dict(prev_stats.get("files", {})) if not args.reset else {}
 
+    # лимит времени на обработку одного файла (0 = без лимита). Защищает от
+    # «зависания» на тяжёлом DWG/видео и т.п. Работает на Unix (SIGALRM).
+    file_timeout = int(settings.get("FILE_PARSE_TIMEOUT") or 0)
+    use_alarm = file_timeout > 0 and hasattr(signal, "SIGALRM")
+    if use_alarm:
+        signal.signal(signal.SIGALRM, _timeout_handler)
+        print(f"Лимит на файл: {file_timeout} c (превышение — пропуск)")
+
     run_start = time.time()
     run_proc_ms = 0
-    n_new = n_chunks = n_skip = 0
+    n_new = n_chunks = n_skip = n_timeout = 0
     errors = []  # (файл, причина)
     for path in tqdm(files, desc="Индексация"):
         source = str(path.relative_to(DOCS_DIR))
@@ -166,12 +188,16 @@ def main():
                 continue
             delete_old_versions(client, source)  # файл изменился — чистим старое
 
+            if use_alarm:
+                signal.alarm(file_timeout)
             points = []
             for part in load_file(path):
                 for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
                     points.append({"chunk": chunk, "page": part["page"],
                                    "t_start": part.get("t_start"),
                                    "t_end": part.get("t_end")})
+            if use_alarm:
+                signal.alarm(0)
 
             if not points:
                 n_skip += 1  # пустой/нечитаемый файл — пропускаем, не ошибка
@@ -226,16 +252,27 @@ def main():
             run_proc_ms += proc_ms
             file_times[source] = {"ms": proc_ms, "chunks": len(points),
                                   "ts": time.time()}
+        except _Timeout:
+            if use_alarm:
+                signal.alarm(0)
+            n_timeout += 1
+            errors.append((source, f"превышен лимит {file_timeout} c — пропущен"))
+            print(f"  ⏱ таймаут {file_timeout} c, пропуск: {source}")
+            continue
         except KeyboardInterrupt:
+            if use_alarm:
+                signal.alarm(0)
             raise
         except Exception as e:
+            if use_alarm:
+                signal.alarm(0)
             # один битый файл не должен ронять всю индексацию
             errors.append((source, str(e)[:200]))
             print(f"  ! ошибка обработки {source}: {e}")
             continue
 
     print(f"Готово. Обновлено файлов: {n_new}, чанков добавлено: {n_chunks}, "
-          f"пропущено пустых: {n_skip}, ошибок: {len(errors)}")
+          f"пропущено пустых: {n_skip}, по таймауту: {n_timeout}, ошибок: {len(errors)}")
     if errors:
         print("Файлы с ошибками:")
         for s, e in errors[:50]:
