@@ -737,6 +737,57 @@
       </div>
     </div>
 
+    <!-- база данных и кэш -->
+    <div class="box">
+      <h3>🗄 База данных и кэш</h3>
+      <div class="sub" style="margin:0 0 10px">Журнал, история Телеграм и аналитика можно хранить в SQLite (по умолчанию), MySQL или PostgreSQL. Кэш Redis — опционально.
+        <button class="act ghost" onclick="loadDbCache()">Обновить</button></div>
+      <div id="db_status"></div>
+
+      <div class="note" style="margin-top:10px">Параметры подключения (хост, порт, логин, пароль, имя БД, Redis) задаются ниже в группе настроек <b>«База данных и кэш»</b> — заполните их, «Сохранить настройки», затем используйте кнопки здесь.</div>
+
+      <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+        <b style="font-size:13px">Проверка подключения</b>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+          <button class="act ghost" onclick="dbTest('mysql')">🔌 Проверить MySQL</button>
+          <button class="act ghost" onclick="dbTest('postgresql')">🔌 Проверить PostgreSQL</button>
+          <button class="act ghost" onclick="dbTest('sqlite')">🔌 Проверить SQLite</button>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+        <b style="font-size:13px">Копировать данные и настройки</b>
+        <div class="note" style="margin:4px 0 8px">Полная замена: данные текущей активной БД копируются в выбранную (таблицы приёмника очищаются). Активный бэкенд не меняется.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="act ghost" onclick="dbCopy('mysql')">📋 Копировать в MySQL</button>
+          <button class="act ghost" onclick="dbCopy('postgresql')">📋 Копировать в PostgreSQL</button>
+          <button class="act ghost" onclick="dbCopy('sqlite')">📋 Копировать обратно в SQLite</button>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+        <b style="font-size:13px">Мигрировать (скопировать и переключить активную БД)</b>
+        <div class="note" style="margin:4px 0 8px">Копирует данные в выбранную СУБД и переключает приложение на неё. После миграции желательно «Перезапустить сервис».</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="act" onclick="dbMigrate('mysql')">🚚 Мигрировать на MySQL</button>
+          <button class="act" onclick="dbMigrate('postgresql')">🚚 Мигрировать на PostgreSQL</button>
+          <button class="act ghost" onclick="dbMigrate('sqlite')">🚚 Мигрировать обратно на SQLite</button>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+        <b style="font-size:13px">Кэш Redis</b>
+        <div class="note" style="margin:4px 0 8px">Включается флажком <code>REDIS_ENABLED</code> в настройках ниже. Кэш сбрасывается автоматически при новых запросах.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="act ghost" onclick="cacheClear()">🧹 Очистить кэш Redis</button>
+          <span id="dbmsg" class="note"></span>
+        </div>
+      </div>
+
+      <pre id="dblog" style="margin-top:12px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+      <div class="note" style="margin-top:8px">Для MySQL нужен пакет <code>PyMySQL</code>, для PostgreSQL — <code>psycopg2</code>, для Redis — <code>redis</code> (входят в зависимости; при ручной установке поставьте их через «Переустановить окружение» или pip). Базу данных (например <code>rag</code>) создайте на сервере заранее — таблицы приложение создаст само.</div>
+    </div>
+
     <!-- переустановка и сброс -->
     <div class="box">
       <h3>Переустановка и сброс</h3>
@@ -1483,8 +1534,50 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups();
+  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache();
 }
+
+// ---- база данных и кэш ----
+function dbMsg(t,ok=true){ const e=$('#dbmsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+function dbLog(t){ const e=$('#dblog'); if(!e)return; if(t){ e.style.display='block'; e.textContent=t; } else { e.style.display='none'; } }
+async function loadDbCache(){
+  let r; try{ r=await adminGet('/api/admin/db/status'); }catch(e){ return; }
+  if(!r||!r.db){ return; }
+  const b=r.db.backends||{}, active=r.db.backend;
+  function badge(name,info){
+    const lab={sqlite:'SQLite',mysql:'MySQL',postgresql:'PostgreSQL'}[name]||name;
+    let st;
+    if(name==='sqlite') st='<span style="color:#4ade80">доступен</span>';
+    else if(!info.configured) st='<span style="color:#9aa3b2">не настроен</span>';
+    else if(!info.driver) st='<span style="color:#fbbf24">нет драйвера</span>';
+    else if(info.reachable) st='<span style="color:#4ade80">доступен</span>';
+    else st='<span style="color:#f87171">недоступен</span>'+(info.error?'<div class="note" style="margin-top:3px">'+esc(info.error)+'</div>':'');
+    const act=info.active?' <b style="color:#60a5fa">(активна)</b>':'';
+    return [lab+act, st];
+  }
+  const c=r.cache||{};
+  let credis;
+  if(!c.enabled) credis='<span style="color:#9aa3b2">выключен</span>';
+  else if(c.reachable) credis='<span style="color:#4ade80">включён, доступен</span>'+(c.version?' v'+esc(c.version):'')+(c.keys!=null?' · ключей: '+c.keys:'');
+  else credis='<span style="color:#f87171">включён, недоступен</span>'+(c.error?'<div class="note" style="margin-top:3px">'+esc(c.error)+'</div>':'');
+  $('#db_status').innerHTML=sysCards([
+    badge('sqlite',b.sqlite||{}), badge('mysql',b.mysql||{}), badge('postgresql',b.postgresql||{}),
+    ['Активная БД', '<b>'+esc(active||'sqlite')+'</b>'],
+    ['Redis', credis],
+  ]);
+  const j=r.job||{};
+  if(j.running) dbLog((j.label||'операция')+': идёт… '+(j.elapsed||0)+' c');
+  else if(j.finished&&j.log) dbLog((j.ok?'✅ ':'❌ ')+(j.label||'')+'\n'+j.log);
+}
+let dbPollT=null;
+function dbPoll(){ clearInterval(dbPollT); dbPollT=setInterval(loadDbCache,2500);
+  setTimeout(()=>clearInterval(dbPollT),180000); }
+async function dbTest(backend){ dbMsg('проверка '+backend+'…'); const r=await adminPost('/api/admin/db/test',{backend}); dbMsg((r.ok?'✅ ':'❌ ')+(r.msg||''),r.ok!==false); }
+async function dbCopy(target){ if(!confirm('Скопировать данные и настройки в '+target+'? Таблицы приёмника будут очищены.'))return;
+  dbMsg('копирование в '+target+'…'); const r=await adminPost('/api/admin/db/copy',{target}); dbMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false); dbPoll(); }
+async function dbMigrate(target){ if(!confirm('Мигрировать на '+target+'? Данные скопируются и приложение переключится на '+target+'. После — перезапустите сервис.'))return;
+  dbMsg('миграция на '+target+'…'); const r=await adminPost('/api/admin/db/migrate',{target}); dbMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false); dbPoll(); }
+async function cacheClear(){ dbMsg('очистка кэша…'); const r=await adminPost('/api/admin/cache/clear'); dbMsg(r.ok?('очищено ключей: '+(r.cleared||0)):'ошибка',r.ok!==false); loadDbCache(); }
 
 // ---- калибровка по оценкам ----
 function calMsg(t,ok=true){ $('#calmsg').textContent=t; $('#calmsg').className=ok?'saved':'note'; }
@@ -2106,6 +2199,12 @@ async function adminPost(url,body){
   const r=await fetch(url,{method:'POST',
     headers:{'Content-Type':'application/json','X-Admin-Token':$('#cfg_token').value},
     body:body?JSON.stringify(body):'{}'});
+  return r.json().catch(()=>({}));
+}
+async function adminGet(url){
+  const sep=url.includes('?')?'&':'?';
+  const r=await fetch(url+sep+'t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}});
   return r.json().catch(()=>({}));
 }
 function opsMsg(t,ok=true){ $('#opsmsg').textContent=t; $('#opsmsg').className=ok?'saved':'note'; }

@@ -2037,6 +2037,59 @@ def browse(path: str | None = None) -> dict:
     }
 
 
+# ===================== База данных и кэш (копирование/миграция/Redis) =====================
+
+_DB_JOB: dict = {"running": False, "ok": None, "log": "", "label": "",
+                 "started": None, "finished": None}
+
+
+def _dbjobview() -> dict:
+    j = dict(_DB_JOB)
+    if j["started"] and j["running"]:
+        j["elapsed"] = round(time.time() - j["started"], 1)
+    return j
+
+
+def db_overview() -> dict:
+    """Состояние БД-бэкендов + кэша Redis + статус последней операции."""
+    import cache
+    return {"db": db.db_status(), "cache": cache.status(), "job": _dbjobview()}
+
+
+def db_test(backend: str) -> dict:
+    return db.test_connection(backend)
+
+
+def db_copy(target: str, migrate: bool = False) -> dict:
+    """Запустить копирование/миграцию данных в target (фоном, может быть долго)."""
+    if _DB_JOB["running"]:
+        return {"ok": False, "msg": "операция с БД уже идёт"}
+    if target not in ("sqlite", "mysql", "postgresql"):
+        return {"ok": False, "msg": "неизвестная СУБД"}
+    label = ("Миграция" if migrate else "Копирование") + f" → {target}"
+
+    def run():
+        _DB_JOB.update(running=True, ok=None, started=time.time(), finished=None,
+                       log="", label=label)
+        try:
+            res = db.migrate(target) if migrate else db.copy_all(target)
+            _DB_JOB["log"] = res.get("log", "") or _json.dumps(res, ensure_ascii=False)
+            _DB_JOB["ok"] = bool(res.get("ok"))
+        except Exception as e:
+            _DB_JOB["ok"] = False
+            _DB_JOB["log"] = f"ОШИБКА: {e}"
+        _DB_JOB["running"] = False
+        _DB_JOB["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": f"{label}: запущено"}
+
+
+def cache_clear() -> dict:
+    import cache
+    return {"ok": True, "cleared": cache.clear()}
+
+
 def _update_env(path: Path, kv: dict) -> None:
     lines = path.read_text().splitlines() if path.exists() else []
     seen = set()

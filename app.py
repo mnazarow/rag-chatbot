@@ -589,6 +589,36 @@ def admin_tg_clear(x_admin_token: str | None = Header(None)):
     return {"ok": True, "deleted": n, "msg": f"удалено записей: {n}"}
 
 
+@app.get("/api/admin/db/status")
+def admin_db_status(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.db_overview()
+
+
+@app.post("/api/admin/db/test")
+def admin_db_test(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.db_test(payload.get("backend", ""))
+
+
+@app.post("/api/admin/db/copy")
+def admin_db_copy(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.db_copy(payload.get("target", ""), migrate=False)
+
+
+@app.post("/api/admin/db/migrate")
+def admin_db_migrate(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.db_copy(payload.get("target", ""), migrate=True)
+
+
+@app.post("/api/admin/cache/clear")
+def admin_cache_clear(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.cache_clear()
+
+
 @app.post("/api/admin/check-data")
 def admin_check_data(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

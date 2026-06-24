@@ -76,6 +76,27 @@ TELEGRAM_AUTO_APPROVE = _bool("TELEGRAM_AUTO_APPROVE", False)
 # (tg://proxy-ссылки) — для клиентов Telegram и НЕ работают с Bot API; нужен SOCKS5/HTTP.
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")
 
+# --- База данных приложения (журнал/история/настройки) ---
+# sqlite (по умолчанию, без внешних сервисов) | mysql | postgresql
+DB_BACKEND = os.getenv("DB_BACKEND", "sqlite")
+MYSQL_HOST = os.getenv("MYSQL_HOST", "")
+MYSQL_PORT = _int("MYSQL_PORT", 3306)
+MYSQL_USER = os.getenv("MYSQL_USER", "")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_DB = os.getenv("MYSQL_DB", "rag")
+PG_HOST = os.getenv("PG_HOST", "")
+PG_PORT = _int("PG_PORT", 5432)
+PG_USER = os.getenv("PG_USER", "")
+PG_PASSWORD = os.getenv("PG_PASSWORD", "")
+PG_DB = os.getenv("PG_DB", "rag")
+
+# --- Кэш Redis (по умолчанию выключен) ---
+REDIS_ENABLED = _bool("REDIS_ENABLED", False)
+REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
+REDIS_PORT = _int("REDIS_PORT", 6379)
+REDIS_DB = _int("REDIS_DB", 0)
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+
 # Доступ
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = _int("API_PORT", 8000)

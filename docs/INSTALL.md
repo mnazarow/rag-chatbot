@@ -324,6 +324,12 @@ python query_lightrag.py "вопрос" --mode mix
 | `FILE_PARSE_TIMEOUT` | Лимит времени на файл при индексации, с   | `0` (без лимита)                   |
 | `TELEGRAM_BOT_TOKEN` | Токен Телеграм-бота (@BotFather; пусто = выкл) | пусто                          |
 | `TELEGRAM_AUTO_APPROVE` | Авто-подтверждение пользователей бота      | `0` (ручное)                       |
+| `TELEGRAM_PROXY`  | SOCKS5/HTTP-прокси для бота (не MTProto)      | пусто                              |
+| `DB_BACKEND`      | БД журнала/настроек: `sqlite`/`mysql`/`postgresql` | `sqlite`                     |
+| `MYSQL_HOST` … `MYSQL_DB` | Подключение к MySQL/MariaDB (нужен PyMySQL) | пусто / `rag`                 |
+| `PG_HOST` … `PG_DB` | Подключение к PostgreSQL (нужен psycopg2)   | пусто / `rag`                      |
+| `REDIS_ENABLED`   | Кэш агрегатов в Redis (нужен redis)          | `0` (выкл)                         |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` | Подключение к Redis           | `127.0.0.1` / `6379` / `0`         |
 | `ADMIN_TOKEN`     | Пароль админ-панели (пусто = без пароля)      | пусто                              |
 | `API_PORT`        | Порт веб-сервиса                              | `8000`                             |
 

@@ -217,6 +217,60 @@ FIELDS: list[dict] = [
              "здесь НЕ подходят — они для приложений-клиентов Telegram; укажите обычный SOCKS5/HTTP-прокси. "
              "После изменения нажмите «Перезапустить бота»."},
 
+    # --- База данных и кэш ---
+    {"key": "DB_BACKEND", "label": "Активная база данных", "group": "База данных и кэш",
+     "type": "select", "scope": "restart", "options": ["sqlite", "mysql", "postgresql"],
+     "default": config.DB_BACKEND,
+     "desc": "Где хранятся журнал запросов, история Телеграм и аналитика. "
+             "<code>sqlite</code> — по умолчанию, локальный файл, без внешних сервисов. "
+             "<code>mysql</code>/<code>postgresql</code> — внешняя СУБД (для нескольких "
+             "инстансов или централизованного хранения). <b>Не меняйте это поле вручную</b> "
+             "для переезда — используйте кнопки «Мигрировать» в блоке «База данных и кэш» "
+             "раздела Администратор (они и данные перенесут, и переключат бэкенд). Смена "
+             "вручную лишь переключает чтение/запись на выбранную СУБД (таблицы должны "
+             "существовать). Требует драйвер: PyMySQL / psycopg2."},
+    {"key": "MYSQL_HOST", "label": "MySQL: хост", "group": "База данных и кэш",
+     "type": "text", "scope": "live", "default": config.MYSQL_HOST,
+     "desc": "IP/домен сервера MySQL (или MariaDB). Пусто = не настроен."},
+    {"key": "MYSQL_PORT", "label": "MySQL: порт", "group": "База данных и кэш",
+     "type": "int", "scope": "live", "default": config.MYSQL_PORT},
+    {"key": "MYSQL_USER", "label": "MySQL: пользователь", "group": "База данных и кэш",
+     "type": "text", "scope": "live", "default": config.MYSQL_USER},
+    {"key": "MYSQL_PASSWORD", "label": "MySQL: пароль", "group": "База данных и кэш",
+     "type": "secret", "scope": "live", "default": config.MYSQL_PASSWORD},
+    {"key": "MYSQL_DB", "label": "MySQL: имя БД", "group": "База данных и кэш",
+     "type": "text", "scope": "live", "default": config.MYSQL_DB,
+     "desc": "Имя существующей базы (создайте её заранее: <code>CREATE DATABASE rag "
+             "CHARACTER SET utf8mb4;</code>). Таблицы приложение создаст само."},
+    {"key": "PG_HOST", "label": "PostgreSQL: хост", "group": "База данных и кэш",
+     "type": "text", "scope": "live", "default": config.PG_HOST,
+     "desc": "IP/домен сервера PostgreSQL. Пусто = не настроен."},
+    {"key": "PG_PORT", "label": "PostgreSQL: порт", "group": "База данных и кэш",
+     "type": "int", "scope": "live", "default": config.PG_PORT},
+    {"key": "PG_USER", "label": "PostgreSQL: пользователь", "group": "База данных и кэш",
+     "type": "text", "scope": "live", "default": config.PG_USER},
+    {"key": "PG_PASSWORD", "label": "PostgreSQL: пароль", "group": "База данных и кэш",
+     "type": "secret", "scope": "live", "default": config.PG_PASSWORD},
+    {"key": "PG_DB", "label": "PostgreSQL: имя БД", "group": "База данных и кэш",
+     "type": "text", "scope": "live", "default": config.PG_DB,
+     "desc": "Имя существующей базы (создайте заранее: <code>CREATE DATABASE rag;</code>). "
+             "Таблицы приложение создаст само."},
+    {"key": "REDIS_ENABLED", "label": "Включить кэш Redis", "group": "База данных и кэш",
+     "type": "bool", "scope": "live", "default": config.REDIS_ENABLED,
+     "desc": "Кэшировать тяжёлые агрегаты (статистика, аналитика, статистика Телеграм) "
+             "в Redis. По умолчанию выключено — приложение работает и без Redis. Кэш "
+             "сбрасывается автоматически при каждом новом запросе, поэтому данные не "
+             "устаревают. Требует модуль <code>redis</code> и доступный сервер Redis."},
+    {"key": "REDIS_HOST", "label": "Redis: хост", "group": "База данных и кэш",
+     "type": "text", "scope": "live", "default": config.REDIS_HOST},
+    {"key": "REDIS_PORT", "label": "Redis: порт", "group": "База данных и кэш",
+     "type": "int", "scope": "live", "default": config.REDIS_PORT},
+    {"key": "REDIS_DB", "label": "Redis: номер БД (0–15)", "group": "База данных и кэш",
+     "type": "int", "scope": "live", "default": config.REDIS_DB},
+    {"key": "REDIS_PASSWORD", "label": "Redis: пароль (если задан)",
+     "group": "База данных и кэш", "type": "secret", "scope": "live",
+     "default": config.REDIS_PASSWORD},
+
     # --- Доступ ---
     {"key": "ADMIN_TOKEN", "label": "Токен администратора", "group": "Доступ",
      "type": "secret", "scope": "live", "default": config.ADMIN_TOKEN},

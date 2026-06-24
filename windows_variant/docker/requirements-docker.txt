@@ -44,6 +44,11 @@ markdown-it-py==3.0.0
 # --- транскрибация (CPU/GPU, без Apple) ---
 faster-whisper==1.1.0
 
+# --- внешние БД и кэш (опционально; SQLite работает без них) ---
+PyMySQL==1.1.1
+psycopg2-binary==2.9.10
+redis==5.2.1
+
 # --- утилиты ---
 tqdm==4.67.1
 tenacity==9.0.0
