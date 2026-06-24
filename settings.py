@@ -180,11 +180,23 @@ FIELDS: list[dict] = [
 
     # --- Дообучение (fine-tuning) ---
     {"key": "USE_FINETUNED", "label": "Использовать дообученную модель",
-     "group": "Дообучение (fine-tuning)", "type": "bool", "scope": "live", "default": False},
+     "group": "Дообучение (fine-tuning)", "type": "bool", "scope": "live", "default": False,
+     "desc": "Переключить генерацию на дообученную LoRA-модель (вместо базовой). Включайте "
+             "только после того, как адаптер обучен и применён («Применить дообученную модель»). "
+             "Дообучение настраивает стиль/терминологию ответов; факты по-прежнему берутся из "
+             "документов через RAG. Доступно для бэкенда vLLM (GPU)."},
     {"key": "FINETUNED_MODEL", "label": "Имя дообученной модели (LoRA в vLLM)",
-     "group": "Дообучение (fine-tuning)", "type": "text", "scope": "live", "default": "company-lora"},
+     "group": "Дообучение (fine-tuning)", "type": "text", "scope": "live", "default": "company-lora",
+     "desc": "Имя LoRA-адаптера, под которым он обслуживается в vLLM (то же имя указывается при "
+             "запуске vLLM с адаптером). По умолчанию <code>company-lora</code> — менять обычно не "
+             "нужно. Должно совпадать с именем, поданным в vLLM кнопкой «Применить дообученную модель»."},
     {"key": "FINETUNE_BASE", "label": "Базовая модель для дообучения (пусто = из VLLM_MODEL)",
-     "group": "Дообучение (fine-tuning)", "type": "text", "scope": "live", "default": config.FINETUNE_BASE},
+     "group": "Дообучение (fine-tuning)", "type": "text", "scope": "live", "default": config.FINETUNE_BASE,
+     "desc": "Базовая fp16-модель, на которой обучается LoRA (QLoRA, 4-bit). Выберите из списка ниже "
+             "(каталог проверенных баз) или впишите HF-идентификатор; пусто = берётся из "
+             "<code>VLLM_MODEL</code> с отбрасыванием суффиксов квантизации (-AWQ/-GPTQ/-Int4). "
+             "Рекомендации по VRAM: ~16 ГБ → Qwen2.5-7B-Instruct ✅; ~24 ГБ → Qwen2.5-14B / Qwen3-14B / "
+             "gemma-3-12b; ~40 ГБ → Qwen2.5-32B. Применяется при следующем запуске обучения."},
 
     # --- Телеграм-бот ---
     {"key": "TELEGRAM_BOT_TOKEN", "label": "Токен бота (@BotFather)", "group": "Телеграм-бот",

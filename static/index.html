@@ -1421,6 +1421,12 @@ function renderField(f,val,tokenSet){
       <button class="act ghost" type="button" onclick="loadVllmModels()">🔄 Обновить список</button>
       <div class="note" style="width:100%">Выберите модель vLLM из каталога или из обслуживаемых сейчас; имя подставится в поле. Затем «Сохранить настройки» и «Применить модель LLM (рестарт vLLM)».</div>
     </div>`;
+  else if(f.key==='FINETUNE_BASE') inp=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="text" id="f_${f.key}" value="${esc(String(val))}" placeholder="пусто = из VLLM_MODEL" style="flex:1;min-width:220px">
+      <select id="ftbase_fieldsel" onchange="if(this.value!==undefined)document.getElementById('f_FINETUNE_BASE').value=this.value" style="min-width:260px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:inherit"><option value="">— загрузить список —</option></select>
+      <button class="act ghost" type="button" onclick="loadFinetuneFieldModels()">🔄 Обновить список моделей</button>
+      <div class="note" style="width:100%">Выберите базовую fp16-модель для QLoRA из списка (или впишите свою). Затем «Сохранить настройки» и «Запустить дообучение».</div>
+    </div>`;
   else inp=`<input type="text" id="f_${f.key}" value="${esc(String(val))}">`;
   return `<div class="field">${lab}${inp}${desc}</div>`;
 }
@@ -1438,6 +1444,18 @@ async function loadVllmModels(){
   }
   html+='<optgroup label="Каталог (рекомендованные)">'+(c.catalog||[]).map(m=>
     `<option value="${escAttr(m.name)}" ${m.name===cur?'selected':''}>${esc(m.name)} — ${esc(m.note||'')}</option>`).join('')+'</optgroup>';
+  sel.innerHTML=html;
+}
+// список базовых моделей для дообучения — для поля FINETUNE_BASE в настройках
+async function loadFinetuneFieldModels(){
+  const sel=document.getElementById('ftbase_fieldsel'); if(!sel) return;
+  sel.innerHTML='<option value="">загрузка…</option>';
+  let c; try{ c=await (await fetch('/api/admin/finetune-models?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }
+  catch(e){ sel.innerHTML='<option value="">ошибка загрузки</option>'; return; }
+  const cur=(document.getElementById('f_FINETUNE_BASE')||{}).value||'';
+  let html='<option value="">— из VLLM_MODEL (авто): '+esc(c.derived||'')+' —</option>';
+  html+=(c.catalog||[]).map(m=>`<option value="${escAttr(m.name)}" ${m.name===cur?'selected':''}>${esc(m.name)} — ${esc(m.note||'')}</option>`).join('');
   sel.innerHTML=html;
 }
 async function loadConfig(){
@@ -1461,6 +1479,7 @@ async function loadConfig(){
   if($('#cal_auto')) $('#cal_auto').checked=!!c.values.AUTO_CALIBRATE;
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
+  if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
   loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups();
 }
 
