@@ -35,6 +35,7 @@ eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || true
 # ----- 2. системные зависимости --------------------------------------------
 log "Устанавливаю системные пакеты (python, ffmpeg, ollama, docker)..."
 brew install python@3.11 ffmpeg libmagic poppler tesseract tesseract-lang || true
+brew install libredwg || true   # dwg2dxf: конвертация DWG в DXF (необязательно)
 brew install --cask docker || true          # для Qdrant (Docker Desktop)
 brew install ollama || true
 
@@ -60,6 +61,7 @@ ${PYTHON_BIN} -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip wheel
 pip install -r requirements.txt
+pip install -q ezdxf || true   # чертежи DWG/DXF (на случай старого requirements)
 
 # ----- 6. .env --------------------------------------------------------------
 if [[ ! -f "${PROJECT_DIR}/.env" ]]; then

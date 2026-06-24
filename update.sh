@@ -31,6 +31,7 @@ NEW="$(git rev-parse --short HEAD)"
 
 log "Обновляю Python-зависимости..."
 ./.venv/bin/pip install -q -r gpu_variant/requirements-gpu.txt || true
+./.venv/bin/pip install -q ezdxf xlrd python-multipart paramiko || true   # новые зависимости (DWG/XLS/загрузка/SSH)
 
 log "Перезапускаю контейнеры (vLLM + Qdrant)..."
 docker compose --env-file gpu_variant/.env -f gpu_variant/docker-compose.gpu.yml up -d

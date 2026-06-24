@@ -198,8 +198,8 @@ _LIGHTRAG_DEPS = ["lightrag-hku==1.3.0", "nano-vectordb==0.0.4.3",
 
 # поддерживаемые типы — для подсказки «сколько документов в папке»
 _SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".csv", ".txt", ".md",
-              ".html", ".htm", ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov",
-              ".mkv", ".webm"}
+              ".html", ".htm", ".dxf", ".dwg",
+              ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
 
 
 def status() -> dict:

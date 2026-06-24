@@ -32,7 +32,7 @@ COLLECTION = settings.get("QDRANT_COLLECTION")
 DOCS_DIR = Path(settings.get("DOCS_DIR")).expanduser()
 
 SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".csv",
-             ".txt", ".md", ".html", ".htm",
+             ".txt", ".md", ".html", ".htm", ".dxf", ".dwg",
              ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
 
 

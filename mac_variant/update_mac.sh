@@ -13,6 +13,7 @@ git fetch --all -q && git reset --hard "origin/${BRANCH}"
 NEW="$(git rev-parse --short HEAD)"
 
 ./.venv/bin/pip install -q -r requirements.txt || true
+./.venv/bin/pip install -q ezdxf xlrd python-multipart paramiko || true   # новые зависимости (DWG/XLS/загрузка/SSH)
 bash mac_variant/manage_mac.sh restart
 
 echo "Обновлено: ${OLD} → ${NEW}"

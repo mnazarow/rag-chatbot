@@ -31,6 +31,7 @@ log "Системные пакеты..."
 apt-get update -y
 # системный python3 (3.10–3.12 подходят) + venv + pip; версия-специфичный пакет не требуется
 apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg
+apt-get install -y libredwg-tools 2>/dev/null || true   # dwg2dxf: конвертация DWG (необязательно)
 PYBIN="$(command -v python3.11 || command -v python3.12 || command -v python3.10 || command -v python3)"
 log "Использую интерпретатор: ${PYBIN} ($(${PYBIN} --version 2>&1))"
 command -v docker >/dev/null || { log "Docker..."; curl -fsSL https://get.docker.com | sh; }
@@ -84,6 +85,7 @@ sudo -u "${RUN_USER}" ./.venv/bin/pip install torch --index-url "https://downloa
   echo "или используйте Python 3.10–3.12 (для самых новых версий Python колёс может не быть).";
   exit 1; }
 sudo -u "${RUN_USER}" ./.venv/bin/pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
+sudo -u "${RUN_USER}" ./.venv/bin/pip install -q ezdxf || true   # чертежи DWG/DXF
 chmod +x "${PROJECT_DIR}/apply_llm.sh"
 
 # ----- 5. systemd-сервис API (автозапуск + Restart=always) ------------------

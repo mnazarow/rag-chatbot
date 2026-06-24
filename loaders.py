@@ -28,6 +28,8 @@ def load_file(path: Path) -> Iterator[dict]:
             yield {"text": path.read_text(errors="ignore"), "page": None}
         elif ext in {".html", ".htm"}:
             yield from _load_html(path)
+        elif ext in {".dxf", ".dwg"}:
+            yield from _load_cad(path)
         elif ext in AUDIO_VIDEO:
             yield from _load_av(path)
         # остальное молча пропускаем
@@ -97,6 +99,96 @@ def _load_html(path: Path):
     text = soup.get_text(separator="\n")
     if text.strip():
         yield {"text": text, "page": None}
+
+
+def _dwg_to_dxf(path: Path) -> Path:
+    """Конвертировать DWG -> DXF (dwg2dxf из libredwg-tools или ODA File Converter)."""
+    import shutil
+    import subprocess
+    import tempfile
+    out = Path(tempfile.gettempdir()) / (path.stem + "_conv.dxf")
+    if shutil.which("dwg2dxf"):
+        subprocess.run(["dwg2dxf", "-o", str(out), str(path)],
+                       check=True, capture_output=True, timeout=180)
+        if out.exists():
+            return out
+    oda = shutil.which("ODAFileConverter")
+    if oda:
+        ind, outd = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        shutil.copy(path, ind / path.name)
+        subprocess.run([oda, str(ind), str(outd), "ACAD2018", "DXF", "0", "1"],
+                       capture_output=True, timeout=300)
+        cand = outd / (path.stem + ".dxf")
+        if cand.exists():
+            shutil.copy(cand, out)
+            return out
+    raise RuntimeError("для DWG нужен конвертер в DXF: установите libredwg-tools "
+                       "(команда dwg2dxf) или ODA File Converter, либо сохраните "
+                       "чертёж как DXF/PDF")
+
+
+def _load_cad(path: Path):
+    """Извлечь весь текст из чертежа DXF/DWG: TEXT, MTEXT, атрибуты блоков,
+    размеры, имена слоёв (для DWG требуется конвертация в DXF)."""
+    import ezdxf
+    src, tmp = path, None
+    if path.suffix.lower() == ".dwg":
+        src = _dwg_to_dxf(path)
+        tmp = src
+    try:
+        try:
+            doc = ezdxf.readfile(str(src))
+        except Exception:
+            from ezdxf import recover
+            doc, _ = recover.readfile(str(src))
+
+        lines = []
+
+        def grab(container):
+            for e in container:
+                try:
+                    t = e.dxftype()
+                    s = ""
+                    if t in ("TEXT", "ATTRIB", "ATTDEF"):
+                        s = e.dxf.get("text", "")
+                    elif t == "MTEXT":
+                        s = e.text
+                    elif t == "DIMENSION":
+                        s = e.dxf.get("text", "")
+                        if s in ("", "<>"):
+                            s = ""
+                    if s and s.strip():
+                        lines.append(s.strip())
+                    if t == "INSERT":  # атрибуты вставленных блоков
+                        for a in getattr(e, "attribs", []) or []:
+                            v = a.dxf.get("text", "")
+                            if v and v.strip():
+                                lines.append(v.strip())
+                except Exception:
+                    continue
+
+        for layout in doc.layouts:          # модель + листы
+            grab(layout)
+        for blk in doc.blocks:              # текст внутри определений блоков
+            grab(blk)
+
+        try:
+            layers = [ly.dxf.name for ly in doc.layers]
+        except Exception:
+            layers = []
+
+        body = "\n".join(dict.fromkeys(lines))  # дедуп с сохранением порядка
+        if layers:
+            body += "\nСлои: " + ", ".join(layers[:300])
+        body = body.strip()
+        if body:
+            yield {"text": body, "page": None}
+    finally:
+        if tmp:
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
 
 
 _FASTER_WHISPER = None  # ленивый кеш модели faster-whisper

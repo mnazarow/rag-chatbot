@@ -66,6 +66,7 @@ $venvPy = Join-Path $Root ".venv\Scripts\python.exe"
 $torchIndex = if ($Cuda) { "https://download.pytorch.org/whl/$TorchCuda" } else { "https://download.pytorch.org/whl/cpu" }
 & $venvPy -m pip install torch --index-url $torchIndex
 & $venvPy -m pip install -r (Join-Path $Root "gpu_variant\requirements-gpu.txt")
+& $venvPy -m pip install ezdxf   # чертежи DWG/DXF
 
 # ----- 5. папка документов и .env -----
 New-Item -ItemType Directory -Force -Path $DocsDir | Out-Null
