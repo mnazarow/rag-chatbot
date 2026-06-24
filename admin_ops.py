@@ -1234,6 +1234,56 @@ def component_analytics() -> dict:
             "usage": db.engine_usage(), "timings": timings}
 
 
+def files_catalog(limit: int = 500, offset: int = 0, query: str = "") -> dict:
+    """Расширенный каталог документов: файлы папки знаний с размером, датой,
+    числом чанков и статусом индексации; сводка по типам."""
+    docs = Path(settings.get("DOCS_DIR")).expanduser()
+    if not docs.exists():
+        return {"ok": False, "msg": f"папка документов не найдена: {docs}"}
+
+    # число чанков по каждому источнику — одним фасет-запросом к Qdrant
+    counts = {}
+    try:
+        base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
+        r = httpx.post(f"{base}/collections/{coll}/facet",
+                       json={"key": "source", "limit": 100000, "exact": True}, timeout=30)
+        if r.status_code == 200:
+            for h in (r.json().get("result", {}) or {}).get("hits", []):
+                counts[h.get("value")] = h.get("count", 0)
+    except Exception:
+        pass
+
+    files, by_ext = [], {}
+    total_size = indexed = 0
+    for p in sorted(docs.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in _SUPPORTED:
+            continue
+        rel = str(p.relative_to(docs))
+        ext = p.suffix.lower().lstrip(".")
+        try:
+            sz = p.stat().st_size
+            mt = int(p.stat().st_mtime)
+        except Exception:
+            sz, mt = 0, 0
+        ch = counts.get(rel, 0)
+        if ch:
+            indexed += 1
+        total_size += sz
+        by_ext[ext] = by_ext.get(ext, 0) + 1
+        files.append({"path": rel, "ext": ext, "size": sz, "mtime": mt,
+                      "chunks": ch, "indexed": bool(ch)})
+
+    total = len(files)
+    if query:
+        ql = query.lower()
+        files = [f for f in files if ql in f["path"].lower()]
+    matched = len(files)
+    page = files[offset:offset + max(1, limit)]
+    return {"ok": True, "total": total, "matched": matched, "indexed": indexed,
+            "not_indexed": total - indexed, "total_size": total_size,
+            "by_ext": by_ext, "files": page, "dir": str(docs)}
+
+
 def browse(path: str | None = None) -> dict:
     """Обзор папок на сервере для выбора DOCS_DIR.
     Возвращает текущий путь, родителя, список подпапок и число документов в папке."""

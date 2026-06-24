@@ -280,6 +280,18 @@
     <div class="box"><h3>🧠 LightRAG (граф знаний)</h3><div id="sys_graph"></div></div>
     <div class="box"><h3>🎓 Дообучение (LoRA)</h3><div id="sys_ft"></div></div>
     <div class="box"><h3>⚡ Hybrid+ и использование движков</h3><div id="sys_hybrid"></div></div>
+
+    <div class="box"><h3>📂 Каталог документов</h3>
+      <div id="fc_summary"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin:10px 0">
+        <input type="text" id="fc_q" placeholder="поиск по имени файла…" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--txt)" onkeydown="if(event.key==='Enter')loadFiles()">
+        <button class="act ghost" onclick="loadFiles()">Найти</button>
+      </div>
+      <div style="max-height:50vh;overflow:auto">
+        <table><thead><tr><th>Файл</th><th>Тип</th><th>Размер</th><th>Чанков</th><th>Статус</th><th>Изменён</th></tr></thead>
+        <tbody id="fc_rows"></tbody></table>
+      </div>
+    </div>
   </section>
 
   <!-- ===== АНАЛИТИКА+ ===== -->
@@ -728,6 +740,27 @@ async function loadSystem(){
     sysCards([['Векторный',nz(u.vector)],['Граф (hybrid)',nz(u.graph)],
       ['LightRAG (целиком)',nz(u.lightrag)],['Всего',nz(u.total)]]);
   $('#sys_hybrid').innerHTML=hh;
+  loadFiles();
+}
+function fcSize(b){ b=b||0; if(b<1024)return b+' Б'; if(b<1048576)return (b/1024).toFixed(0)+' КБ'; return (b/1048576).toFixed(1)+' МБ'; }
+async function loadFiles(){
+  const q=$('#fc_q')?$('#fc_q').value.trim():'';
+  let r; try{ r=await (await fetch('/api/admin/files-catalog?limit=500&q='+encodeURIComponent(q)+'&t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
+  if(!r.ok){ $('#fc_summary').innerHTML='<div class="note">'+esc(r.msg||r.detail||'ошибка')+'</div>'; $('#fc_rows').innerHTML=''; return; }
+  const byext=Object.entries(r.by_ext||{}).sort((a,b)=>b[1]-a[1])
+    .map(([k,v])=>`<span class="tag">${esc(k)}: ${v}</span>`).join(' ');
+  $('#fc_summary').innerHTML=sysCards([['Всего файлов',r.total],
+    ['Проиндексировано',r.indexed],['Не проиндексировано',r.not_indexed],
+    ['Объём',fcSize(r.total_size)]])+'<div class="note" style="margin-top:8px">По типам: '+byext+'</div>';
+  const rows=(r.files||[]).map(f=>`<tr>
+    <td style="max-width:340px;word-break:break-all">${esc(f.path)}</td>
+    <td><span class="tag">${esc(f.ext)}</span></td>
+    <td>${fcSize(f.size)}</td><td>${f.chunks}</td>
+    <td>${f.indexed?'<span class="tag ok">в базе</span>':'<span class="tag no">нет</span>'}</td>
+    <td>${f.mtime?fmtTime(f.mtime):'—'}</td></tr>`).join('');
+  $('#fc_rows').innerHTML=rows||emptyRow(6);
+  if(r.matched>r.files.length){ $('#fc_rows').innerHTML+=`<tr><td colspan="6" class="note">показаны первые ${r.files.length} из ${r.matched}; уточните поиск</td></tr>`; }
 }
 
 // ---- аналитика+ по компонентам ----
