@@ -36,12 +36,17 @@ services:
     ports:
       - "8000:8000"                               # веб-интерфейс: http://localhost:8000
     volumes:
-      - "${DOCS_DIR_HOST:-./docs}:/data/docs:ro"  # папка с документами (только чтение)
+      # папка с документами — на запись: сюда пишутся загрузки файлов/папок,
+      # спарсенные сайты и восстановление документов из резервной копии
+      - "${DOCS_DIR_HOST:-./docs}:/data/docs"
       - hf_cache:/root/.cache/huggingface         # чтобы не качать модели заново
       - ./state/runtime_config.json:/app/runtime_config.json  # настройки админки
       - ./state/rag_logs.db:/app/rag_logs.db                   # логи/оценки
       - ./state/ingest_stats.json:/app/ingest_stats.json       # время обработки файлов
+      - ./backups:/app/backups                    # резервные копии (доступны на хосте)
+      - previews_cache:/app/previews              # кеш превью (миниатюры/кадры)
 
 volumes:
   qdrant_storage:
   hf_cache:
+  previews_cache:

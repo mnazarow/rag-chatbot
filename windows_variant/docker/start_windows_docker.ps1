@@ -48,6 +48,7 @@ New-Item -ItemType Directory -Force -Path "state" | Out-Null
 if (-not (Test-Path "state\runtime_config.json")) { "{}" | Set-Content "state\runtime_config.json" }
 if (-not (Test-Path "state\ingest_stats.json"))   { "{}" | Set-Content "state\ingest_stats.json" }
 if (-not (Test-Path "state\rag_logs.db"))         { New-Item -ItemType File -Force -Path "state\rag_logs.db" | Out-Null }
+New-Item -ItemType Directory -Force -Path "backups" | Out-Null   # резервные копии (том)
 
 # ----- 6. Сборка и запуск -----
 Log "Собираю и запускаю контейнеры (первый раз — долго: качаются образы и модели)..."

@@ -17,6 +17,9 @@ backups/
 .env.docker
 windows_variant/docker/state/
 windows_variant/docker/docs/
+windows_variant/docker/backups/
+**/backups/
+**/previews/
 finetune/data/
 finetune/adapter/
 .DS_Store
