@@ -46,6 +46,20 @@ function ContainerUp($name) {
 function InAppHas($cmd) {
     try { docker exec rag_app sh -lc "command -v $cmd" *> $null; return ($LASTEXITCODE -eq 0) } catch { return $false }
 }
+# Подробный лог по упавшему пункту (выводит результат диагностической команды)
+function ShowLog($label, [scriptblock]$action) {
+    Write-Host ""
+    Write-Host "     --- подробный лог: $label ---" -ForegroundColor DarkYellow
+    try {
+        $out = & $action 2>&1
+        if ($out) { $out | ForEach-Object { Write-Host "     $_" -ForegroundColor Gray } }
+        else { Write-Host "     (пусто)" -ForegroundColor Gray }
+    } catch {
+        Write-Host "     (не удалось получить лог: $($_.Exception.Message))" -ForegroundColor Gray
+    }
+    Write-Host "     --- конец лога ---" -ForegroundColor DarkYellow
+    Write-Host ""
+}
 
 # ----- 1. Docker: установка (winget) + запуск + ожидание движка -----
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
@@ -145,29 +159,83 @@ if ($ollamaUp -and $ollamaModel) {
           $ollamaHasModel = ($tags -match [Regex]::Escape($ollamaModel.Split(':')[0])) } catch {}
 }
 
+$fails = 0; $warns = 0
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "  Чеклист сборки и запуска" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
-if ($composeOk) { Item ok "Сборка образа и запуск docker compose" } else { Item fail "Сборка/запуск docker compose" "см. вывод выше" }
-if (ContainerUp "rag_qdrant") { Item ok "Контейнер Qdrant (rag_qdrant) работает" } else { Item fail "Контейнер Qdrant не запущен" }
-if (ContainerUp "rag_app")    { Item ok "Контейнер приложения (rag_app) работает" } else { Item fail "Контейнер приложения не запущен" }
-if (HttpOk "http://localhost:6333/collections" 4) { Item ok "Qdrant отвечает (порт 6333)" } else { Item warn "Qdrant пока не отвечает" "возможно, ещё стартует" }
-if ($appOk) { Item ok "Веб-интерфейс отвечает" "http://localhost:8000" } else { Item warn "Веб-интерфейс ещё не готов" "подождите и обновите страницу; логи: docker compose -f docker-compose.windows.yml logs -f app" }
-
-if ($ollamaUp) {
-    if ($ollamaHasModel) { Item ok "Ollama на хосте, модель загружена" $ollamaModel }
-    else { Item warn "Ollama доступна, но модель не найдена" "выполните: ollama pull $ollamaModel" }
-} else { Item fail "Ollama на хосте недоступна" "ответы работать не будут; winget install -e --id Ollama.Ollama" }
-
-# Опциональные инструменты внутри образа (информативно)
-if (ContainerUp "rag_app") {
-    if (InAppHas "dwg2dxf")   { Item ok   "DWG-конвертер (dwg2dxf) в образе" } else { Item warn "DWG-конвертер недоступен" "DWG-чертежи не индексируются" }
-    if (InAppHas "tesseract") { Item ok   "OCR (tesseract) в образе" }        else { Item warn "tesseract недоступен" "OCR картинок отключён" }
-    if (InAppHas "ffmpeg")    { Item ok   "ffmpeg (видео/аудио) в образе" }    else { Item warn "ffmpeg недоступен" "кадры/транскрибация отключены" }
+# 1. docker compose
+if ($composeOk) {
+    Item ok "Сборка образа и запуск docker compose"
+} else {
+    Item fail "Сборка/запуск docker compose"; $fails++
+    ShowLog "docker compose ps + последние строки" { docker compose -f docker-compose.windows.yml ps; docker compose -f docker-compose.windows.yml logs --tail 40 }
 }
 
+# 2. Qdrant контейнер
+if (ContainerUp "rag_qdrant") {
+    Item ok "Контейнер Qdrant (rag_qdrant) работает"
+} else {
+    Item fail "Контейнер Qdrant не запущен"; $fails++
+    ShowLog "docker logs rag_qdrant" { docker logs --tail 40 rag_qdrant }
+}
+
+# 3. App контейнер
+$appUp = ContainerUp "rag_app"
+if ($appUp) {
+    Item ok "Контейнер приложения (rag_app) работает"
+} else {
+    Item fail "Контейнер приложения не запущен"; $fails++
+    ShowLog "docker logs rag_app" { docker logs --tail 60 rag_app }
+}
+
+# 4. Qdrant API
+if (HttpOk "http://localhost:6333/collections" 4) {
+    Item ok "Qdrant отвечает (порт 6333)"
+} else {
+    Item warn "Qdrant пока не отвечает" "возможно, ещё стартует"; $warns++
+    ShowLog "docker logs rag_qdrant" { docker logs --tail 30 rag_qdrant }
+}
+
+# 5. Веб-интерфейс приложения
+if ($appOk) {
+    Item ok "Веб-интерфейс отвечает" "http://localhost:8000"
+} else {
+    Item fail "Веб-интерфейс не отвечает (/health)"; $fails++
+    if ($appUp) { ShowLog "docker logs rag_app (последние 60 строк)" { docker logs --tail 60 rag_app } }
+}
+
+# 6. Ollama на хосте
+if ($ollamaUp) {
+    if ($ollamaHasModel) { Item ok "Ollama на хосте, модель загружена" $ollamaModel }
+    else {
+        Item warn "Ollama доступна, но модель не найдена" "выполните: ollama pull $ollamaModel"; $warns++
+        ShowLog "ollama list" { ollama list }
+    }
+} else {
+    Item fail "Ollama на хосте недоступна (http://localhost:11434)"; $fails++
+    Write-Host "     Подсказка: установите и запустите Ollama: winget install -e --id Ollama.Ollama" -ForegroundColor Gray
+    ShowLog "проверка ollama" { ollama --version }
+}
+
+# 7. Инструменты внутри образа
+if ($appUp) {
+    if (InAppHas "dwg2dxf")   { Item ok "DWG-конвертер (dwg2dxf) в образе" }
+    else { Item warn "DWG-конвертер недоступен" "DWG-чертежи не индексируются"; $warns++
+           ShowLog "проверка libredwg в образе" { docker exec rag_app sh -lc "ls -l /usr/local/bin/dwg2dxf 2>&1; echo '— сборка libredwg могла быть пропущена (см. лог сборки образа)'" } }
+    if (InAppHas "tesseract") { Item ok "OCR (tesseract) в образе" } else { Item warn "tesseract недоступен" "OCR картинок отключён"; $warns++ }
+    if (InAppHas "ffmpeg")    { Item ok "ffmpeg (видео/аудио) в образе" } else { Item warn "ffmpeg недоступен" "кадры/транскрибация отключены"; $warns++ }
+}
+
+Write-Host "============================================================" -ForegroundColor Cyan
+if ($fails -eq 0 -and $warns -eq 0) {
+    Write-Host "  ИТОГ: всё успешно ✓" -ForegroundColor Green
+} elseif ($fails -eq 0) {
+    Write-Host "  ИТОГ: запущено, есть предупреждения ($warns). Подробности — в логах выше." -ForegroundColor Yellow
+} else {
+    Write-Host "  ИТОГ: есть ошибки ($fails). Подробные логи — выше у соответствующих пунктов." -ForegroundColor Red
+}
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 Log "Веб-интерфейс: http://localhost:8000   (раздел «Администратор»)"
