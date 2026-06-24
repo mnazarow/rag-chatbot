@@ -320,6 +320,16 @@
             <option>50</option><option selected>100</option><option>200</option><option>500</option>
           </select>
         </label>
+        <label class="note">Способ:
+          <select id="fc_method" onchange="fcState.offset=0;fcState.method=this.value;loadFiles()" style="padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--txt)">
+            <option value="">все</option>
+            <option value="transcribed">🎤 транскрибированные</option>
+            <option value="recognized">🔍 распознанные (OCR + инструменты)</option>
+            <option value="ocr">— только OCR</option>
+            <option value="tool">— только спец-инструменты</option>
+            <option value="text">прямой текст</option>
+          </select>
+        </label>
         <label class="note" style="display:flex;gap:5px;align-items:center;cursor:pointer">
           <input type="checkbox" id="fc_erronly" onchange="fcState.offset=0;fcState.only_errors=this.checked;loadFiles()"> только с ошибками
         </label>
@@ -461,12 +471,27 @@
     <div class="box">
       <h3>Добавить файлы (Excel и др.)</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <input type="file" id="upfile" multiple accept=".xlsx,.xlsm,.xls,.csv,.pdf,.docx,.doc,.pptx,.txt,.md,.html,.htm,.mhtml,.xml,.json,.url,.msg,.svg,.dxf,.dwg,.stp,.step,.igs,.iges,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.jfif,.cr2,.nef,.arw,.dng,.zip,.rar,.7z,.tar,.gz,.tgz">
+        <input type="file" id="upfile" multiple accept=".xlsx,.xlsm,.xls,.csv,.pdf,.docx,.doc,.pptx,.txt,.md,.html,.htm,.mhtml,.mht,.xml,.json,.url,.msg,.svg,.dxf,.dwg,.stp,.step,.igs,.iges,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.jfif,.cr2,.cr3,.nef,.arw,.dng,.raf,.rw2,.orf,.sr2,.zip,.rar,.7z,.tar,.gz,.tgz,.bz2,.mp3,.wav,.m4a,.aac,.mp4,.mov,.mkv,.webm">
         <button class="act" onclick="uploadFiles()">⬆️ Загрузить</button>
         <button class="act ghost" onclick="uploadFiles(true)">Загрузить и переиндексировать</button>
         <span id="upmsg"></span>
       </div>
       <div class="note">Файлы кладутся в подпапку <code>uploads</code> папки документов и попадают в базу после переиндексации. Excel/CSV разбираются построчно (колонка: значение).</div>
+
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">
+        <b style="font-size:13px">Загрузить каталог данных целой папкой</b>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+          <input type="file" id="upfolder" webkitdirectory directory multiple>
+          <button class="act" onclick="uploadFolder()">📁 Загрузить папку</button>
+          <button class="act ghost" onclick="uploadFolder(true)">Загрузить папку и переиндексировать</button>
+          <button class="act ghost" id="upfstop" onclick="window.__upfStop=true" style="display:none">⏹ Стоп</button>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <progress id="upfprog" value="0" max="100" style="width:260px;display:none"></progress>
+          <span id="upfmsg" class="note"></span>
+        </div>
+        <div class="note" style="margin-top:6px">Структура папки сохраняется в папке документов. Поддерживается очень большой каталог (десятки тысяч файлов) — загрузка идёт порциями; неподдерживаемые типы пропускаются автоматически.</div>
+      </div>
     </div>
 
     <!-- режим работы -->
@@ -952,7 +977,7 @@ async function pollCheck(){
   if(cj.running){ setTimeout(pollCheck,2500); chkMsg('проверка идёт…'); }
   else if(cj.finished){ chkMsg('✓ проверка завершена'); loadFiles(); }
 }
-let fcState={offset:0,limit:100,sort:'name',order:'asc',only_errors:false};
+let fcState={offset:0,limit:100,sort:'name',order:'asc',only_errors:false,method:''};
 function fcSort(col){
   if(fcState.sort===col){ fcState.order=(fcState.order==='asc'?'desc':'asc'); }
   else { fcState.sort=col; fcState.order=((col==='date'||col==='error')?'asc':'asc'); }
@@ -975,7 +1000,8 @@ function fmtMs(ms){ if(ms==null) return '—'; ms=+ms;
 async function loadFiles(){
   const q=$('#fc_q')?$('#fc_q').value.trim():'';
   const qs='/api/admin/files-catalog?limit='+fcState.limit+'&offset='+fcState.offset
-    +'&sort='+fcState.sort+'&order='+fcState.order+'&q='+encodeURIComponent(q)+'&t='+Date.now();
+    +'&sort='+fcState.sort+'&order='+fcState.order+'&only_errors='+(fcState.only_errors?'true':'false')
+    +'&method='+encodeURIComponent(fcState.method||'')+'&q='+encodeURIComponent(q)+'&t='+Date.now();
   let r; try{ r=await (await fetch(qs,{cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
   if(!r.ok){ $('#fc_summary').innerHTML='<div class="note">'+esc(r.msg||r.detail||'ошибка')+'</div>'; $('#fc_rows').innerHTML=''; return; }
   const byext=Object.entries(r.by_ext||{}).sort((a,b)=>b[1]-a[1])
@@ -986,17 +1012,22 @@ async function loadFiles(){
     : '<div class="note" style="margin-top:4px">Время обработки появится после индексации.</div>';
   $('#fc_summary').innerHTML=sysCards([['Всего файлов',r.total],
     ['Проиндексировано',r.indexed],['Не проиндексировано',r.not_indexed],
+    ['🎤 Транскрибировано',nz(r.transcribed_count)],['🔍 Распознано',nz(r.recognized_count)],
     ['С ошибками',r.checked?(r.error_count||0):'—'],
     ['Общее время обработки',fmtMs(r.total_proc_ms)],
     ['Объём',fcSize(r.total_size)]])+'<div class="note" style="margin-top:8px">По типам: '+byext+'</div>'+lrNote
     +(r.checked?'':'<div class="note" style="margin-top:6px;color:#f59e0b">Чтобы увидеть файлы с ошибками, запустите «Проверить каталог с данными» выше.</div>')
     +(r.err_truncated?'<div class="note" style="margin-top:4px">Ошибок очень много — показаны первые из проверки; см. блок «Проверка каталога».</div>':'');
+  const methChip=m=>({transcribed:'<span class="tag" title="Транскрибация (Whisper)">🎤 транскр.</span>',
+    ocr:'<span class="tag" title="Распознано OCR">🔍 OCR</span>',
+    tool:'<span class="tag" title="Извлечено спец-инструментом (CAD/STEP/.doc/.msg/архив)">🛠 инструм.</span>'}[m]||'');
   const rows=(r.files||[]).map(f=>{
     const status=f.error
       ? `<span class="tag no" title="${escAttr(f.error)}">⚠ ошибка</span>`
       : (f.indexed?'<span class="tag ok">в базе</span>':'<span class="tag no">нет</span>');
+    const eye=f.indexed?`<button class="dirbtn" title="Показать извлечённый текст" onclick="fcShowText('${escAttr(f.path)}',this)">👁</button> `:'';
     return `<tr${f.error?' style="background:rgba(239,68,68,.08)"':''}>
-    <td style="max-width:340px;word-break:break-all">${esc(f.path)}${f.error?`<div class="note" style="color:#f87171;margin-top:2px">${esc(f.error)}</div>`:''}</td>
+    <td style="max-width:340px;word-break:break-all">${eye}${esc(f.path)} ${methChip(f.method)}${f.error?`<div class="note" style="color:#f87171;margin-top:2px">${esc(f.error)}</div>`:''}</td>
     <td><span class="tag">${esc(f.ext)}</span></td>
     <td>${fcSize(f.size)}</td><td>${f.chunks}</td>
     <td>${fmtMs(f.proc_ms)}</td>
@@ -1009,6 +1040,25 @@ async function loadFiles(){
   $('#fc_pageinfo').textContent=`${from}–${to} из ${r.matched}`+(r.matched!==r.total?` (всего ${r.total})`:'');
   $('#fc_prev').disabled=fcState.offset<=0;
   $('#fc_next').disabled=to>=r.matched;
+}
+// раскрытие строки каталога: показать извлечённый текст (транскрипция/распознанное)
+async function fcShowText(source,btn){
+  const tr=btn.closest('tr');
+  const nx=tr.nextElementSibling;
+  if(nx && nx.classList.contains('fc-detail')){ nx.remove(); btn.textContent='👁'; return; }
+  btn.textContent='⏳';
+  let r; try{ r=await (await fetch('/api/admin/file-text?source='+encodeURIComponent(source)+'&t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }
+  catch(e){ btn.textContent='👁'; return; }
+  btn.textContent='🔼';
+  const label={transcribed:'🎤 Транскрипция',ocr:'🔍 Распознанный текст (OCR)',tool:'🛠 Извлечённый текст',text:'📄 Текст'}[r.method]||'Текст';
+  const body = (r.text&&r.text.trim())
+    ? `<div class="note" style="margin-bottom:6px">${label} · фрагментов: ${nz(r.chunks)}${r.truncated?' · показан фрагмент (текст длинный)':''}</div>
+       <pre style="white-space:pre-wrap;max-height:340px;overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px">${esc(r.text)}</pre>`
+    : `<div class="note">${esc(r.note||r.msg||'текст не найден')}</div>`;
+  const det=document.createElement('tr'); det.className='fc-detail';
+  det.innerHTML=`<td colspan="7">${body}</td>`;
+  tr.after(det);
 }
 
 // ---- аналитика+ по компонентам ----
@@ -1538,6 +1588,49 @@ async function uploadFiles(thenReindex){
   upMsg('✓ загружено: '+((j.saved||[]).length)+sk);
   inp.value='';
   if(thenReindex) reindex(false);
+}
+function upfMsg(t,ok=true){ const e=$('#upfmsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+function _supportedExts(){
+  const acc=($('#upfile')&&$('#upfile').accept)||'';
+  return new Set(acc.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean));
+}
+async function uploadFolder(thenReindex){
+  const inp=$('#upfolder');
+  if(!inp.files||!inp.files.length){ upfMsg('выберите папку',false); return; }
+  const exts=_supportedExts();
+  // отбираем поддерживаемые файлы (остальные — мусор веб-сохранений и т.п.)
+  const all=Array.from(inp.files).filter(f=>{
+    const n=(f.webkitRelativePath||f.name).toLowerCase();
+    const dot=n.lastIndexOf('.'); if(dot<0) return false;
+    return exts.has(n.slice(dot));
+  });
+  if(!all.length){ upfMsg('в папке нет поддерживаемых файлов',false); return; }
+  const BATCH=200;
+  const total=all.length, totBatches=Math.ceil(total/BATCH);
+  let saved=0, skipped=0, done=0;
+  window.__upfStop=false;
+  $('#upfprog').style.display='inline-block'; $('#upfprog').max=total; $('#upfprog').value=0;
+  $('#upfstop').style.display='inline-block';
+  upfMsg('загрузка папки: 0 / '+total+' (поддерживаемых из '+inp.files.length+')');
+  for(let b=0;b<totBatches;b++){
+    if(window.__upfStop){ upfMsg('⏹ остановлено на '+done+' / '+total,false); break; }
+    const slice=all.slice(b*BATCH,(b+1)*BATCH);
+    const fd=new FormData();
+    for(const f of slice){ fd.append('files',f); fd.append('paths', f.webkitRelativePath||f.name); }
+    try{
+      const r=await fetch('/api/admin/upload-folder',{method:'POST',headers:{'X-Admin-Token':tok()},body:fd});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok){ upfMsg('✗ '+(j.detail||'ошибка на порции '+(b+1)),false); $('#upfstop').style.display='none'; return; }
+      saved+=(j.saved||0); skipped+=(j.skipped||0);
+    }catch(e){ upfMsg('✗ '+e.message,false); $('#upfstop').style.display='none'; return; }
+    done+=slice.length; $('#upfprog').value=done;
+    upfMsg('загрузка папки: '+done+' / '+total+' · сохранено '+saved);
+  }
+  $('#upfstop').style.display='none';
+  if(!window.__upfStop) upfMsg('✓ загружено файлов: '+saved+(skipped?(' · пропущено '+skipped):''));
+  inp.value='';
+  loadFiles();
+  if(thenReindex && !window.__upfStop) reindex(false);
 }
 
 // ---- браузер папок для DOCS_DIR ----

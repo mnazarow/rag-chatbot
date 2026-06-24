@@ -365,11 +365,32 @@ def admin_browse(path: str | None = None, x_admin_token: str | None = Header(Non
 @app.get("/api/admin/files-catalog")
 def admin_files_catalog(limit: int = 100, offset: int = 0, q: str = "",
                         sort: str = "name", order: str = "asc",
-                        only_errors: bool = False,
+                        only_errors: bool = False, method: str = "",
                         x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.files_catalog(limit=limit, offset=offset, query=q,
-                                   sort=sort, order=order, only_errors=only_errors)
+                                   sort=sort, order=order, only_errors=only_errors,
+                                   method=method)
+
+
+@app.get("/api/admin/file-text")
+def admin_file_text(source: str, x_admin_token: str | None = Header(None)):
+    """Извлечённый текст файла (для просмотра транскрипции/распознанного в каталоге)."""
+    _check_admin(x_admin_token)
+    return admin_ops.file_text(source)
+
+
+@app.post("/api/admin/upload-folder")
+async def admin_upload_folder(files: list[UploadFile] = File(...),
+                              paths: list[str] = Form(...),
+                              x_admin_token: str | None = Header(None)):
+    """Загрузка целой папки (батчами) в DOCS_DIR с сохранением структуры.
+    Веб-интерфейс шлёт файлы порциями — до десятков тысяч файлов суммарно."""
+    _check_admin(x_admin_token)
+    items = []
+    for f, rel in zip(files, paths):
+        items.append((rel or os.path.basename(f.filename or ""), await f.read()))
+    return admin_ops.save_uploaded_folder(items)
 
 
 @app.post("/api/admin/check-data")

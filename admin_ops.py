@@ -64,6 +64,23 @@ _OCR_EXTS = _IMG_EXTS | {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf",
                          ".rw2", ".orf", ".sr2"}
 # Архивы: индексируются (распаковкой), но при проверке не распаковываем — долго
 _ARCHIVE_EXTS = {".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2"}
+# Спец-инструменты извлечения текста (CAD, 3D-обмен, старый .doc, письма, архивы)
+_CAD_EXTS = {".dxf", ".dwg", ".stp", ".step", ".igs", ".iges"}
+_TOOL_EXTS = _CAD_EXTS | _ARCHIVE_EXTS | {".doc", ".msg"}
+
+
+def _file_method(ext: str) -> str:
+    """Как из файла извлекается текст: транскрибация / OCR / спец-инструмент / прямой."""
+    ext = (ext or "").lower()
+    if not ext.startswith("."):
+        ext = "." + ext
+    if ext in _AV_EXTS:
+        return "transcribed"   # аудио/видео → Whisper
+    if ext in _OCR_EXTS:
+        return "ocr"           # изображения/RAW-фото → OCR
+    if ext in _TOOL_EXTS:
+        return "tool"          # DWG/STEP/IGES/.doc/.msg/архивы → спец-парсеры
+    return "text"              # PDF/DOCX/XLSX/… → прямое извлечение текста
 
 
 def _fix_for(ext: str, context: str) -> str:
@@ -1649,11 +1666,13 @@ def _ingest_summary() -> dict:
 
 def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
                   sort: str = "name", order: str = "asc",
-                  only_errors: bool = False) -> dict:
+                  only_errors: bool = False, method: str = "") -> dict:
     """Расширенный каталог документов: файлы папки знаний с размером, датой,
-    числом чанков, статусом индексации и временем обработки; сводка по типам.
+    числом чанков, статусом индексации, временем обработки и способом извлечения
+    текста (transcribed/ocr/tool/text); сводка по типам.
     Поддерживает пагинацию (limit/offset), сортировку
-    (sort=name|date|size|chunks|proc, order=asc|desc) и фильтр файлов с ошибками."""
+    (sort=name|date|size|chunks|proc, order=asc|desc), фильтр файлов с ошибками и
+    фильтр по способу (method=transcribed|recognized|ocr|tool|text)."""
     docs = Path(settings.get("DOCS_DIR")).expanduser()
     if not docs.exists():
         return {"ok": False, "msg": f"папка документов не найдена: {docs}"}
@@ -1698,12 +1717,16 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
             indexed += 1
         total_size += sz
         by_ext[ext] = by_ext.get(ext, 0) + 1
+        meth = _file_method(p.suffix.lower())
         files.append({"path": rel, "ext": ext, "size": sz, "mtime": mt,
                       "chunks": ch, "indexed": bool(ch),
-                      "error": err_map.get(rel), "proc_ms": proc_map.get(rel)})
+                      "error": err_map.get(rel), "proc_ms": proc_map.get(rel),
+                      "method": meth})
 
     total = len(files)
     error_count = sum(1 for f in files if f["error"])
+    transcribed_count = sum(1 for f in files if f["method"] == "transcribed")
+    recognized_count = sum(1 for f in files if f["method"] in ("ocr", "tool"))
     # суммарное время обработки по всем известным файлам (мс) и сводка последнего прогона
     total_proc_ms = sum(v for v in proc_map.values() if isinstance(v, (int, float)))
     last_run = istats.get("last_run") or {}
@@ -1712,6 +1735,11 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
         files = [f for f in files if ql in f["path"].lower()]
     if only_errors:
         files = [f for f in files if f["error"]]
+    if method:
+        if method == "recognized":
+            files = [f for f in files if f["method"] in ("ocr", "tool")]
+        elif method in ("transcribed", "ocr", "tool", "text"):
+            files = [f for f in files if f["method"] == method]
     matched = len(files)
 
     # сортировка
@@ -1731,11 +1759,100 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
             "not_indexed": total - indexed, "total_size": total_size,
             "error_count": error_count, "checked": checked,
             "err_truncated": err_truncated,
+            "transcribed_count": transcribed_count,
+            "recognized_count": recognized_count,
             "total_proc_ms": total_proc_ms, "timed_files": len(proc_map),
             "last_run": last_run,
             "by_ext": by_ext, "files": page, "dir": str(docs),
             "offset": offset, "limit": limit, "sort": sort, "order": order,
-            "only_errors": only_errors}
+            "only_errors": only_errors, "method": method}
+
+
+def file_text(source: str, max_chars: int = 20000) -> dict:
+    """Извлечённый текст файла (транскрипция/распознанное/прочее) из Qdrant —
+    для просмотра «в раскрытии» строки каталога. Собирает чанки по source."""
+    source = (source or "").strip()
+    if not source:
+        return {"ok": False, "msg": "не указан файл"}
+    base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
+    points, next_off = [], None
+    try:
+        for _ in range(40):  # до ~10k чанков на файл
+            body = {"filter": {"must": [{"key": "source",
+                                         "match": {"value": source}}]},
+                    "limit": 256, "with_payload": True, "with_vector": False}
+            if next_off is not None:
+                body["offset"] = next_off
+            r = httpx.post(f"{base}/collections/{coll}/points/scroll",
+                           json=body, timeout=20)
+            if r.status_code != 200:
+                return {"ok": False, "msg": f"Qdrant HTTP {r.status_code}"}
+            res = r.json().get("result", {}) or {}
+            points.extend(res.get("points", []))
+            next_off = res.get("next_page_offset")
+            if next_off is None or len(points) >= 4000:
+                break
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
+
+    if not points:
+        return {"ok": True, "source": source, "text": "",
+                "chunks": 0, "method": _file_method(Path(source).suffix),
+                "note": "файл не проиндексирован или текст не извлечён"}
+
+    def _pg(p):
+        v = (p.get("payload") or {}).get("page")
+        return v if isinstance(v, int) else 10 ** 9
+    points.sort(key=_pg)
+
+    parts, total, truncated = [], 0, False
+    for p in points:
+        t = ((p.get("payload") or {}).get("text") or "").strip()
+        if not t:
+            continue
+        if total + len(t) > max_chars:
+            parts.append(t[:max(0, max_chars - total)])
+            truncated = True
+            break
+        parts.append(t)
+        total += len(t) + 2
+    return {"ok": True, "source": source, "text": "\n\n".join(parts),
+            "chunks": len(points), "method": _file_method(Path(source).suffix),
+            "truncated": truncated or len(points) >= 4000}
+
+
+def save_uploaded_folder(items: list) -> dict:
+    """Сохранить загруженную целиком папку в DOCS_DIR с сохранением структуры.
+    items: список (relpath, bytes). Поддерживается до десятков тысяч файлов
+    (вызывается батчами из веб-интерфейса). Небезопасные пути отбрасываются."""
+    docs = Path(settings.get("DOCS_DIR")).expanduser()
+    docs.mkdir(parents=True, exist_ok=True)
+    docs_res = docs.resolve()
+    saved = skipped = 0
+    bad = []
+    for rel, data in items:
+        clean = [seg for seg in str(rel).replace("\\", "/").split("/")
+                 if seg not in ("", ".", "..")]
+        if not clean:
+            skipped += 1
+            continue
+        ext = ("." + clean[-1].rsplit(".", 1)[-1].lower()) if "." in clean[-1] else ""
+        if ext not in _SUPPORTED:
+            skipped += 1
+            continue
+        target = (docs / Path(*clean)).resolve()
+        # защита от выхода за пределы DOCS_DIR
+        if docs_res not in target.parents and target != docs_res:
+            bad.append("/".join(clean))
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            saved += 1
+        except Exception as e:
+            bad.append(f"{'/'.join(clean)} ({e})")
+    return {"ok": True, "saved": saved, "skipped": skipped,
+            "errors": bad[:50], "dir": str(docs)}
 
 
 def browse(path: str | None = None) -> dict:
