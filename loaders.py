@@ -315,6 +315,29 @@ def _parse_iges(t: str) -> str:
     return "\n".join(out)
 
 
+_OCR_OK = None  # кеш проверки доступности OCR
+
+
+def _ocr_available() -> bool:
+    """Установлены ли pytesseract + сам tesseract. Предупреждаем один раз."""
+    global _OCR_OK
+    if _OCR_OK is None:
+        import importlib.util
+        import shutil
+        has_lib = importlib.util.find_spec("pytesseract") is not None
+        has_bin = shutil.which("tesseract") is not None
+        _OCR_OK = has_lib and has_bin
+        if not _OCR_OK:
+            miss = []
+            if not has_lib:
+                miss.append("pytesseract (pip install pytesseract Pillow)")
+            if not has_bin:
+                miss.append("tesseract (системный пакет, напр. tesseract-ocr + -rus)")
+            print(f"  ~ OCR недоступен — пропускаю распознавание картинок/RAW. "
+                  f"Не хватает: {', '.join(miss)}. Либо отключите OCR в настройках.")
+    return _OCR_OK
+
+
 def _ocr_lang():
     import pytesseract
     try:
@@ -352,6 +375,8 @@ def _ocr_image(img):
 def _load_image(path: Path):
     """Растровое изображение (jpg/png/…) → OCR. Полезно для сканов и фото
     документов, скриншотов прайсов и т. п."""
+    if not _ocr_available():
+        return  # нет tesseract/pytesseract — не декодируем картинку зря
     from PIL import Image
 
     print(f"  ~ распознаю (OCR) {path.name} ...")
@@ -363,6 +388,8 @@ def _load_image(path: Path):
 def _load_raw(path: Path):
     """RAW-фото (CR2 и др.) → изображение → OCR → текст.
     Полезно для сфотографированных документов."""
+    if not _ocr_available():
+        return
     import rawpy
     from PIL import Image
 

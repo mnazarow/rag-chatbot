@@ -12,11 +12,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import signal
 import time
 import uuid
 import warnings
 from pathlib import Path
+
+# до импорта моделей: отключаем параллелизм HF-токенайзеров (fork при распаковке
+# архивов/конвертации даёт предупреждение и риск зависаний)
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 # шумные предупреждения библиотек парсинга — не засоряем лог индексации
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")

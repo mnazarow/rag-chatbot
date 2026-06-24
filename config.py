@@ -3,6 +3,10 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+# HF-токенайзеры: отключаем внутренний параллелизм — иначе при fork (распаковка
+# архивов, dwg2dxf, ffmpeg) сыплется предупреждение и возможны зависания/замедления.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 load_dotenv()
 
 def _int(name: str, default: int) -> int:
