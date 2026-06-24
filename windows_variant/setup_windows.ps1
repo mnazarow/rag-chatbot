@@ -36,6 +36,10 @@ winget install -e --id Git.Git           --silent --accept-source-agreements --a
 winget install -e --id Ollama.Ollama      --silent --accept-source-agreements --accept-package-agreements 2>$null
 # Tesseract OCR (для CR2/фото-документов) — необязательно
 winget install -e --id UB-Mannheim.TesseractOCR --silent --accept-source-agreements --accept-package-agreements 2>$null
+# LibreOffice — для чтения старого .doc (Word 97-2003) — необязательно
+winget install -e --id TheDocumentFoundation.LibreOffice --silent --accept-source-agreements --accept-package-agreements 2>$null
+# 7-Zip — распаковка архивов (.7z/.rar и др.) — необязательно
+winget install -e --id 7zip.7zip --silent --accept-source-agreements --accept-package-agreements 2>$null
 
 # обновить PATH в текущей сессии
 $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
@@ -68,7 +72,7 @@ $venvPy = Join-Path $Root ".venv\Scripts\python.exe"
 $torchIndex = if ($Cuda) { "https://download.pytorch.org/whl/$TorchCuda" } else { "https://download.pytorch.org/whl/cpu" }
 & $venvPy -m pip install torch --index-url $torchIndex
 & $venvPy -m pip install -r (Join-Path $Root "gpu_variant\requirements-gpu.txt")
-& $venvPy -m pip install ezdxf   # чертежи DWG/DXF
+& $venvPy -m pip install ezdxf Pillow pytesseract extract-msg py7zr rarfile   # DWG/DXF + OCR-картинки + Outlook .msg + архивы
 
 # ----- 5. папка документов и .env -----
 New-Item -ItemType Directory -Force -Path $DocsDir | Out-Null

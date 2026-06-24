@@ -232,7 +232,7 @@
       <div id="msgs"><div class="msg bot">Здравствуйте! Задайте вопрос по прайсам, презентациям или материалам обучения.</div></div>
       <div id="bar">
         <input type="file" id="chatfile" style="display:none"
-               accept=".xlsx,.xls,.csv,.pdf,.docx,.pptx,.txt,.md,.html,.dxf,.dwg,.stp,.step,.igs,.iges,.cr2,.nef,.arw,.dng"
+               accept=".xlsx,.xlsm,.xls,.csv,.pdf,.docx,.doc,.pptx,.txt,.md,.html,.htm,.mhtml,.xml,.json,.url,.msg,.svg,.dxf,.dwg,.stp,.step,.igs,.iges,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.jfif,.cr2,.nef,.arw,.dng,.zip,.rar,.7z,.tar,.gz,.tgz"
                onchange="document.getElementById('chatfileinfo').textContent=this.files[0]?('📎 '+this.files[0].name):''">
         <button class="act ghost" id="attach" title="Подложить документ к вопросу"
                 onclick="document.getElementById('chatfile').click()">📎</button>
@@ -398,7 +398,7 @@
     <div class="box">
       <h3>Добавить файлы (Excel и др.)</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <input type="file" id="upfile" multiple accept=".xlsx,.xls,.csv,.pdf,.docx,.pptx,.txt,.md,.html,.dxf,.dwg,.stp,.step,.igs,.iges,.cr2,.nef,.arw,.dng">
+        <input type="file" id="upfile" multiple accept=".xlsx,.xlsm,.xls,.csv,.pdf,.docx,.doc,.pptx,.txt,.md,.html,.htm,.mhtml,.xml,.json,.url,.msg,.svg,.dxf,.dwg,.stp,.step,.igs,.iges,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.jfif,.cr2,.nef,.arw,.dng,.zip,.rar,.7z,.tar,.gz,.tgz">
         <button class="act" onclick="uploadFiles()">⬆️ Загрузить</button>
         <button class="act ghost" onclick="uploadFiles(true)">Загрузить и переиндексировать</button>
         <span id="upmsg"></span>

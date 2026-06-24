@@ -55,11 +55,14 @@ _UNSUPPORTED_FIX = {
     ".epub": "Сконвертируйте в PDF/TXT.",
     ".fb2": "Сконвертируйте в TXT/PDF.",
     ".djvu": "Сконвертируйте в PDF.",
-    ".zip": "Архив — распакуйте; индексируются файлы, а не архивы.",
-    ".rar": "Архив — распакуйте.",
-    ".7z": "Архив — распакуйте.",
 }
-_IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
+_IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp", ".jfif"}
+# OCR-форматы (картинки и RAW-фото): индексируются, но при проверке каталога
+# их не парсим поштучно — OCR слишком долгий для тысяч файлов
+_OCR_EXTS = _IMG_EXTS | {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf",
+                         ".rw2", ".orf", ".sr2"}
+# Архивы: индексируются (распаковкой), но при проверке не распаковываем — долго
+_ARCHIVE_EXTS = {".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2"}
 
 
 def _fix_for(ext: str, context: str) -> str:
@@ -112,8 +115,8 @@ def check_data_dir() -> dict:
                 elif ext not in _SUPPORTED:
                     counts["unsupported"] += 1
                     unsupported[ext] = unsupported.get(ext, 0) + 1
-                elif ext in _AV_EXTS:
-                    counts["media"] += 1  # медиа не парсим при проверке (транскрибируется при индексации)
+                elif ext in _AV_EXTS or ext in _OCR_EXTS or ext in _ARCHIVE_EXTS:
+                    counts["media"] += 1  # медиа/OCR/архивы не парсим при проверке (обрабатывается при индексации)
                 else:
                     try:
                         got = any(part.get("text", "").strip() for part in loaders.load_file(p))
@@ -197,8 +200,12 @@ _LIGHTRAG_DEPS = ["lightrag-hku==1.3.0", "nano-vectordb==0.0.4.3",
                   "tiktoken==0.8.0", "networkx==3.4.2"]
 
 # поддерживаемые типы — для подсказки «сколько документов в папке»
-_SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".csv", ".txt", ".md",
-              ".html", ".htm", ".dxf", ".dwg", ".stp", ".step", ".igs", ".iges",
+_SUPPORTED = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xlsm", ".xls", ".csv",
+              ".txt", ".md", ".html", ".htm", ".mhtml", ".mht",
+              ".xml", ".json", ".url", ".msg", ".svg",
+              ".dxf", ".dwg", ".stp", ".step", ".igs", ".iges",
+              ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2",
+              ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".jfif",
               ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".sr2",
               ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
 

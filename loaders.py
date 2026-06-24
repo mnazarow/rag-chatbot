@@ -14,12 +14,21 @@ AUDIO_VIDEO = {".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
 RAW_PHOTO = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".sr2"}
 # Растровые изображения: распознавание текста (OCR)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".jfif"}
+# Архивы: распаковываются, содержимое индексируется как обычные файлы
+ARCHIVE_EXTS = {".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2"}
+_ARCHIVE_MAX_DEPTH = 2               # защита от вложенных архивов / «архивных бомб»
+_ARCHIVE_MAX_FILES = 5000            # лимит файлов внутри одного архива
+_ARCHIVE_MAX_BYTES = 4 * 1024 ** 3   # лимит суммарного распакованного объёма (4 ГБ)
 
 
-def load_file(path: Path) -> Iterator[dict]:
-    """Yield {'text', 'page'} для одного файла. Пустые куски пропускаются."""
+def load_file(path: Path, _depth: int = 0) -> Iterator[dict]:
+    """Yield {'text', 'page'} для одного файла. Пустые куски пропускаются.
+    `_depth` — внутренний счётчик вложенности для распаковки архивов."""
     ext = path.suffix.lower()
     try:
+        if ext in ARCHIVE_EXTS:
+            yield from _load_archive(path, _depth)
+            return
         if ext == ".pdf":
             yield from _load_pdf(path)
         elif ext == ".docx":
@@ -40,6 +49,8 @@ def load_file(path: Path) -> Iterator[dict]:
             yield from _load_json(path)
         elif ext == ".url":
             yield from _load_url(path)
+        elif ext == ".msg":
+            yield from _load_msg(path)
         elif ext == ".svg":
             yield from _load_svg(path)
         elif ext in {".dxf", ".dwg"}:
@@ -115,7 +126,21 @@ def _load_table(path: Path):
 
 def _load_html(path: Path):
     from bs4 import BeautifulSoup
-    soup = BeautifulSoup(path.read_text(errors="ignore"), "html.parser")
+    ext = path.suffix.lower()
+    if ext in {".mhtml", ".mht"}:
+        # MHTML — это MIME-архив; вытаскиваем html-часть
+        import email
+        msg = email.message_from_bytes(path.read_bytes())
+        html = ""
+        for part in msg.walk():
+            if part.get_content_type() == "text/html":
+                payload = part.get_payload(decode=True) or b""
+                charset = part.get_content_charset() or "utf-8"
+                html += payload.decode(charset, errors="ignore")
+        raw = html or path.read_text(errors="ignore")
+    else:
+        raw = path.read_text(errors="ignore")
+    soup = BeautifulSoup(raw, "html.parser")
     text = soup.get_text(separator="\n")
     if text.strip():
         yield {"text": text, "page": None}
@@ -281,32 +306,247 @@ def _ocr_lang():
     return "eng"
 
 
-def _load_raw(path: Path):
-    """RAW-фото (CR2 и др.) → изображение → OCR → текстовый (searchable) PDF →
-    извлечение текста. Полезно для сфотографированных документов."""
+def _ocr_image(img):
+    """PIL.Image → OCR → текстовый (searchable) PDF → извлечённый текст.
+    Общий помощник для растровых изображений и RAW-фото."""
     import io
-    import rawpy
     import pytesseract
     import fitz  # pymupdf
-    from PIL import Image
 
-    print(f"  ~ распознаю (OCR) {path.name} ...")
-    with rawpy.imread(str(path)) as raw:
-        rgb = raw.postprocess()
-    img = Image.fromarray(rgb)
     # уменьшаем огромные снимки — ускоряет OCR без потери читаемости текста
     maxdim = 3500
     if max(img.size) > maxdim:
         k = maxdim / max(img.size)
         img = img.resize((int(img.size[0] * k), int(img.size[1] * k)))
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
 
-    # CR2 → текстовый PDF (со встроенным текстовым слоем от Tesseract)
     pdf_bytes = pytesseract.image_to_pdf_or_hocr(img, lang=_ocr_lang(), extension="pdf")
     doc = fitz.open(stream=io.BytesIO(pdf_bytes).getvalue(), filetype="pdf")
     for i, page in enumerate(doc, 1):
         txt = page.get_text("text")
         if txt.strip():
             yield {"text": txt, "page": i}
+
+
+def _load_image(path: Path):
+    """Растровое изображение (jpg/png/…) → OCR. Полезно для сканов и фото
+    документов, скриншотов прайсов и т. п."""
+    from PIL import Image
+
+    print(f"  ~ распознаю (OCR) {path.name} ...")
+    with Image.open(path) as img:
+        img.load()
+        yield from _ocr_image(img)
+
+
+def _load_raw(path: Path):
+    """RAW-фото (CR2 и др.) → изображение → OCR → текст.
+    Полезно для сфотографированных документов."""
+    import rawpy
+    from PIL import Image
+
+    print(f"  ~ распознаю (OCR) {path.name} ...")
+    with rawpy.imread(str(path)) as raw:
+        rgb = raw.postprocess()
+    img = Image.fromarray(rgb)
+    yield from _ocr_image(img)
+
+
+def _load_svg(path: Path):
+    """SVG — извлекаем текст из элементов <text>/<tspan>."""
+    import re
+    data = path.read_text(errors="ignore")
+    # вытаскиваем содержимое текстовых тегов
+    parts = re.findall(r"<(?:text|tspan)\b[^>]*>(.*?)</(?:text|tspan)>", data,
+                       flags=re.DOTALL | re.IGNORECASE)
+    text = "\n".join(re.sub(r"<[^>]+>", " ", p) for p in parts).strip()
+    if text:
+        yield {"text": text, "page": None}
+
+
+def _load_xml(path: Path):
+    """XML — собираем весь видимый текст из узлов."""
+    try:
+        import xml.etree.ElementTree as ET
+        root = ET.parse(str(path)).getroot()
+        parts = [t.strip() for t in root.itertext() if t and t.strip()]
+        text = "\n".join(parts)
+    except Exception:
+        import re
+        raw = path.read_text(errors="ignore")
+        text = re.sub(r"<[^>]+>", " ", raw)
+    if text.strip():
+        yield {"text": text, "page": None}
+
+
+def _load_json(path: Path):
+    """JSON — плоское текстовое представление пар ключ/значение."""
+    import json
+    data = json.loads(path.read_text(errors="ignore"))
+
+    def walk(obj, prefix=""):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                yield from walk(v, f"{prefix}{k}: ")
+        elif isinstance(obj, list):
+            for it in obj:
+                yield from walk(it, prefix)
+        else:
+            s = str(obj).strip()
+            if s:
+                yield f"{prefix}{s}"
+
+    text = "\n".join(walk(data))
+    if text.strip():
+        yield {"text": text, "page": None}
+
+
+def _load_url(path: Path):
+    """Ярлык .url (Windows Internet Shortcut) — извлекаем адрес ссылки."""
+    import re
+    data = path.read_text(errors="ignore")
+    m = re.search(r"URL\s*=\s*(\S+)", data, flags=re.IGNORECASE)
+    url = m.group(1).strip() if m else ""
+    text = f"Ссылка ({path.stem}): {url}".strip()
+    if url:
+        yield {"text": text, "page": None}
+
+
+def _load_doc(path: Path):
+    """Старый Word (.doc) — конвертация через antiword или LibreOffice."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    # 1) antiword — быстрый и точный для .doc
+    if shutil.which("antiword"):
+        try:
+            out = subprocess.run(["antiword", str(path)], capture_output=True,
+                                 timeout=120)
+            text = out.stdout.decode("utf-8", errors="ignore")
+            if text.strip():
+                yield {"text": text, "page": None}
+                return
+        except Exception:
+            pass
+
+    # 2) LibreOffice/soffice — конвертируем .doc → .docx, читаем как docx
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice:
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                subprocess.run([soffice, "--headless", "--convert-to", "docx",
+                                "--outdir", td, str(path)],
+                               capture_output=True, timeout=240)
+                conv = Path(td) / (path.stem + ".docx")
+                if conv.exists():
+                    yield from _load_docx(conv)
+                    return
+            except Exception:
+                pass
+    print(f"  ! пропуск {path.name}: нет antiword/LibreOffice для .doc")
+
+
+def _load_msg(path: Path):
+    """Письмо Outlook (.msg) — тема, отправитель, тело."""
+    import extract_msg
+    m = extract_msg.Message(str(path))
+    head = []
+    for label, val in (("Тема", m.subject), ("От", m.sender),
+                       ("Кому", m.to), ("Дата", m.date)):
+        if val:
+            head.append(f"{label}: {val}")
+    body = (m.body or "").strip()
+    text = ("\n".join(head) + "\n\n" + body).strip()
+    if text:
+        yield {"text": text, "page": None}
+
+
+def _extract_archive(path: Path, dest: Path) -> bool:
+    """Распаковать архив в каталог dest. Сначала пробуем библиотеки Python,
+    затем системные утилиты (7z/bsdtar/unar). Возвращает True при успехе."""
+    import shutil
+    import subprocess
+    ext = path.suffix.lower()
+
+    # 1) Python-библиотеки
+    try:
+        if ext == ".zip":
+            import zipfile
+            with zipfile.ZipFile(path) as z:
+                total = sum(i.file_size for i in z.infolist())
+                if total > _ARCHIVE_MAX_BYTES:
+                    raise RuntimeError("распакованный объём превышает лимит")
+                z.extractall(dest)
+            return True
+        if ext == ".7z":
+            import py7zr
+            with py7zr.SevenZipFile(path, "r") as z:
+                z.extractall(dest)
+            return True
+        if ext == ".rar":
+            import rarfile
+            with rarfile.RarFile(path) as r:
+                r.extractall(dest)
+            return True
+        if ext in {".tar", ".gz", ".tgz", ".bz2"}:
+            import tarfile
+            with tarfile.open(path) as t:
+                t.extractall(dest)
+            return True
+    except ImportError:
+        pass  # нужной библиотеки нет — пробуем системные утилиты
+    except Exception as e:
+        print(f"  ! {path.name}: ошибка распаковки ({e}); пробую системные утилиты")
+
+    # 2) системные утилиты (best-effort)
+    for tool in (["7z", "x", "-y", f"-o{dest}", str(path)],
+                 ["7za", "x", "-y", f"-o{dest}", str(path)],
+                 ["bsdtar", "-xf", str(path), "-C", str(dest)],
+                 ["unar", "-quiet", "-output-directory", str(dest), str(path)]):
+        if shutil.which(tool[0]):
+            try:
+                r = subprocess.run(tool, capture_output=True, timeout=900)
+                if r.returncode == 0:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _load_archive(path: Path, depth: int):
+    """Распаковать архив и проиндексировать содержимое как обычные файлы.
+    Внутренние файлы помечаются их путём внутри архива для цитирования."""
+    if depth >= _ARCHIVE_MAX_DEPTH:
+        print(f"  ! пропуск вложенного архива {path.name}: слишком глубоко")
+        return
+    import tempfile
+    print(f"  ~ распаковываю архив {path.name} ...")
+    with tempfile.TemporaryDirectory() as td:
+        dest = Path(td)
+        if not _extract_archive(path, dest):
+            print(f"  ! не удалось распаковать {path.name}: "
+                  f"нет py7zr/rarfile или утилит 7z/bsdtar/unar")
+            return
+        n = 0
+        for inner in sorted(dest.rglob("*")):
+            if not inner.is_file():
+                continue
+            n += 1
+            if n > _ARCHIVE_MAX_FILES:
+                print(f"  ! {path.name}: слишком много файлов в архиве, остановка")
+                break
+            rel = inner.relative_to(dest)
+            try:
+                for part in load_file(inner, _depth=depth + 1):
+                    txt = part.get("text", "")
+                    if txt.strip():
+                        # помечаем источник внутри архива — пригодится для цитат
+                        yield {"text": f"[{path.name} → {rel}]\n{txt}",
+                               "page": part.get("page")}
+            except Exception as e:
+                print(f"  ! {path.name} → {rel}: {e}")
 
 
 _FASTER_WHISPER = None  # ленивый кеш модели faster-whisper

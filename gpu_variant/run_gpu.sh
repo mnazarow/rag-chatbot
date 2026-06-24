@@ -33,6 +33,8 @@ apt-get update -y
 apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg
 apt-get install -y libredwg-tools 2>/dev/null || true   # dwg2dxf: конвертация DWG (необязательно)
 apt-get install -y tesseract-ocr tesseract-ocr-rus 2>/dev/null || true   # OCR для CR2/фото
+apt-get install -y antiword 2>/dev/null || true   # чтение старого .doc
+apt-get install -y p7zip-full unar 2>/dev/null || true   # распаковка архивов (.7z/.rar)
 PYBIN="$(command -v python3.11 || command -v python3.12 || command -v python3.10 || command -v python3)"
 log "Использую интерпретатор: ${PYBIN} ($(${PYBIN} --version 2>&1))"
 command -v docker >/dev/null || { log "Docker..."; curl -fsSL https://get.docker.com | sh; }
@@ -86,7 +88,7 @@ sudo -u "${RUN_USER}" ./.venv/bin/pip install torch --index-url "https://downloa
   echo "или используйте Python 3.10–3.12 (для самых новых версий Python колёс может не быть).";
   exit 1; }
 sudo -u "${RUN_USER}" ./.venv/bin/pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
-sudo -u "${RUN_USER}" ./.venv/bin/pip install -q ezdxf rawpy pytesseract || true   # DWG/DXF + OCR для RAW-фото
+sudo -u "${RUN_USER}" ./.venv/bin/pip install -q ezdxf rawpy pytesseract Pillow extract-msg py7zr rarfile || true   # DWG/DXF + OCR + Outlook .msg + архивы
 chmod +x "${PROJECT_DIR}/apply_llm.sh"
 
 # ----- 5. systemd-сервис API (автозапуск + Restart=always) ------------------

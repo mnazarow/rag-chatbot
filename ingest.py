@@ -31,9 +31,12 @@ from loaders import load_file
 COLLECTION = settings.get("QDRANT_COLLECTION")
 DOCS_DIR = Path(settings.get("DOCS_DIR")).expanduser()
 
-SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".csv",
-             ".txt", ".md", ".html", ".htm", ".dxf", ".dwg",
-             ".stp", ".step", ".igs", ".iges",
+SUPPORTED = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xlsm", ".xls", ".csv",
+             ".txt", ".md", ".html", ".htm", ".mhtml", ".mht",
+             ".xml", ".json", ".url", ".msg", ".svg",
+             ".dxf", ".dwg", ".stp", ".step", ".igs", ".iges",
+             ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2",
+             ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".jfif",
              ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".sr2",
              ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
 

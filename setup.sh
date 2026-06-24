@@ -36,6 +36,8 @@ eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || true
 log "Устанавливаю системные пакеты (python, ffmpeg, ollama, docker)..."
 brew install python@3.11 ffmpeg libmagic poppler tesseract tesseract-lang || true
 brew install libredwg || true   # dwg2dxf: конвертация DWG в DXF (необязательно)
+brew install antiword || true    # чтение старого .doc (Word 97-2003)
+brew install p7zip unar || true  # распаковка архивов (.7z/.rar и др.)
 brew install --cask docker || true          # для Qdrant (Docker Desktop)
 brew install ollama || true
 
@@ -61,7 +63,7 @@ ${PYTHON_BIN} -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip wheel
 pip install -r requirements.txt
-pip install -q ezdxf rawpy pytesseract || true   # DWG/DXF + OCR для RAW-фото (CR2)
+pip install -q ezdxf rawpy pytesseract Pillow extract-msg py7zr rarfile || true   # DWG/DXF + OCR (RAW/фото) + Outlook .msg + архивы
 
 # ----- 6. .env --------------------------------------------------------------
 if [[ ! -f "${PROJECT_DIR}/.env" ]]; then

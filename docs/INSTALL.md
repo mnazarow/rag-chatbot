@@ -16,9 +16,14 @@ LLM-метаданные, умные фильтры, граф-RAG) и опцио
 
 ### Общие
 - Папка с документами (прайс-листы, презентации, записи обучения и т.д.).
-  Поддерживаются: PDF, DOCX, PPTX, XLSX/XLS/CSV, TXT/MD, HTML, чертежи DXF/DWG,
-  3D-CAD STEP/IGES (метаданные), RAW-фото (CR2/NEF/ARW… → OCR), а также аудио/видео
-  (MP3, WAV, M4A, AAC, MP4, MOV, MKV, WEBM — транскрибируются Whisper).
+  Поддерживаются: PDF, DOCX, DOC (Word 97-2003), PPTX, XLSX/XLSM/XLS/CSV,
+  TXT/MD, HTML/MHTML, XML, JSON, SVG, ярлыки .url, письма Outlook .msg,
+  чертежи DXF/DWG, 3D-CAD STEP/IGES (метаданные),
+  изображения (JPG/PNG/WEBP/GIF/BMP/TIFF/JFIF → OCR) и RAW-фото (CR2/NEF/ARW… → OCR),
+  архивы (ZIP/RAR/7Z/TAR/GZ — распаковываются, содержимое индексируется),
+  а также аудио/видео (MP3, WAV, M4A, AAC, MP4, MOV, MKV, WEBM — транскрибируются Whisper).
+  Для .doc нужен `antiword` или LibreOffice; для OCR — Tesseract (+ языковой пакет rus);
+  для .rar/.7z — системные `p7zip`/`unar` (или пакеты py7zr/rarfile).
 - Доступ в интернет при первой установке (скачивание моделей и образов).
 - ~50–100 ГБ свободного места под модели, образы и индекс.
 
