@@ -428,6 +428,59 @@ async def admin_upload_folder(files: list[UploadFile] = File(...),
     return admin_ops.save_uploaded_folder(items)
 
 
+# ---- резервное копирование и восстановление ----
+@app.post("/api/admin/backup/create")
+def admin_backup_create(payload: dict = Body(...),
+                        x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.backup_create(payload.get("scope", ""))
+
+
+@app.get("/api/admin/backup/list")
+def admin_backup_list(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.backup_list()
+
+
+@app.get("/api/admin/backup/download")
+def admin_backup_download(name: str, x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    p = admin_ops.backup_download_path(name)
+    if p is None:
+        raise HTTPException(status_code=404, detail="архив не найден")
+    return FileResponse(str(p), filename=p.name, media_type="application/gzip")
+
+
+@app.post("/api/admin/backup/delete")
+def admin_backup_delete(payload: dict = Body(...),
+                        x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.backup_delete(payload.get("name", ""))
+
+
+@app.post("/api/admin/backup/verify")
+async def admin_backup_verify(file: UploadFile = File(...),
+                              x_admin_token: str | None = Header(None)):
+    """Пред-проверка загружаемого архива: целостность и состав, без восстановления."""
+    _check_admin(x_admin_token)
+    tmp = Path(tempfile.gettempdir()) / f"rag_verify_{int(time.time())}.tar.gz"
+    try:
+        tmp.write_bytes(await file.read())
+        return admin_ops.backup_verify_file(str(tmp))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@app.post("/api/admin/backup/restore")
+async def admin_backup_restore(file: UploadFile = File(...),
+                               x_admin_token: str | None = Header(None)):
+    """Восстановление из загруженного архива (с обязательной проверкой целостности)."""
+    _check_admin(x_admin_token)
+    tmp = Path(tempfile.gettempdir()) / f"rag_restore_{int(time.time())}.tar.gz"
+    tmp.write_bytes(await file.read())
+    return admin_ops.backup_restore_file(str(tmp))
+
+
 @app.post("/api/admin/check-data")
 def admin_check_data(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

@@ -664,6 +664,32 @@
       <div class="note" style="margin-top:8px">Удаляет журнал всех запросов вместе с оценками и аналитикой (дашборд, журнал, аналитика обнулятся). Индекс, граф и настройки не затрагиваются.</div>
     </div>
 
+    <!-- резервное копирование -->
+    <div class="box">
+      <h3>Резервное копирование</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="backupCreate('settings')">💾 Копия настроек</button>
+        <button class="act" onclick="backupCreate('service')">🗂 Копия служебных данных (без каталога)</button>
+        <button class="act" onclick="backupCreate('full')">📦 Полная копия (настройки + данные с каталогом)</button>
+        <span id="bkmsg" class="note"></span>
+      </div>
+      <div class="note" style="margin-top:6px">У каждого архива считается SHA-256 и проверяется целостность. Векторный индекс Qdrant не входит в копию (он производный) — после восстановления данных выполните переиндексацию.</div>
+
+      <div id="bklist" style="margin-top:12px"></div>
+
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">
+        <b style="font-size:13px">Восстановление из архива</b>
+        <div class="note" style="margin:4px 0 8px">Сначала «Проверить архив» (контроль целостности и состава), затем «Восстановить».</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input type="file" id="bkfile" accept=".gz,.tgz,.tar.gz" onchange="bkResetVerify()">
+          <button class="act ghost" onclick="backupVerify()">🔍 Проверить архив</button>
+          <button class="act" id="bkrestorebtn" onclick="backupRestore()" disabled style="border-color:#ef4444;color:#f87171">♻️ Восстановить</button>
+          <span id="bkrmsg" class="note"></span>
+        </div>
+        <div id="bkverify" style="margin-top:10px"></div>
+      </div>
+    </div>
+
     <!-- переустановка и сброс -->
     <div class="box">
       <h3>Переустановка и сброс</h3>
@@ -1318,7 +1344,7 @@ async function loadConfig(){
   if($('#cal_auto')) $('#cal_auto').checked=!!c.values.AUTO_CALIBRATE;
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
-  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad();
+  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups();
 }
 
 // ---- калибровка по оценкам ----
@@ -1469,6 +1495,87 @@ async function doUpdate(){
 // ---- переустановка и сброс ----
 function rsMsg(t,ok=true){ $('#rsmsg').textContent=t; $('#rsmsg').className=ok?'saved':'note'; }
 function histMsg(t,ok=true){ $('#histmsg').textContent=t; $('#histmsg').className=ok?'saved':'note'; }
+// ---- резервное копирование ----
+function bkMsg(t,ok=true){ const e=$('#bkmsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+function bkRMsg(t,ok=true){ const e=$('#bkrmsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+let _bkVerified=null;
+async function backupCreate(scope){
+  const names={settings:'настроек',service:'служебных данных',full:'полная (с каталогом)'};
+  bkMsg('создание копии '+(names[scope]||scope)+'…');
+  const r=await adminPost('/api/admin/backup/create',{scope});
+  bkMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
+  if(r.ok!==false) pollBackup();
+}
+async function pollBackup(){
+  let s; try{ s=await (await fetch('/api/admin/status?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
+  const j=s.backup_job||{}, rj=s.restore_job||{};
+  if(j.running) bkMsg('идёт: '+(j.log||'упаковка…'));
+  else if(j.finished){ const r=j.result||{};
+    bkMsg(j.ok? ('✓ '+(j.log||'готово')) : ('✗ '+(j.log||'ошибка')), j.ok); }
+  if(rj.running) bkRMsg('идёт: '+(rj.log||'восстановление…'));
+  else if(rj.finished){ bkRMsg(rj.ok?('✓ '+(rj.log||'готово')):('✗ '+(rj.log||'ошибка')),rj.ok); }
+  if(j.running||rj.running){ clearTimeout(window.__bkT); window.__bkT=setTimeout(pollBackup,2000); }
+  else loadBackups();
+}
+async function loadBackups(){
+  let r; try{ r=await (await fetch('/api/admin/backup/list?t='+Date.now(),
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
+  const list=(r&&r.backups)||[];
+  if(!list.length){ $('#bklist').innerHTML='<div class="note">Копий пока нет.</div>'; return; }
+  $('#bklist').innerHTML='<div style="max-height:34vh;overflow:auto"><table><thead><tr>'
+    +'<th>Архив</th><th>Область</th><th>Размер</th><th>Создан</th><th>SHA-256</th><th></th></tr></thead><tbody>'
+    +list.map(b=>`<tr>
+      <td style="word-break:break-all">${esc(b.name)}</td>
+      <td>${esc(b.scope_label||b.scope||'—')}</td>
+      <td>${fcSize(b.size)}</td>
+      <td>${b.created?fmtTime(b.created):'—'}</td>
+      <td title="${esc(b.sha256||'')}" style="font-family:monospace;font-size:11px">${b.sha256?esc(b.sha256.slice(0,12))+'…':'—'}</td>
+      <td style="white-space:nowrap">
+        <a class="dirbtn" href="/api/admin/backup/download?name=${encodeURIComponent(b.name)}" title="Скачать">⬇️</a>
+        <button class="dirbtn" onclick="backupDelete('${escAttr(b.name)}')" title="Удалить">🗑</button></td>
+    </tr>`).join('')+'</tbody></table></div>';
+}
+async function backupDelete(name){
+  if(!confirm('Удалить архив '+name+'?'))return;
+  await adminPost('/api/admin/backup/delete',{name}); loadBackups();
+}
+function bkResetVerify(){ _bkVerified=null; $('#bkrestorebtn').disabled=true; $('#bkverify').innerHTML=''; bkRMsg(''); }
+async function backupVerify(){
+  const f=$('#bkfile').files[0]; if(!f){ bkRMsg('выберите архив',false); return; }
+  bkRMsg('проверка целостности…'); $('#bkrestorebtn').disabled=true;
+  const fd=new FormData(); fd.append('file',f);
+  let j={}; try{
+    const r=await fetch('/api/admin/backup/verify',{method:'POST',headers:{'X-Admin-Token':tok()},body:fd});
+    j=await r.json().catch(()=>({}));
+    if(!r.ok){ bkRMsg('✗ '+(j.detail||'ошибка'),false); return; }
+  }catch(e){ bkRMsg('✗ '+e.message,false); return; }
+  const ok=j.integrity_ok===true;
+  _bkVerified = ok ? f : null;
+  $('#bkrestorebtn').disabled=!ok;
+  const issues=(j.issues||[]);
+  $('#bkverify').innerHTML=sysCards([
+    ['Целостность', ok?'<span style="color:#4ade80">OK ✓</span>':'<span style="color:#f87171">нарушена</span>'],
+    ['Область', esc(j.scope_label||j.scope||'—')],
+    ['Файлов', nz(j.files)],['Проверено', nz(j.checked)],
+    ['Создан', j.created?fmtTime(j.created):'—']])
+    + (j.msg?`<div class="note" style="margin-top:6px;color:#f87171">${esc(j.msg)}</div>`:'')
+    + (issues.length?`<div class="note" style="margin-top:6px;color:#f87171">Проблемы: ${issues.map(esc).join('; ')}</div>`:'')
+    + (ok?'<div class="note" style="margin-top:6px;color:#4ade80">Архив корректен — можно восстанавливать.</div>':'');
+  bkRMsg(ok?'✓ архив корректен':'✗ архив повреждён или это не наш бэкап',ok);
+}
+async function backupRestore(){
+  const f=_bkVerified||$('#bkfile').files[0]; if(!f){ bkRMsg('сначала проверьте архив',false); return; }
+  if(!confirm('Восстановить из архива? Текущие файлы будут перезаписаны (предварительно создаётся страховочная копия служебных данных).'))return;
+  bkRMsg('восстановление…'); $('#bkrestorebtn').disabled=true;
+  const fd=new FormData(); fd.append('file',f);
+  let j={}; try{
+    const r=await fetch('/api/admin/backup/restore',{method:'POST',headers:{'X-Admin-Token':tok()},body:fd});
+    j=await r.json().catch(()=>({}));
+    if(!r.ok){ bkRMsg('✗ '+(j.detail||'ошибка'),false); return; }
+  }catch(e){ bkRMsg('✗ '+e.message,false); return; }
+  bkRMsg(j.msg||'запущено',j.ok!==false); pollBackup();
+}
 async function clearHistory(){
   if(!confirm('Очистить историю ВСЕХ чатов и всю статистику? Действие необратимо.'))return;
   histMsg('очистка…');

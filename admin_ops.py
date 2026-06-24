@@ -24,6 +24,7 @@ import httpx
 
 import settings
 import db
+import backup
 
 ROOT = Path(__file__).resolve().parent
 
@@ -41,6 +42,10 @@ _test_job = {"running": False, "started": None, "finished": None, "ok": None,
              "log": "", "logfile": "", "results": []}
 _bench_job = {"running": False, "started": None, "finished": None, "ok": None,
               "log": "", "logfile": "", "results": []}
+_backup_job = {"running": False, "started": None, "finished": None, "ok": None,
+               "log": "", "label": "", "result": {}}
+_restore_job = {"running": False, "started": None, "finished": None, "ok": None,
+                "log": "", "result": {}}
 _check_job = {"running": False, "started": None, "finished": None, "ok": None,
               "log": "", "logfile": "", "results": {}}
 
@@ -275,6 +280,8 @@ def status() -> dict:
     out["test_job"] = _jobview(_test_job)
     out["bench_job"] = _jobview(_bench_job)
     out["check_job"] = _jobview(_check_job)
+    out["backup_job"] = dict(_backup_job)
+    out["restore_job"] = dict(_restore_job)
     return out
 
 
@@ -1853,6 +1860,88 @@ def save_uploaded_folder(items: list) -> dict:
             bad.append(f"{'/'.join(clean)} ({e})")
     return {"ok": True, "saved": saved, "skipped": skipped,
             "errors": bad[:50], "dir": str(docs)}
+
+
+def backup_create(scope: str) -> dict:
+    """Создать резервную копию (фоном): settings|service|full."""
+    if scope not in backup.SCOPES:
+        return {"ok": False, "msg": "неизвестная область копирования"}
+    if _backup_job["running"]:
+        return {"ok": False, "msg": "копирование уже идёт"}
+
+    def run():
+        _backup_job.update(running=True, started=time.time(), finished=None, ok=None,
+                           log="запуск…", label=backup.SCOPE_LABEL.get(scope, scope),
+                           result={})
+        try:
+            r = backup.create(scope, progress=lambda d, t, n: _backup_job.update(
+                log=f"упаковка {d}/{t}: {n}"))
+            _backup_job["result"] = r
+            _backup_job["ok"] = bool(r.get("ok") and r.get("integrity_ok"))
+            if r.get("ok"):
+                _backup_job["log"] = (f"готово: {r.get('name')} · файлов {r.get('files')} · "
+                                      f"целостность " + ("OK" if r.get("integrity_ok") else "ОШИБКА"))
+            else:
+                _backup_job["log"] = r.get("msg", "ошибка")
+        except Exception as e:
+            _backup_job["ok"] = False
+            _backup_job["log"] = str(e)
+        _backup_job["running"] = False
+        _backup_job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": f"создание копии «{backup.SCOPE_LABEL.get(scope, scope)}» запущено"}
+
+
+def backup_list() -> dict:
+    return {"ok": True, "backups": backup.list_backups()}
+
+
+def backup_delete(name: str) -> dict:
+    return backup.delete(name)
+
+
+def backup_verify_file(path: str) -> dict:
+    """Проверить целостность загруженного архива (синхронно, без восстановления)."""
+    return backup.verify(path)
+
+
+def backup_restore_file(path: str) -> dict:
+    """Восстановить из загруженного архива (фоном). path — временный файл."""
+    if _restore_job["running"]:
+        try:
+            Path(path).unlink(missing_ok=True)  # не оставляем загруженный временный файл
+        except Exception:
+            pass
+        return {"ok": False, "msg": "восстановление уже идёт"}
+
+    def run():
+        _restore_job.update(running=True, started=time.time(), finished=None,
+                            ok=None, log="проверка архива…", result={})
+        try:
+            r = backup.restore(path, progress=lambda d, t, n: _restore_job.update(
+                log=f"восстановление {d}/{t}: {n}"))
+            _restore_job["result"] = r
+            _restore_job["ok"] = bool(r.get("ok"))
+            _restore_job["log"] = (f"восстановлено файлов: {r.get('restored')}"
+                                   if r.get("ok") else r.get("msg", "ошибка"))
+        except Exception as e:
+            _restore_job["ok"] = False
+            _restore_job["log"] = str(e)
+        finally:
+            try:
+                Path(path).unlink(missing_ok=True)  # убираем временный загруженный файл
+            except Exception:
+                pass
+        _restore_job["running"] = False
+        _restore_job["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": "восстановление запущено"}
+
+
+def backup_download_path(name: str):
+    return backup.path_for(name)
 
 
 def browse(path: str | None = None) -> dict:

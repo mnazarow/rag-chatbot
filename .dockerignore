@@ -12,6 +12,7 @@ __pycache__/
 runtime_config.json
 ingest_stats.json
 previews/
+backups/
 .env
 .env.docker
 windows_variant/docker/state/
