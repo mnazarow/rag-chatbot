@@ -1,4 +1,4 @@
-# Управление сервисом RAG на Windows (Scheduled Task 'RagApi').
+﻿# Управление сервисом RAG на Windows (Scheduled Task 'RagApi').
 #   powershell -File windows_variant\manage_windows.ps1 status|start|stop|restart|logs
 param([string]$Action = "status")
 $ErrorActionPreference = "SilentlyContinue"

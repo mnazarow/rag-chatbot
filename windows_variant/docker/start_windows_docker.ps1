@@ -1,4 +1,4 @@
-# Запуск RAG в Docker на Windows одной командой.
+﻿# Запуск RAG в Docker на Windows одной командой.
 #   powershell -ExecutionPolicy Bypass -File start_windows_docker.ps1 `
 #       -DocsDir "C:\path\to\BD" -AdminToken "ваш-пароль"
 # Требуется: Docker Desktop и (для генерации) Ollama, установленные на Windows.
