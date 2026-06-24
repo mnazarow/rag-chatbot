@@ -34,6 +34,8 @@ Log "Устанавливаю Python 3.12, Git, Ollama (winget)..."
 winget install -e --id Python.Python.3.12 --silent --accept-source-agreements --accept-package-agreements 2>$null
 winget install -e --id Git.Git           --silent --accept-source-agreements --accept-package-agreements 2>$null
 winget install -e --id Ollama.Ollama      --silent --accept-source-agreements --accept-package-agreements 2>$null
+# Tesseract OCR (для CR2/фото-документов) — необязательно
+winget install -e --id UB-Mannheim.TesseractOCR --silent --accept-source-agreements --accept-package-agreements 2>$null
 
 # обновить PATH в текущей сессии
 $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")

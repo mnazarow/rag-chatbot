@@ -61,7 +61,7 @@ ${PYTHON_BIN} -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip wheel
 pip install -r requirements.txt
-pip install -q ezdxf || true   # чертежи DWG/DXF (на случай старого requirements)
+pip install -q ezdxf rawpy pytesseract || true   # DWG/DXF + OCR для RAW-фото (CR2)
 
 # ----- 6. .env --------------------------------------------------------------
 if [[ ! -f "${PROJECT_DIR}/.env" ]]; then

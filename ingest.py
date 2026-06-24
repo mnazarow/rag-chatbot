@@ -33,6 +33,8 @@ DOCS_DIR = Path(settings.get("DOCS_DIR")).expanduser()
 
 SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".csv",
              ".txt", ".md", ".html", ".htm", ".dxf", ".dwg",
+             ".stp", ".step", ".igs", ".iges",
+             ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".sr2",
              ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
 
 

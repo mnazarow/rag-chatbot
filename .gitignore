@@ -27,5 +27,6 @@ finetune/data/
 finetune/adapter/
 
 # ОС
+BD/
 .DS_Store
 Thumbs.db

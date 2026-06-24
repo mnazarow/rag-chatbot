@@ -29,9 +29,12 @@ git fetch --all -q
 git reset --hard "origin/${BRANCH}"
 NEW="$(git rev-parse --short HEAD)"
 
+log "Обновляю системные пакеты (OCR/конвертеры)..."
+apt-get install -y tesseract-ocr tesseract-ocr-rus libredwg-tools 2>/dev/null || true
+
 log "Обновляю Python-зависимости..."
 ./.venv/bin/pip install -q -r gpu_variant/requirements-gpu.txt || true
-./.venv/bin/pip install -q ezdxf xlrd python-multipart paramiko || true   # новые зависимости (DWG/XLS/загрузка/SSH)
+./.venv/bin/pip install -q ezdxf rawpy pytesseract xlrd python-multipart paramiko || true   # новые зависимости
 
 log "Перезапускаю контейнеры (vLLM + Qdrant)..."
 docker compose --env-file gpu_variant/.env -f gpu_variant/docker-compose.gpu.yml up -d

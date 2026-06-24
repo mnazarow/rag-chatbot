@@ -10,6 +10,10 @@ import settings
 
 # Какие расширения к какому обработчику
 AUDIO_VIDEO = {".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
+# RAW-фото камер: конвертируются в изображение → OCR → текстовый PDF
+RAW_PHOTO = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".sr2"}
+# Растровые изображения: распознавание текста (OCR)
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".jfif"}
 
 
 def load_file(path: Path) -> Iterator[dict]:
@@ -22,14 +26,30 @@ def load_file(path: Path) -> Iterator[dict]:
             yield from _load_docx(path)
         elif ext == ".pptx":
             yield from _load_pptx(path)
-        elif ext in {".xlsx", ".xls", ".csv"}:
+        elif ext in {".xlsx", ".xlsm", ".xls", ".csv"}:
             yield from _load_table(path)
         elif ext in {".txt", ".md"}:
             yield {"text": path.read_text(errors="ignore"), "page": None}
-        elif ext in {".html", ".htm"}:
+        elif ext in {".html", ".htm", ".mhtml", ".mht"}:
             yield from _load_html(path)
+        elif ext == ".doc":
+            yield from _load_doc(path)
+        elif ext in {".xml"}:
+            yield from _load_xml(path)
+        elif ext == ".json":
+            yield from _load_json(path)
+        elif ext == ".url":
+            yield from _load_url(path)
+        elif ext == ".svg":
+            yield from _load_svg(path)
         elif ext in {".dxf", ".dwg"}:
             yield from _load_cad(path)
+        elif ext in {".stp", ".step", ".igs", ".iges"}:
+            yield from _load_cad_exchange(path)
+        elif ext in IMAGE_EXTS:
+            yield from _load_image(path)
+        elif ext in RAW_PHOTO:
+            yield from _load_raw(path)
         elif ext in AUDIO_VIDEO:
             yield from _load_av(path)
         # остальное молча пропускаем
@@ -189,6 +209,104 @@ def _load_cad(path: Path):
                 tmp.unlink()
             except Exception:
                 pass
+
+
+def _load_cad_exchange(path: Path):
+    """Текстовые метаданные из STEP (.stp/.step) и IGES (.igs/.iges):
+    названия деталей/изделий, описания, заголовок, единицы, автор.
+    Геометрия не извлекается (для текстового поиска она бесполезна)."""
+    ext = path.suffix.lower()
+    text = path.read_text(errors="ignore")
+    body = _parse_iges(text) if ext in (".igs", ".iges") else _parse_step(text)
+    if body.strip():
+        yield {"text": body, "page": None}
+
+
+def _parse_step(t: str) -> str:
+    import re
+    seen, names = set(), []
+    # все строковые литералы STEP в одинарных кавычках ('' = апостроф)
+    for m in re.finditer(r"'((?:[^']|'')*)'", t):
+        s = m.group(1).replace("''", "'").strip()
+        if len(s) >= 2 and not s.isdigit() and re.search(r"[A-Za-zА-Яа-я0-9]", s):
+            if s not in seen:
+                seen.add(s)
+                names.append(s)
+    if not names:
+        return ""
+    return "Метаданные STEP (названия, описания, единицы, заголовок):\n" + "\n".join(names[:2000])
+
+
+def _parse_iges(t: str) -> str:
+    import re
+    start, glob = [], []
+    for line in t.splitlines():
+        if len(line) >= 73:
+            sec = line[72]
+            if sec == "S":  # Start section — свободный текст-описание
+                s = line[:72].strip()
+                if s:
+                    start.append(s)
+            elif sec == "G":  # Global section — параметры (Hollerith-строки)
+                glob.append(line[:72])
+    gtext = "".join(glob)
+    holler, i = [], 0
+    while i < len(gtext):  # Hollerith: NNNNH<строка ровно NNNN символов>
+        m = re.match(r"(\d+)H", gtext[i:])
+        if m:
+            n = int(m.group(1))
+            pos = i + m.end()
+            val = gtext[pos:pos + n].strip()
+            if val and re.search(r"[A-Za-zА-Яа-я0-9]", val):
+                holler.append(val)
+            i = pos + n
+        else:
+            i += 1
+    out = []
+    if start:
+        out.append("Описание (IGES Start):\n" + "\n".join(start))
+    if holler:
+        out.append("Параметры (IGES Global):\n" + ", ".join(holler))
+    return "\n".join(out)
+
+
+def _ocr_lang():
+    import pytesseract
+    try:
+        langs = pytesseract.get_languages(config="")
+        if "rus" in langs:
+            return "rus+eng" if "eng" in langs else "rus"
+    except Exception:
+        pass
+    return "eng"
+
+
+def _load_raw(path: Path):
+    """RAW-фото (CR2 и др.) → изображение → OCR → текстовый (searchable) PDF →
+    извлечение текста. Полезно для сфотографированных документов."""
+    import io
+    import rawpy
+    import pytesseract
+    import fitz  # pymupdf
+    from PIL import Image
+
+    print(f"  ~ распознаю (OCR) {path.name} ...")
+    with rawpy.imread(str(path)) as raw:
+        rgb = raw.postprocess()
+    img = Image.fromarray(rgb)
+    # уменьшаем огромные снимки — ускоряет OCR без потери читаемости текста
+    maxdim = 3500
+    if max(img.size) > maxdim:
+        k = maxdim / max(img.size)
+        img = img.resize((int(img.size[0] * k), int(img.size[1] * k)))
+
+    # CR2 → текстовый PDF (со встроенным текстовым слоем от Tesseract)
+    pdf_bytes = pytesseract.image_to_pdf_or_hocr(img, lang=_ocr_lang(), extension="pdf")
+    doc = fitz.open(stream=io.BytesIO(pdf_bytes).getvalue(), filetype="pdf")
+    for i, page in enumerate(doc, 1):
+        txt = page.get_text("text")
+        if txt.strip():
+            yield {"text": txt, "page": i}
 
 
 _FASTER_WHISPER = None  # ленивый кеш модели faster-whisper

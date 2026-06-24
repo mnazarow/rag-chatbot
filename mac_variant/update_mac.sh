@@ -12,8 +12,9 @@ OLD="$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
 git fetch --all -q && git reset --hard "origin/${BRANCH}"
 NEW="$(git rev-parse --short HEAD)"
 
+brew install tesseract tesseract-lang libredwg 2>/dev/null || true   # OCR (вкл. rus) + dwg2dxf
 ./.venv/bin/pip install -q -r requirements.txt || true
-./.venv/bin/pip install -q ezdxf xlrd python-multipart paramiko || true   # новые зависимости (DWG/XLS/загрузка/SSH)
+./.venv/bin/pip install -q ezdxf rawpy pytesseract xlrd python-multipart paramiko || true   # новые зависимости
 bash mac_variant/manage_mac.sh restart
 
 echo "Обновлено: ${OLD} → ${NEW}"

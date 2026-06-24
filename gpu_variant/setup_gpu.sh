@@ -26,6 +26,7 @@ nvidia-smi -L
 log "Устанавливаю базовые пакеты..."
 apt-get update -y
 apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg
+apt-get install -y tesseract-ocr tesseract-ocr-rus libredwg-tools 2>/dev/null || true   # OCR (rus) + DWG
 PYBIN="$(command -v python3.11 || command -v python3.12 || command -v python3.10 || command -v python3)"
 
 # ----- 2. Docker + Compose --------------------------------------------------
