@@ -49,7 +49,11 @@ chmod +x setup.sh
 
 `setup.sh` выполняет:
 1. установку Homebrew (если нет);
-2. системные пакеты: `python@3.11`, `ffmpeg`, `poppler`, `tesseract`, Ollama, Docker;
+2. системные пакеты: `python@3.11`, `ffmpeg` (кадры/фрагменты видео и транскрибация),
+   `poppler`, `tesseract` (+ `tesseract-lang` для OCR на русском), `libredwg`,
+   `antiword`, `p7zip`/`unar` (архивы), Ollama, Docker; Python-зависимости (включая
+   `matplotlib` для рендера чертежей, `psutil` для метрик, `pytesseract`/`rawpy`/
+   `Pillow` для OCR) ставятся из `requirements.txt`;
 3. запуск Ollama как сервиса и скачивание LLM (по умолчанию
    `qwen3.6:35b-a3b-q4_K_M`);
 4. поднятие Qdrant в Docker (`docker-compose.yml`);
@@ -315,6 +319,9 @@ python query_lightrag.py "вопрос" --mode mix
 | `QDRANT_URL`      | Адрес Qdrant                                  | `http://localhost:6333`            |
 | `QDRANT_COLLECTION`| Коллекция                                    | `company_kb`                       |
 | `WHISPER_BACKEND` | `mlx` (Apple) / `faster` (GPU)               | `mlx`                              |
+| `OCR_IMAGES` / `OCR_RAW` | OCR картинок / RAW-фото при индексации | `1` (вкл)                          |
+| `PARSE_CAD` / `TRANSCRIBE_AV` | Чтение CAD / транскрибация медиа  | `1` (вкл)                          |
+| `FILE_PARSE_TIMEOUT` | Лимит времени на файл при индексации, с   | `0` (без лимита)                   |
 | `ADMIN_TOKEN`     | Пароль админ-панели (пусто = без пароля)      | пусто                              |
 | `API_PORT`        | Порт веб-сервиса                              | `8000`                             |
 
