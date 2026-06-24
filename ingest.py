@@ -70,7 +70,7 @@ def ensure_collection(client: QdrantClient, reset: bool):
         client.create_collection(
             collection_name=COLLECTION,
             vectors_config=qm.VectorParams(
-                size=config.EMBED_DIM, distance=qm.Distance.COSINE
+                size=settings.get("EMBED_DIM"), distance=qm.Distance.COSINE
             ),
         )
         # индексы payload — для инкрементального обновления и фильтрации

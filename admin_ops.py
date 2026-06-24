@@ -554,22 +554,84 @@ def list_models() -> dict:
 
 # Курируемые каталоги моделей (полного API библиотеки у Ollama нет)
 _OLLAMA_CATALOG = [
+    # --- Qwen3.6 (новейшие, hybrid-thinking, 256K контекст) ---
+    {"name": "qwen3.6:35b-a3b", "note": "MoE 35B/3B активных · ~24 ГБ · 256K (рекоменд.)"},
+    {"name": "qwen3.6:35b-a3b-q4_K_M", "note": "~19–22 ГБ · квантованная MoE"},
+    {"name": "qwen3.6:27b", "note": "плотная 27B · ~17 ГБ (Q4) · 256K"},
+    {"name": "qwen3.6:27b-bf16", "note": "~56 ГБ · полная точность"},
+    # --- Qwen3 (гибридный reasoning) ---
+    {"name": "qwen3:0.6b", "note": "~0.5 ГБ · самая лёгкая Qwen3"},
+    {"name": "qwen3:1.7b", "note": "~1.4 ГБ · лёгкая"},
+    {"name": "qwen3:4b", "note": "~2.6 ГБ"},
+    {"name": "qwen3:8b", "note": "~5 ГБ · хороший баланс"},
+    {"name": "qwen3:14b", "note": "~9 ГБ"},
+    {"name": "qwen3:30b-a3b", "note": "~18 ГБ · MoE (быстрый при большом размере)"},
+    {"name": "qwen3:32b", "note": "~20 ГБ · сильная, RU"},
+    {"name": "qwen3:235b-a22b", "note": "~140 ГБ · топ MoE (нужен мощный сервер)"},
+    # --- Qwen2.5 (сильный русский) ---
+    {"name": "qwen2.5:3b-instruct", "note": "~2 ГБ · очень лёгкая"},
     {"name": "qwen2.5:7b-instruct", "note": "~4.7 ГБ · быстрый, базовый RU"},
     {"name": "qwen2.5:14b-instruct", "note": "~9 ГБ · хороший баланс"},
     {"name": "qwen2.5:32b-instruct-q4_K_M", "note": "~20 ГБ · сильный RU (рекоменд.)"},
     {"name": "qwen2.5:72b-instruct-q4_K_M", "note": "~42 ГБ · максимум качества"},
+    # --- Llama 3.x ---
+    {"name": "llama3.2:3b-instruct-q4_K_M", "note": "~2 ГБ · лёгкая"},
     {"name": "llama3.1:8b-instruct-q4_K_M", "note": "~4.9 ГБ"},
+    {"name": "llama3.3:70b-instruct-q4_K_M", "note": "~42 ГБ · топ Llama"},
+    # --- Многоязычные / RAG-ориентированные ---
+    {"name": "aya-expanse:8b", "note": "~5 ГБ · многоязычная (Cohere), хороший RU"},
+    {"name": "aya-expanse:32b", "note": "~18 ГБ · многоязычная, сильный RU"},
+    {"name": "command-r7b", "note": "~5 ГБ · заточена под RAG/цитирование"},
+    {"name": "command-r:35b", "note": "~20 ГБ · RAG, длинный контекст"},
+    # --- Gemma 3 (140+ языков, мультимодальная) ---
+    {"name": "gemma3:4b", "note": "~3 ГБ · многоязычная, есть зрение"},
+    {"name": "gemma3:12b", "note": "~8 ГБ · многоязычная"},
+    {"name": "gemma3:27b", "note": "~17 ГБ · сильная, 140+ языков"},
+    # --- Gemma 2 / Mistral / Phi ---
     {"name": "gemma2:9b-instruct-q4_K_M", "note": "~5.8 ГБ"},
     {"name": "gemma2:27b-instruct-q4_K_M", "note": "~16 ГБ"},
+    {"name": "mistral-small:24b", "note": "~14 ГБ · плотная, хороша для RAG"},
     {"name": "mistral-nemo:12b-instruct-2407-q4_K_M", "note": "~7 ГБ · 128k контекст"},
+    {"name": "mixtral:8x7b-instruct-v0.1-q4_K_M", "note": "~26 ГБ · MoE"},
+    {"name": "phi4:14b", "note": "~9 ГБ · сильная логика"},
     {"name": "phi3.5:3.8b-mini-instruct-q4_K_M", "note": "~2.2 ГБ · лёгкая"},
-    {"name": "bge-m3", "note": "эмбеддинги (нужно для графа на Ollama)"},
+    # --- Reasoning (DeepSeek-R1) ---
+    {"name": "deepseek-r1:7b", "note": "~4.7 ГБ · рассуждения"},
+    {"name": "deepseek-r1:14b", "note": "~9 ГБ · рассуждения"},
+    {"name": "deepseek-r1:32b", "note": "~20 ГБ · рассуждения"},
+    # --- Эмбеддинги (для графа на Ollama) ---
+    {"name": "bge-m3", "note": "эмбеддинги · многоязычные, 1024d (рекоменд.)"},
+    {"name": "qwen3-embedding:0.6b", "note": "эмбеддинги · топ MTEB 2026, многоязычные"},
+    {"name": "nomic-embed-text", "note": "эмбеддинги · лёгкие, многоязычные"},
+    {"name": "mxbai-embed-large", "note": "эмбеддинги · качественные (англ.)"},
 ]
 _VLLM_CATALOG = [
-    {"name": "Qwen/Qwen2.5-7B-Instruct-AWQ", "note": "~24 ГБ VRAM"},
-    {"name": "Qwen/Qwen2.5-14B-Instruct-AWQ", "note": "~24 ГБ VRAM"},
-    {"name": "Qwen/Qwen2.5-32B-Instruct-AWQ", "note": "~48 ГБ VRAM"},
-    {"name": "Qwen/Qwen2.5-72B-Instruct-AWQ", "note": "~80 ГБ VRAM / TP=2"},
+    # --- Qwen3.6 (новейшие, 256K контекст) ---
+    {"name": "Qwen/Qwen3.6-35B-A3B", "note": "MoE 35B/3B · 24 ГБ VRAM (Q4) · 256K"},
+    {"name": "Qwen/Qwen3.6-27B", "note": "плотная 27B · ~17 ГБ (Q4)"},
+    {"name": "nvidia/Qwen3.6-35B-A3B-NVFP4", "note": "NVFP4-квант (NVIDIA), компактная"},
+    # --- Qwen3 ---
+    {"name": "Qwen/Qwen3-8B", "note": "24 ГБ VRAM · гибрид reasoning"},
+    {"name": "Qwen/Qwen3-14B", "note": "32 ГБ VRAM"},
+    {"name": "Qwen/Qwen3-32B", "note": "80 ГБ VRAM (или AWQ/TP=2)"},
+    {"name": "Qwen/Qwen3-30B-A3B", "note": "48+ ГБ · MoE"},
+    {"name": "Qwen/Qwen3-32B-AWQ", "note": "48 ГБ VRAM · квантованная"},
+    # --- Qwen2.5 ---
+    {"name": "Qwen/Qwen2.5-3B-Instruct-AWQ", "note": "16 ГБ VRAM"},
+    {"name": "Qwen/Qwen2.5-7B-Instruct-AWQ", "note": "24 ГБ VRAM"},
+    {"name": "Qwen/Qwen2.5-14B-Instruct-AWQ", "note": "24 ГБ VRAM"},
+    {"name": "Qwen/Qwen2.5-32B-Instruct-AWQ", "note": "48 ГБ VRAM"},
+    {"name": "Qwen/Qwen2.5-72B-Instruct-AWQ", "note": "80 ГБ VRAM / TP=2"},
+    # --- Llama (AWQ от hugging-quants) ---
+    {"name": "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4", "note": "24 ГБ VRAM"},
+    {"name": "hugging-quants/Meta-Llama-3.1-70B-Instruct-AWQ-INT4", "note": "80 ГБ VRAM"},
+    # --- Gemma 3 / Mistral ---
+    {"name": "google/gemma-3-12b-it", "note": "32 ГБ · многоязычная, мультимодальная"},
+    {"name": "google/gemma-3-27b-it", "note": "80 ГБ (или AWQ) · 140+ языков"},
+    {"name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506", "note": "48 ГБ · плотная, RAG"},
+    {"name": "casperhansen/mistral-nemo-instruct-2407-awq", "note": "24 ГБ · 128k контекст"},
+    {"name": "casperhansen/mixtral-instruct-awq", "note": "48 ГБ · MoE"},
+    {"name": "Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4", "note": "48 ГБ · альтернатива AWQ"},
 ]
 
 

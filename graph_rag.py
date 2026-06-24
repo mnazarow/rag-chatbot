@@ -64,7 +64,7 @@ def _build_sync():
         llm_model_func=_llm_func,
         llm_model_name=settings.get("LLM_MODEL"),
         embedding_func=EmbeddingFunc(
-            embedding_dim=1024, max_token_size=8192, func=_embed_func),
+            embedding_dim=settings.get("EMBED_DIM"), max_token_size=8192, func=_embed_func),
     )
 
 

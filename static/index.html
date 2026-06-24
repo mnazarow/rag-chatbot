@@ -417,6 +417,26 @@
         <span id="llmmsg"></span>
       </div>
       <div class="note">Сверху — установленные модели (выбор для генерации). Каталог — рекомендованные модели: для Ollama скачиваются, для vLLM имя подставляется в VLLM_MODEL (затем «Применить модель LLM»).</div>
+      <details class="note" style="margin-top:10px">
+        <summary style="cursor:pointer"><b>📌 Рекомендации по выбору модели</b></summary>
+        <div style="margin-top:8px;line-height:1.6">
+          <b>Генерация (LLM) — по железу:</b><br>
+          • 8–16 ГБ ОЗУ/VRAM: <code>qwen3:8b</code>, <code>qwen3.6:35b-a3b-q4_K_M</code> (MoE, быстрая), <code>gemma3:12b</code>.<br>
+          • 24 ГБ (RTX 3090/4090): <code>qwen3.6:35b-a3b</code> ✅ (лучший баланс RU/скорость), <code>qwen2.5:32b</code>, <code>gemma3:27b</code>.<br>
+          • 48–80 ГБ: <code>qwen2.5:72b</code>, <code>Qwen/Qwen3.6-27B</code>, <code>llama3.3:70b</code>.<br>
+          • Слабый сервер/CPU: <code>qwen3:1.7b</code>–<code>qwen3:4b</code>, <code>llama3.2:3b</code>.<br><br>
+          <b>Для русского и RAG:</b> Qwen3.6 / Qwen3 / Qwen2.5 — самый сильный русский; Gemma 3 — 140+ языков; Mistral-Small — точные фактологические ответы; Command-R — заточена под цитирование.<br>
+          <b>Reasoning:</b> Qwen3.6 и DeepSeek-R1 «думают» перед ответом — точнее на сложных вопросах, но медленнее; для простого справочного RAG берите обычные instruct-модели или просите отвечать кратко.<br><br>
+          <b>Эмбеддинги</b> (поле <code>EMBED_MODEL</code> в группе «Эмбеддинги и устройство», смена требует переиндексации):<br>
+          • <code>BAAI/bge-m3</code> ✅ — по умолчанию, многоязычный, 1024d (dense+sparse).<br>
+          • <code>Qwen/Qwen3-Embedding-0.6B</code> — топ MTEB 2026, 1024d, лёгкий.<br>
+          • <code>intfloat/multilingual-e5-large</code> — проверенный, 1024d, хороший RU.<br>
+          • <code>jinaai/jina-embeddings-v3</code> — длинные документы (1024d).<br>
+          • <code>nomic-ai/nomic-embed-text-v2-moe</code> — лёгкий многоязычный.<br>
+          ⚠️ При смене эмбеддера поставьте корректную <code>EMBED_DIM</code> (для перечисленных — 1024), затем «Сбросить индекс» и «Переиндексировать».<br><br>
+          <b>Правило:</b> для RAG качество поиска (эмбеддер + чанкинг) важнее размера LLM — хороший эмбеддер с моделью 8–14B часто лучше гигантской модели со слабым поиском.
+        </div>
+      </details>
     </div>
 
     <!-- модель генерации -->

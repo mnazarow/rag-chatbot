@@ -64,6 +64,8 @@ FIELDS: list[dict] = [
      "type": "text", "scope": "restart", "default": config.EMBED_MODEL},
     {"key": "RERANK_MODEL", "label": "Модель реранка", "group": "Эмбеддинги и устройство",
      "type": "text", "scope": "restart", "default": config.RERANK_MODEL},
+    {"key": "EMBED_DIM", "label": "Размерность эмбеддингов", "group": "Эмбеддинги и устройство",
+     "type": "int", "scope": "reindex", "default": config.EMBED_DIM},
     {"key": "DEVICE", "label": "Устройство", "group": "Эмбеддинги и устройство",
      "type": "select", "scope": "restart", "options": ["cuda", "mps", "cpu"], "default": config.DEVICE},
 
