@@ -51,7 +51,7 @@ chmod +x setup.sh
 1. установку Homebrew (если нет);
 2. системные пакеты: `python@3.11`, `ffmpeg`, `poppler`, `tesseract`, Ollama, Docker;
 3. запуск Ollama как сервиса и скачивание LLM (по умолчанию
-   `qwen2.5:32b-instruct-q4_K_M`);
+   `qwen3.6:35b-a3b-q4_K_M`);
 4. поднятие Qdrant в Docker (`docker-compose.yml`);
 5. создание виртуального окружения `.venv` и установку зависимостей
    (`requirements.txt`);
@@ -306,7 +306,7 @@ python query_lightrag.py "вопрос" --mode mix
 |-------------------|----------------------------------------------|------------------------------------|
 | `DOCS_DIR`        | Папка с документами                          | `/opt/db`                          |
 | `LLM_BACKEND`     | `ollama` (Apple) или `openai` (vLLM)         | `ollama`                           |
-| `LLM_MODEL`       | Имя модели для запросов                       | `qwen2.5:32b-instruct-q4_K_M`      |
+| `LLM_MODEL`       | Имя модели для запросов                       | `qwen3.6:35b-a3b-q4_K_M`           |
 | `OLLAMA_URL`      | Адрес Ollama                                  | `http://localhost:11434`           |
 | `LLM_BASE_URL`    | Адрес vLLM (OpenAI API)                       | `http://localhost:8001/v1`         |
 | `EMBED_MODEL`     | Модель эмбеддингов                            | `BAAI/bge-m3`                      |

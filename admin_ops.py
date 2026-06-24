@@ -694,8 +694,8 @@ def list_models() -> dict:
 # Курируемые каталоги моделей (полного API библиотеки у Ollama нет)
 _OLLAMA_CATALOG = [
     # --- Qwen3.6 (новейшие, hybrid-thinking, 256K контекст) ---
-    {"name": "qwen3.6:35b-a3b", "note": "MoE 35B/3B активных · ~24 ГБ · 256K (рекоменд.)"},
-    {"name": "qwen3.6:35b-a3b-q4_K_M", "note": "~19–22 ГБ · квантованная MoE"},
+    {"name": "qwen3.6:35b-a3b", "note": "MoE 35B/3B активных · ~24 ГБ · 256K"},
+    {"name": "qwen3.6:35b-a3b-q4_K_M", "note": "~19–22 ГБ · квантованная MoE (по умолчанию ✅)"},
     {"name": "qwen3.6:27b", "note": "плотная 27B · ~17 ГБ (Q4) · 256K"},
     {"name": "qwen3.6:27b-bf16", "note": "~56 ГБ · полная точность"},
     # --- Qwen3 (гибридный reasoning) ---
@@ -711,7 +711,7 @@ _OLLAMA_CATALOG = [
     {"name": "qwen2.5:3b-instruct", "note": "~2 ГБ · очень лёгкая"},
     {"name": "qwen2.5:7b-instruct", "note": "~4.7 ГБ · быстрый, базовый RU"},
     {"name": "qwen2.5:14b-instruct", "note": "~9 ГБ · хороший баланс"},
-    {"name": "qwen2.5:32b-instruct-q4_K_M", "note": "~20 ГБ · сильный RU (рекоменд.)"},
+    {"name": "qwen2.5:32b-instruct-q4_K_M", "note": "~20 ГБ · сильный RU"},
     {"name": "qwen2.5:72b-instruct-q4_K_M", "note": "~42 ГБ · максимум качества"},
     # --- Llama 3.x ---
     {"name": "llama3.2:3b-instruct-q4_K_M", "note": "~2 ГБ · лёгкая"},

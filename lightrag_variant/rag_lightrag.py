@@ -4,7 +4,7 @@ LightRAG строит граф знаний (сущности + связи) по
 режимы поиска: naive (как обычный вектор), local, global, hybrid, mix.
 
 Требуется:
-  ollama pull qwen2.5:32b-instruct-q4_K_M
+  ollama pull qwen3.6:35b-a3b-q4_K_M
   ollama pull bge-m3
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ load_dotenv()
 
 WORKING_DIR = Path(os.getenv("LIGHTRAG_DIR", "./lightrag_storage"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:32b-instruct-q4_K_M")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.6:35b-a3b-q4_K_M")
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
 EMBED_DIM = 1024
 
