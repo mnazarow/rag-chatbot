@@ -84,13 +84,36 @@ FIELDS: list[dict] = [
 
     # --- Эмбеддинги / устройство ---
     {"key": "EMBED_MODEL", "label": "Модель эмбеддингов", "group": "Эмбеддинги и устройство",
-     "type": "text", "scope": "restart", "default": config.EMBED_MODEL},
+     "type": "text", "scope": "restart", "default": config.EMBED_MODEL,
+     "desc": "Модель, кодирующая документы и запрос в векторы для семантического поиска — "
+             "это главный фактор качества RAG (важнее размера LLM). Рекомендация: "
+             "<code>BAAI/bge-m3</code> (по умолчанию, многоязычная, сильный русский, 1024d); "
+             "<code>intfloat/multilingual-e5-large</code> — проверенная альтернатива (1024d); "
+             "<code>Qwen/Qwen3-Embedding-0.6B</code> — топ MTEB, лёгкая (1024d); "
+             "<code>nomic-ai/nomic-embed-text-v2-moe</code> — лёгкая (768d, поставьте EMBED_DIM=768). "
+             "⚠️ Смена модели требует «Сбросить индекс» и «Переиндексировать», и согласованной "
+             "EMBED_DIM. Применяется после перезапуска сервиса."},
     {"key": "RERANK_MODEL", "label": "Модель реранка", "group": "Эмбеддинги и устройство",
-     "type": "text", "scope": "restart", "default": config.RERANK_MODEL},
+     "type": "text", "scope": "restart", "default": config.RERANK_MODEL,
+     "desc": "Кросс-энкодер: переоценивает кандидатов из поиска и оставляет самые релевантные — "
+             "главный рычаг точности и порога «не знаю». Рекомендация: "
+             "<code>BAAI/bge-reranker-v2-m3</code> (по умолчанию, многоязычный); "
+             "<code>BAAI/bge-reranker-base</code> — легче и быстрее на CPU ценой качества. "
+             "Чем мощнее реранкер, тем меньше «похожего, но не того» контекста. "
+             "Применяется после перезапуска сервиса (переиндексация не нужна)."},
     {"key": "EMBED_DIM", "label": "Размерность эмбеддингов", "group": "Эмбеддинги и устройство",
-     "type": "int", "scope": "reindex", "default": config.EMBED_DIM},
+     "type": "int", "scope": "reindex", "default": config.EMBED_DIM,
+     "desc": "Размерность вектора эмбеддера — ДОЛЖНА совпадать с выбранной моделью, иначе индексация "
+             "сломается. Для bge-m3 / e5-large / Qwen3-Embedding-0.6B — <b>1024</b>; для "
+             "nomic-embed-text-v2 — <b>768</b>. При несоответствии: поставьте верное значение, "
+             "«Сбросить индекс», затем «Переиндексировать»."},
     {"key": "DEVICE", "label": "Устройство", "group": "Эмбеддинги и устройство",
-     "type": "select", "scope": "restart", "options": ["cuda", "mps", "cpu"], "default": config.DEVICE},
+     "type": "select", "scope": "restart", "options": ["cuda", "mps", "cpu"], "default": config.DEVICE,
+     "desc": "На чём считать эмбеддинги и реранк: <code>mps</code> — Apple Silicon (Metal), "
+             "<code>cuda</code> — NVIDIA GPU, <code>cpu</code> — везде, но заметно медленнее "
+             "(особенно реранк и индексация). Рекомендация: ставьте тот ускоритель, что есть в "
+             "системе; <code>cpu</code> — только если GPU/Metal недоступны. Применяется после "
+             "перезапуска сервиса."},
 
     # --- Хранилище ---
     {"key": "QDRANT_URL", "label": "URL Qdrant", "group": "Хранилище",
