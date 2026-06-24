@@ -21,6 +21,7 @@ runtime_config.json
 ingest_stats.json
 rag_logs.db
 rag_logs.db-journal
+previews/
 qdrant_storage/
 lightrag_variant/lightrag_storage/
 

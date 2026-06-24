@@ -11,6 +11,7 @@ __pycache__/
 *.db-journal
 runtime_config.json
 ingest_stats.json
+previews/
 .env
 .env.docker
 windows_variant/docker/state/

@@ -26,7 +26,8 @@ openpyxl==3.1.5            # XLSX
 xlrd==2.0.1               # старый формат XLS (Excel 97-2003)
 ezdxf==1.3.5              # чертежи DXF/DWG (текст, MTEXT, атрибуты)
 rawpy==0.24.0            # RAW-фото (CR2/NEF/ARW…) → изображение
-Pillow==11.0.0           # растровые изображения (JPG/PNG/…) для OCR
+Pillow==11.0.0           # растровые изображения (JPG/PNG/…) для OCR и превью
+matplotlib==3.10.0       # рендер чертежей DXF/DWG в превью (ezdxf drawing backend)
 pytesseract==0.3.13      # OCR распознавание текста на фото (нужен Tesseract)
 extract-msg==0.54.1      # письма Outlook (.msg)
 py7zr==0.22.0            # архивы .7z

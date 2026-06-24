@@ -1025,7 +1025,9 @@ async function loadFiles(){
     const status=f.error
       ? `<span class="tag no" title="${escAttr(f.error)}">⚠ ошибка</span>`
       : (f.indexed?'<span class="tag ok">в базе</span>':'<span class="tag no">нет</span>');
-    const eye=f.indexed?`<button class="dirbtn" title="Показать извлечённый текст" onclick="fcShowText('${escAttr(f.path)}',this)">👁</button> `:'';
+    // превью доступно, если файл проиндексирован (есть текст) или это визуальный тип
+    const canPrev=f.indexed||['image','raw','cad','video','audio','model','pdf'].includes(fileKind(f.ext));
+    const eye=canPrev?`<button class="dirbtn" title="Превью / содержимое" onclick="fcShowText('${escAttr(f.path)}',this)">👁</button> `:'';
     return `<tr${f.error?' style="background:rgba(239,68,68,.08)"':''}>
     <td style="max-width:340px;word-break:break-all">${eye}${esc(f.path)} ${methChip(f.method)}${f.error?`<div class="note" style="color:#f87171;margin-top:2px">${esc(f.error)}</div>`:''}</td>
     <td><span class="tag">${esc(f.ext)}</span></td>
@@ -1041,23 +1043,63 @@ async function loadFiles(){
   $('#fc_prev').disabled=fcState.offset<=0;
   $('#fc_next').disabled=to>=r.matched;
 }
-// раскрытие строки каталога: показать извлечённый текст (транскрипция/распознанное)
+// тип файла по расширению (зеркало media.py)
+function fileKind(ext){ ext='.'+String(ext||'').toLowerCase().replace(/^\./,'');
+  if(['.jpg','.jpeg','.png','.webp','.gif','.bmp','.tif','.tiff','.jfif'].includes(ext)) return 'image';
+  if(['.cr2','.cr3','.nef','.arw','.dng','.raf','.rw2','.orf','.sr2'].includes(ext)) return 'raw';
+  if(['.dxf','.dwg'].includes(ext)) return 'cad';
+  if(['.stp','.step','.igs','.iges'].includes(ext)) return 'model';
+  if(['.mp4','.mov','.mkv','.webm'].includes(ext)) return 'video';
+  if(['.mp3','.wav','.m4a','.aac'].includes(ext)) return 'audio';
+  if(ext==='.pdf') return 'pdf';
+  return 'other'; }
+// визуальное превью файла по типу (использует /api/media/*)
+function fcMediaHtml(source,kind){
+  const qs=encodeURIComponent(source), file='/api/media/file?source='+qs;
+  if(kind==='image'||kind==='raw'||kind==='cad'){
+    return `<img src="/api/media/thumb?source=${qs}" loading="lazy" style="max-width:420px;max-height:300px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer" onclick="openMedia('${escAttr(file)}','${kind}','${escAttr(source)}')">
+      <div class="note" style="margin-top:4px"><a href="${file}" target="_blank" style="color:var(--accent)">скачать оригинал</a></div>`;
+  }
+  if(kind==='pdf'){
+    return `<img src="/api/media/thumb?source=${qs}" loading="lazy" style="max-width:420px;max-height:340px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer" title="Первая страница" onclick="window.open('${escAttr(file)}','_blank')">
+      <div class="note" style="margin-top:4px"><a href="${file}" target="_blank" style="color:var(--accent)">открыть PDF</a></div>`;
+  }
+  if(kind==='video'){
+    return `<div style="position:relative;display:inline-block;cursor:pointer" onclick="openVideo('${escAttr(file)}',0,'${escAttr(source)}')">
+      <img src="/api/media/thumb?source=${qs}&t=1" loading="lazy" style="max-width:420px;max-height:280px;border:1px solid var(--line);border-radius:8px;background:#000">
+      <span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:40px;color:#fff;text-shadow:0 0 6px #000">▶</span></div>
+      <div class="note" style="margin-top:4px"><a href="${file}" target="_blank" style="color:var(--accent)">открыть видео</a></div>`;
+  }
+  if(kind==='audio'){
+    return `<audio controls preload="none" src="${file}" style="width:360px"></audio>`;
+  }
+  if(kind==='model'){
+    return `<div class="note">3D-модель (${esc(source.split('.').pop())}) — превью недоступно. <a href="${file}" target="_blank" style="color:var(--accent)">скачать оригинал</a></div>`;
+  }
+  return `<div class="note"><a href="${file}" target="_blank" style="color:var(--accent)">скачать оригинал</a></div>`;
+}
+// раскрытие строки каталога: визуальное превью + извлечённый текст
 async function fcShowText(source,btn){
   const tr=btn.closest('tr');
   const nx=tr.nextElementSibling;
   if(nx && nx.classList.contains('fc-detail')){ nx.remove(); btn.textContent='👁'; return; }
   btn.textContent='⏳';
+  const ext=source.split('.').pop(); const kind=fileKind(ext);
+  // 1) визуальное превью (картинка/чертёж/видео/аудио/оригинал)
+  let html='<div style="margin-bottom:8px">'+fcMediaHtml(source,kind)+'</div>';
+  // 2) извлечённый текст (если файл проиндексирован)
   let r; try{ r=await (await fetch('/api/admin/file-text?source='+encodeURIComponent(source)+'&t='+Date.now(),
-    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }
-  catch(e){ btn.textContent='👁'; return; }
+    {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ r=null; }
+  if(r && r.text && r.text.trim()){
+    const label={transcribed:'🎤 Транскрипция',ocr:'🔍 Распознанный текст (OCR)',tool:'🛠 Извлечённый текст',text:'📄 Текст'}[r.method]||'Текст';
+    html+=`<div class="note" style="margin-bottom:6px">${label} · фрагментов: ${nz(r.chunks)}${r.truncated?' · показан фрагмент (текст длинный)':''}</div>
+       <pre style="white-space:pre-wrap;max-height:340px;overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px">${esc(r.text)}</pre>`;
+  } else if(kind==='other'||kind==='model'){
+    html+=`<div class="note">${esc((r&&(r.note||r.msg))||'текст не извлечён (файл не проиндексирован)')}</div>`;
+  }
   btn.textContent='🔼';
-  const label={transcribed:'🎤 Транскрипция',ocr:'🔍 Распознанный текст (OCR)',tool:'🛠 Извлечённый текст',text:'📄 Текст'}[r.method]||'Текст';
-  const body = (r.text&&r.text.trim())
-    ? `<div class="note" style="margin-bottom:6px">${label} · фрагментов: ${nz(r.chunks)}${r.truncated?' · показан фрагмент (текст длинный)':''}</div>
-       <pre style="white-space:pre-wrap;max-height:340px;overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px">${esc(r.text)}</pre>`
-    : `<div class="note">${esc(r.note||r.msg||'текст не найден')}</div>`;
   const det=document.createElement('tr'); det.className='fc-detail';
-  det.innerHTML=`<td colspan="7">${body}</td>`;
+  det.innerHTML=`<td colspan="7">${html}</td>`;
   tr.after(det);
 }
 
@@ -1891,7 +1933,7 @@ async function ask(){
         else if(ev.type==='sources'&&ev.items.length){
           curSources=ev.items;
           const s=document.createElement('div');s.className='src';
-          s.textContent='Источники: '+ev.items.map(i=>i.source+(i.page?`, с.${i.page}`:'')).join('; ');
+          s.innerHTML=renderSources(ev.items);
           bot.appendChild(s);}
         else if(ev.type==='debug'&&ev.info){ addDebug(bot,ev.info); }
         else if(ev.type==='meta'&&ev.id){ addRating(bot,ev.id); }
@@ -1907,6 +1949,54 @@ async function ask(){
 function add(cls,text){ const d=document.createElement('div'); d.className='msg '+cls;
   const span=document.createElement('span'); span.textContent=text; d.appendChild(span);
   $('#msgs').appendChild(d); $('#msgs').scrollTop=$('#msgs').scrollHeight; return d; }
+// ---- выдача исходных артефактов (изображения/чертежи/видео/аудио) ----
+function mmss(s){ s=Math.max(0,Math.round(s||0)); const m=Math.floor(s/60),x=s%60; return m+':'+(x<10?'0':'')+x; }
+function srcLabel(i){ return esc(i.source)+(i.page?(', с.'+i.page):'')
+  +((i.t_start!=null)?(' · '+mmss(i.t_start)+(i.t_end!=null?('–'+mmss(i.t_end)):'')):''); }
+function renderSources(items){
+  let html='<div style="margin-bottom:4px">Источники:</div>';
+  const media=items.filter(i=>i.kind&&['image','raw','cad','video','audio'].includes(i.kind)&&i.exists);
+  const rest=items.filter(i=>!media.includes(i));
+  // визуальные артефакты — карточками с превью/плеером
+  if(media.length){
+    html+='<div style="display:flex;flex-wrap:wrap;gap:10px;margin:4px 0">';
+    for(const i of media){
+      if(i.kind==='image'||i.kind==='raw'||i.kind==='cad'){
+        html+=`<figure style="margin:0;max-width:180px">
+          <img src="${i.thumb_url}" alt="${esc(i.source)}" loading="lazy" style="max-width:180px;max-height:140px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:#fff" onclick="openMedia('${escAttr(i.file_url)}','${i.kind}','${escAttr(i.source)}')">
+          <figcaption class="note" style="max-width:180px;word-break:break-all;margin-top:2px">${srcLabel(i)}</figcaption></figure>`;
+      } else if(i.kind==='video'){
+        const clip = i.clip_url ? `<a href="${i.clip_url}" target="_blank" class="tag" style="cursor:pointer">⤓ фрагмент</a>` : '';
+        html+=`<figure style="margin:0;max-width:240px">
+          <div style="position:relative;cursor:pointer" onclick="openVideo('${escAttr(i.file_url)}',${i.t_start!=null?i.t_start:0},'${escAttr(i.source)}')">
+            <img src="${i.thumb_url}" alt="${esc(i.source)}" loading="lazy" style="max-width:240px;max-height:150px;border:1px solid var(--line);border-radius:8px;background:#000">
+            <span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:34px;color:#fff;text-shadow:0 0 6px #000">▶</span></div>
+          <figcaption class="note" style="max-width:240px;word-break:break-all;margin-top:2px">${srcLabel(i)} ${clip}</figcaption></figure>`;
+      } else if(i.kind==='audio'){
+        html+=`<figure style="margin:0;min-width:240px">
+          <audio controls preload="none" src="${i.file_url}" style="width:240px"></audio>
+          <figcaption class="note" style="word-break:break-all;margin-top:2px">${srcLabel(i)}</figcaption></figure>`;
+      }
+    }
+    html+='</div>';
+  }
+  // остальные — текстовыми ссылками (PDF/DOCX/таблицы и т.п.)
+  if(rest.length){
+    html+='<div>'+rest.map(i=>i.exists&&i.file_url
+      ? `<a href="${i.file_url}" target="_blank" style="color:var(--accent)">${srcLabel(i)}</a>`
+      : srcLabel(i)).join(' · ')+'</div>';
+  }
+  return html;
+}
+function openMedia(url,kind,title){
+  const w=window.open('','_blank');
+  if(w) w.document.write(`<title>${title}</title><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="${url}" style="max-width:100%;max-height:100vh"></body>`);
+}
+function openVideo(url,t,title){
+  const at = t? ('#t='+Math.max(0,Math.floor(t))) : '';
+  const w=window.open('','_blank');
+  if(w) w.document.write(`<title>${title}</title><body style="margin:0;background:#000"><video src="${url}${at}" controls autoplay style="width:100%;height:100vh"></video>`);
+}
 $('#q').addEventListener('keydown',e=>{if(e.key==='Enter')ask();});
 function saveDebug(){ try{ localStorage.setItem('rag_chatdebug',$('#chatdebug').checked?'1':''); }catch(e){} }
 (function initDebug(){ try{ const v=localStorage.getItem('rag_chatdebug'); if(v&&$('#chatdebug')) $('#chatdebug').checked=true; }catch(e){} })();

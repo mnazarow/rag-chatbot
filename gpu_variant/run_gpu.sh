@@ -89,7 +89,7 @@ sudo -u "${RUN_USER}" ./.venv/bin/pip install torch --index-url "https://downloa
   echo "или используйте Python 3.10–3.12 (для самых новых версий Python колёс может не быть).";
   exit 1; }
 sudo -u "${RUN_USER}" ./.venv/bin/pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
-sudo -u "${RUN_USER}" ./.venv/bin/pip install -q ezdxf rawpy pytesseract Pillow extract-msg py7zr rarfile psutil || true   # DWG/DXF + OCR + Outlook .msg + архивы + метрики
+sudo -u "${RUN_USER}" ./.venv/bin/pip install -q ezdxf rawpy pytesseract Pillow matplotlib extract-msg py7zr rarfile psutil || true   # DWG/DXF + OCR + Outlook .msg + архивы + метрики
 chmod +x "${PROJECT_DIR}/apply_llm.sh"
 
 # ----- 5. systemd-сервис API (автозапуск + Restart=always) ------------------

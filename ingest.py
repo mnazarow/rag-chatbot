@@ -169,7 +169,9 @@ def main():
             points = []
             for part in load_file(path):
                 for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
-                    points.append({"chunk": chunk, "page": part["page"]})
+                    points.append({"chunk": chunk, "page": part["page"],
+                                   "t_start": part.get("t_start"),
+                                   "t_end": part.get("t_end")})
 
             if not points:
                 n_skip += 1  # пустой/нечитаемый файл — пропускаем, не ошибка
@@ -209,6 +211,9 @@ def main():
                                 "ftype": path.suffix.lower().lstrip("."),
                                 "fhash": fhash,
                                 "indexed_at": time.strftime("%Y-%m-%d"),
+                                # тайминги для аудио/видео (кадры/фрагменты в выдаче)
+                                **({"t_start": p["t_start"], "t_end": p["t_end"]}
+                                   if p.get("t_start") is not None else {}),
                                 **md,  # doc_category, title, date
                             },
                         )

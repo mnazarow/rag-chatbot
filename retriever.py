@@ -72,7 +72,9 @@ def _dense_search(qvec, qfilter):
     return [
         {"text": p.payload["text"], "source": p.payload["source"],
          "page": p.payload.get("page"), "doc_category": p.payload.get("doc_category"),
-         "date": p.payload.get("date"), "dense": p.score}
+         "date": p.payload.get("date"),
+         "t_start": p.payload.get("t_start"), "t_end": p.payload.get("t_end"),
+         "dense": p.score}
         for p in res
     ]
 

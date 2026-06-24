@@ -574,10 +574,37 @@ def _load_archive(path: Path, depth: int):
 _FASTER_WHISPER = None  # ленивый кеш модели faster-whisper
 
 
+def _av_windows(segments):
+    """Сгруппировать сегменты Whisper (start/end/text) в окна ~CHUNK_SIZE символов,
+    сохраняя тайминги начала/конца окна — чтобы потом показать кадр/фрагмент видео."""
+    try:
+        win = int(settings.get("CHUNK_SIZE"))
+    except Exception:
+        win = 900
+    buf, t0, t1, n = [], None, None, 0
+    for seg in segments:
+        st = float(seg.get("start") or 0.0)
+        en = float(seg.get("end") or st)
+        tx = (seg.get("text") or "").strip()
+        if not tx:
+            continue
+        if t0 is None:
+            t0 = st
+        t1 = en
+        buf.append(tx)
+        n += len(tx) + 1
+        if n >= win:
+            yield {"text": " ".join(buf), "page": None, "t_start": t0, "t_end": t1}
+            buf, t0, t1, n = [], None, None, 0
+    if buf:
+        yield {"text": " ".join(buf), "page": None, "t_start": t0, "t_end": t1}
+
+
 def _load_av(path: Path):
     """Транскрибация аудио/видео. Бэкенд зависит от настройки WHISPER_BACKEND:
        mlx    — Apple Metal (mlx-whisper),
-       faster — GPU/CPU (faster-whisper, CTranslate2)."""
+       faster — GPU/CPU (faster-whisper, CTranslate2).
+    Текст режется на окна с таймингами (t_start/t_end) для выдачи кадров/фрагментов."""
     print(f"  ~ транскрибирую {path.name} ...")
     device = settings.get("DEVICE")
     model = settings.get("WHISPER_MODEL")
@@ -588,11 +615,13 @@ def _load_av(path: Path):
             compute = "float16" if device == "cuda" else "int8"
             _FASTER_WHISPER = WhisperModel(model, device=device, compute_type=compute)
         segments, _ = _FASTER_WHISPER.transcribe(str(path))
-        text = " ".join(s.text for s in segments)
-        if text.strip():
-            yield {"text": text, "page": None}
+        segs = ({"start": s.start, "end": s.end, "text": s.text} for s in segments)
+        yield from _av_windows(segs)
     else:  # mlx
         import mlx_whisper
         result = mlx_whisper.transcribe(str(path), path_or_hf_repo=model)
-        if result.get("text", "").strip():
+        segs = result.get("segments") or []
+        if segs:
+            yield from _av_windows(segs)
+        elif result.get("text", "").strip():
             yield {"text": result["text"], "page": None}

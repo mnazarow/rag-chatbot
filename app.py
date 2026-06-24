@@ -27,6 +27,7 @@ import graph_rag
 import loaders
 import retriever
 import remote
+import media
 from ingest import chunk_text, SUPPORTED
 from retriever import search, infer_category
 
@@ -133,8 +134,9 @@ async def chat(req: ChatRequest):
     messages.append({"role": "user",
                      "content": prompts.build_user_message(req.question, context)})
 
-    sources = [{"source": h["source"], "page": h.get("page"),
-                "category": h.get("doc_category"), "score": round(h["score"], 3)}
+    sources = [media.cite(h["source"], page=h.get("page"),
+                          t_start=h.get("t_start"), t_end=h.get("t_end"),
+                          score=round(h["score"], 3), category=h.get("doc_category"))
                for h in hits]
 
     async def stream():
@@ -378,6 +380,39 @@ def admin_file_text(source: str, x_admin_token: str | None = Header(None)):
     """Извлечённый текст файла (для просмотра транскрипции/распознанного в каталоге)."""
     _check_admin(x_admin_token)
     return admin_ops.file_text(source)
+
+
+# ---- выдача исходных артефактов (изображения/чертежи/видео) в ответах ----
+# доступны без админ-токена: ссылки показываются всем пользователям чата (LAN).
+@app.get("/api/media/info")
+def media_info(source: str):
+    return {"source": source, "kind": media.kind_of(source),
+            "exists": media.resolve(source) is not None,
+            "has_preview": media.has_preview(source)}
+
+
+@app.get("/api/media/file")
+def media_file(source: str):
+    p = media.resolve(source)
+    if p is None:
+        raise HTTPException(status_code=404, detail="файл не найден")
+    return FileResponse(str(p), filename=p.name)
+
+
+@app.get("/api/media/thumb")
+def media_thumb(source: str, t: float | None = None):
+    p = media.thumbnail(source, t)
+    if p is None:
+        raise HTTPException(status_code=404, detail="превью недоступно")
+    return FileResponse(str(p))
+
+
+@app.get("/api/media/clip")
+def media_clip(source: str, start: float, end: float):
+    p = media.clip(source, start, end)
+    if p is None:
+        raise HTTPException(status_code=404, detail="фрагмент недоступен")
+    return FileResponse(str(p), media_type="video/mp4")
 
 
 @app.post("/api/admin/upload-folder")

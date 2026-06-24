@@ -42,6 +42,8 @@ winget install -e --id UB-Mannheim.TesseractOCR --silent --accept-source-agreeme
 winget install -e --id TheDocumentFoundation.LibreOffice --silent --accept-source-agreements --accept-package-agreements 2>$null
 # 7-Zip — распаковка архивов (.7z/.rar и др.) — необязательно
 winget install -e --id 7zip.7zip --silent --accept-source-agreements --accept-package-agreements 2>$null
+# FFmpeg — кадры и фрагменты видео в выдаче (и транскрибация) — необязательно
+winget install -e --id Gyan.FFmpeg --silent --accept-source-agreements --accept-package-agreements 2>$null
 
 # обновить PATH в текущей сессии
 $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
@@ -74,7 +76,7 @@ $venvPy = Join-Path $Root ".venv\Scripts\python.exe"
 $torchIndex = if ($Cuda) { "https://download.pytorch.org/whl/$TorchCuda" } else { "https://download.pytorch.org/whl/cpu" }
 & $venvPy -m pip install torch --index-url $torchIndex
 & $venvPy -m pip install -r (Join-Path $Root "gpu_variant\requirements-gpu.txt")
-& $venvPy -m pip install ezdxf Pillow pytesseract extract-msg py7zr rarfile psutil   # DWG/DXF + OCR-картинки + Outlook .msg + архивы + метрики
+& $venvPy -m pip install ezdxf Pillow matplotlib pytesseract extract-msg py7zr rarfile psutil   # DWG/DXF + OCR-картинки + Outlook .msg + архивы + метрики
 
 # ----- 5. папка документов и .env -----
 New-Item -ItemType Directory -Force -Path $DocsDir | Out-Null
