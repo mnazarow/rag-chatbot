@@ -28,11 +28,23 @@ import loaders
 import retriever
 import remote
 import media
+import telegram_bot
 from ingest import chunk_text, SUPPORTED
 from retriever import search, infer_category
 
 app = FastAPI(title="Корпоративный RAG-чатбот")
 _qdrant = QdrantClient(url=settings.get("QDRANT_URL"))
+
+
+@app.on_event("startup")
+def _start_telegram():
+    """Поднять Телеграм-бота, если задан токен (фоновый поток long-polling)."""
+    try:
+        r = telegram_bot.start()
+        if r.get("ok"):
+            print(f"[telegram] {r.get('msg')}")
+    except Exception as e:
+        print(f"[telegram] не запущен: {e}")
 
 
 class ChatRequest(BaseModel):
@@ -498,6 +510,68 @@ async def admin_backup_restore(file: UploadFile = File(...),
     tmp = Path(tempfile.gettempdir()) / f"rag_restore_{int(time.time())}.tar.gz"
     tmp.write_bytes(await file.read())
     return admin_ops.backup_restore_file(str(tmp))
+
+
+# ---- Телеграм-бот: статус, подтверждение пользователей, история ----
+@app.get("/api/admin/telegram/status")
+def admin_tg_status(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return telegram_bot.status()
+
+
+@app.post("/api/admin/telegram/restart")
+def admin_tg_restart(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return telegram_bot.restart()
+
+
+@app.get("/api/admin/telegram/users")
+def admin_tg_users(status: str = "", x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"users": db.tg_users(status or None)}
+
+
+@app.post("/api/admin/telegram/approve")
+def admin_tg_approve(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    cid = int(payload.get("chat_id"))
+    ok = db.tg_set_status(cid, "approved")
+    if ok:
+        telegram_bot.notify_approved(cid)
+    return {"ok": ok}
+
+
+@app.post("/api/admin/telegram/block")
+def admin_tg_block(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    cid = int(payload.get("chat_id"))
+    ok = db.tg_set_status(cid, "blocked")
+    if ok:
+        telegram_bot.notify_blocked(cid)
+    return {"ok": ok}
+
+
+@app.post("/api/admin/telegram/unblock")
+def admin_tg_unblock(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    cid = int(payload.get("chat_id"))
+    ok = db.tg_set_status(cid, "approved")
+    if ok:
+        telegram_bot.notify_approved(cid)
+    return {"ok": ok}
+
+
+@app.get("/api/admin/telegram/requests")
+def admin_tg_requests(limit: int = 200, x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"items": db.tg_recent(limit), "stats": db.tg_stats()}
+
+
+@app.post("/api/admin/telegram/clear-history")
+def admin_tg_clear(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    n = db.tg_clear_history()
+    return {"ok": True, "deleted": n, "msg": f"удалено записей: {n}"}
 
 
 @app.post("/api/admin/check-data")

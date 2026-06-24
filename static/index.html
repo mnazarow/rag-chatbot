@@ -132,6 +132,7 @@
     <button data-t="logs">📜 Журнал</button>
     <button data-t="analytics">📈 Аналитика</button>
     <button data-t="system">🧩 Система</button>
+    <button data-t="telegram">✈️ Телеграм</button>
     <button data-t="server">🖥 Загрузка сервера</button>
     <button data-t="components">🔬 Аналитика+</button>
     <button data-t="bench">⚡ Бенчмарк</button>
@@ -358,6 +359,44 @@
         <button class="act ghost" id="fc_prev" onclick="fcPage(-1)">← Назад</button>
         <span id="fc_pageinfo" class="note"></span>
         <button class="act ghost" id="fc_next" onclick="fcPage(1)">Вперёд →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== ТЕЛЕГРАМ ===== -->
+  <section id="telegram">
+    <h1>Телеграм-бот</h1>
+    <div class="sub">Доступ к базе знаний через Telegram с подтверждением пользователей
+      <button class="act ghost" onclick="loadTelegram()">Обновить</button></div>
+
+    <div class="box"><h3>🤖 Статус бота</h3>
+      <div id="tg_status"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+        <button class="act" onclick="tgRestart()">🔄 Перезапустить бота</button>
+        <label class="note" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+          <input type="checkbox" id="tg_auto" onchange="tgToggleAuto()"> авто-подтверждение новых пользователей
+        </label>
+        <span id="tgmsg" class="note"></span>
+      </div>
+      <div class="note" style="margin-top:6px">Токен бота задаётся в «Администратор» → группа «Телеграм-бот» (получить у @BotFather). После смены токена нажмите «Перезапустить бота».</div>
+    </div>
+
+    <div class="box"><h3>🙋 Запросы на доступ</h3>
+      <div id="tg_pending"></div>
+    </div>
+
+    <div class="box"><h3>👥 Пользователи</h3>
+      <div id="tg_users"></div>
+    </div>
+
+    <div class="box"><h3>💬 История и запросы из Телеграм</h3>
+      <div class="sub" style="margin:0 0 8px">Хранится отдельно от веб-чата
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="tgClearHistory()">🗑 Очистить историю Телеграм</button>
+      </div>
+      <div class="cards" id="tg_stats"></div>
+      <div style="max-height:46vh;overflow:auto;margin-top:10px">
+        <table><thead><tr><th>Время</th><th>Пользователь</th><th>Вопрос</th><th>Ответ</th><th>Статус</th></tr></thead>
+        <tbody id="tg_rows"></tbody></table>
       </div>
     </div>
   </section>
@@ -744,7 +783,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('section').forEach(x=>x.classList.remove('active'));
   b.classList.add('active'); $('#'+b.dataset.t).classList.add('active');
   if(b.dataset.t!=='server') stopSrvAuto();   // уходим с вкладки — гасим автообновление
-  ({dash:loadStats,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,server:loadServer,components:loadComponents,bench:loadBench,admin:loadConfig}[b.dataset.t]||(()=>{}))();
+  ({dash:loadStats,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,admin:loadConfig}[b.dataset.t]||(()=>{}))();
 });
 
 // ---- дашборд ----
@@ -924,6 +963,75 @@ function pctCard(label,pct,sub){ return `<div class="card"><div class="k">${labe
 function toggleSrvAuto(){ $('#srv_auto').checked?startSrvAuto():stopSrvAuto(); }
 function startSrvAuto(){ stopSrvAuto(); _srvTimer=setInterval(loadServer,2000); }
 function stopSrvAuto(){ if(_srvTimer){ clearInterval(_srvTimer); _srvTimer=null; } }
+
+// ---- Телеграм-бот ----
+function tgMsg(t,ok=true){ const e=$('#tgmsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+async function tgGet(url){ try{ return await (await fetch(url+(url.includes('?')?'&':'?')+'t='+Date.now(),
+  {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return null; } }
+async function tgPost(url,body){ const r=await fetch(url,{method:'POST',
+  headers:{'Content-Type':'application/json','X-Admin-Token':tok()}, body:body?JSON.stringify(body):'{}'});
+  return r.json().catch(()=>({})); }
+async function loadTelegram(){
+  const st=await tgGet('/api/admin/telegram/status');
+  if(st && st.detail){ $('#tg_status').innerHTML='<div class="note">'+esc(st.detail)+'</div>'; return; }
+  if(st){
+    const dot=st.running?'<span style="color:#4ade80">● работает</span>':(st.token_set?'<span style="color:#f59e0b">● остановлен</span>':'<span style="color:#f87171">● выключен (нет токена)</span>');
+    $('#tg_status').innerHTML=sysCards([
+      ['Состояние',dot],['Бот',st.username?('@'+esc(st.username)):'—'],
+      ['Токен задан',sysBool(st.token_set)],['Подтверждено',nz(st.approved)],
+      ['Ожидают',nz(st.pending)],['Заблокировано',nz(st.blocked)]])
+      +(st.error?`<div class="note" style="margin-top:6px;color:#f59e0b">Последняя ошибка: ${esc(st.error)}</div>`:'');
+    if($('#tg_auto')) $('#tg_auto').checked=!!st.auto_approve;
+  }
+  // запросы на доступ (pending)
+  const pend=await tgGet('/api/admin/telegram/users?status=pending');
+  const pl=(pend&&pend.users)||[];
+  $('#tg_pending').innerHTML = pl.length
+    ? pl.map(u=>`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin:5px 0">
+        <b>${esc(u.first_name||'—')}</b> ${u.username?('@'+esc(u.username)):''} <span class="note">id ${u.chat_id}</span>
+        <span style="flex:1"></span>
+        <button class="act" onclick="tgApprove(${u.chat_id})">✅ Подтвердить</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="tgBlock(${u.chat_id})">⛔ Отклонить</button>
+      </div>`).join('')
+    : '<div class="note">Нет ожидающих запросов на доступ.</div>';
+  // все пользователи
+  const us=await tgGet('/api/admin/telegram/users');
+  const ul=(us&&us.users)||[];
+  $('#tg_users').innerHTML = ul.length
+    ? '<table><thead><tr><th>Имя</th><th>Username</th><th>ID</th><th>Статус</th><th>Запросов</th><th></th></tr></thead><tbody>'
+      +ul.map(u=>{ const badge=u.status==='approved'?'<span class="tag ok">подтверждён</span>':(u.status==='blocked'?'<span class="tag no">заблокирован</span>':'<span class="tag">ожидает</span>');
+        const act=u.status==='approved'?`<button class="dirbtn" title="Заблокировать" onclick="tgBlock(${u.chat_id})">⛔</button>`
+          :(u.status==='blocked'?`<button class="dirbtn" title="Разблокировать" onclick="tgUnblock(${u.chat_id})">✅</button>`
+          :`<button class="dirbtn" title="Подтвердить" onclick="tgApprove(${u.chat_id})">✅</button>`);
+        return `<tr><td>${esc(u.first_name||'—')}</td><td>${u.username?('@'+esc(u.username)):'—'}</td>
+          <td>${u.chat_id}</td><td>${badge}</td><td>${nz(u.n_requests)}</td><td>${act}</td></tr>`; }).join('')
+      +'</tbody></table>'
+    : '<div class="note">Пользователей пока нет.</div>';
+  // история и запросы
+  const req=await tgGet('/api/admin/telegram/requests?limit=200');
+  const s=(req&&req.stats)||{};
+  $('#tg_stats').innerHTML=sysCards([['Всего запросов',nz(s.total)],['Сегодня',nz(s.today)],
+    ['Пользователей',nz(s.users)],['Доля ответов',(s.answer_rate==null?'—':s.answer_rate+'%')],
+    ['Ср. задержка',(s.avg_latency_ms||0)+' мс']]);
+  const rows=(req&&req.items)||[];
+  $('#tg_rows').innerHTML = rows.length
+    ? rows.map(x=>`<tr>
+        <td>${fmtTime(x.ts)}</td>
+        <td>${x.username?('@'+esc(x.username)):esc(String(x.chat_id))}</td>
+        <td style="max-width:240px">${esc(x.question)}</td>
+        <td style="max-width:300px;color:var(--muted)">${esc((x.answer||'').slice(0,300))}</td>
+        <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет</span>'}</td></tr>`).join('')
+    : emptyRow(5);
+}
+async function tgRestart(){ tgMsg('перезапуск бота…'); const r=await tgPost('/api/admin/telegram/restart'); tgMsg(r.msg||(r.ok?'ок':'ошибка'),r.ok!==false); setTimeout(loadTelegram,800); }
+async function tgToggleAuto(){ const v=$('#tg_auto').checked;
+  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':tok()},body:JSON.stringify({TELEGRAM_AUTO_APPROVE:v})});
+  tgMsg('авто-подтверждение '+(v?'включено':'выключено')); }
+async function tgApprove(id){ await tgPost('/api/admin/telegram/approve',{chat_id:id}); loadTelegram(); }
+async function tgBlock(id){ await tgPost('/api/admin/telegram/block',{chat_id:id}); loadTelegram(); }
+async function tgUnblock(id){ await tgPost('/api/admin/telegram/unblock',{chat_id:id}); loadTelegram(); }
+async function tgClearHistory(){ if(!confirm('Очистить историю и запросы Телеграм? Пользователи останутся.'))return;
+  const r=await tgPost('/api/admin/telegram/clear-history'); tgMsg(r.msg||'очищено'); loadTelegram(); }
 async function loadServer(){
   let s; try{ s=await (await fetch('/api/server-load?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
   const p=s.platform||{};

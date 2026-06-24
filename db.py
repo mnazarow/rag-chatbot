@@ -38,6 +38,23 @@ def init() -> None:
                 c.execute(f"ALTER TABLE requests ADD COLUMN {col}")
             except Exception:
                 pass
+        # --- Telegram: пользователи бота (с подтверждением доступа) ---
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS tg_users(
+                chat_id INTEGER PRIMARY KEY,
+                username TEXT, first_name TEXT,
+                status TEXT,            -- pending | approved | blocked
+                created REAL, updated REAL, n_requests INTEGER DEFAULT 0)"""
+        )
+        # --- Telegram: запросы/история (хранятся ОТДЕЛЬНО от веб-чата) ---
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS tg_requests(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL, day TEXT, chat_id INTEGER, username TEXT,
+                question TEXT, answer TEXT, n_hits INTEGER, top_score REAL,
+                latency_ms INTEGER, answer_chars INTEGER, answered INTEGER,
+                sources TEXT)"""
+        )
 
 
 init()
@@ -213,3 +230,109 @@ def analytics() -> dict:
         "timings": {"retrieve": round(tm["rt"] or 0), "gen": round(tm["gn"] or 0),
                     "total": round(tm["lt"] or 0)},
     }
+
+
+# ===================== Telegram: пользователи и запросы =====================
+
+def tg_user(chat_id: int) -> dict | None:
+    with _conn() as c:
+        r = c.execute("SELECT * FROM tg_users WHERE chat_id=?", (int(chat_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def tg_user_upsert(chat_id: int, username: str | None, first_name: str | None,
+                   status: str) -> dict:
+    """Создать пользователя (если нет) с указанным статусом, либо обновить имя."""
+    now = datetime.now().timestamp()
+    with _LOCK, _conn() as c:
+        ex = c.execute("SELECT chat_id FROM tg_users WHERE chat_id=?",
+                       (int(chat_id),)).fetchone()
+        if ex:
+            c.execute("UPDATE tg_users SET username=?, first_name=?, updated=? "
+                      "WHERE chat_id=?",
+                      (username or "", first_name or "", now, int(chat_id)))
+        else:
+            c.execute("INSERT INTO tg_users(chat_id,username,first_name,status,"
+                      "created,updated,n_requests) VALUES(?,?,?,?,?,?,0)",
+                      (int(chat_id), username or "", first_name or "", status, now, now))
+    return tg_user(chat_id)
+
+
+def tg_set_status(chat_id: int, status: str) -> bool:
+    with _LOCK, _conn() as c:
+        cur = c.execute("UPDATE tg_users SET status=?, updated=? WHERE chat_id=?",
+                        (status, datetime.now().timestamp(), int(chat_id)))
+        return cur.rowcount > 0
+
+
+def tg_users(status: str | None = None) -> list[dict]:
+    with _conn() as c:
+        if status:
+            rows = c.execute("SELECT * FROM tg_users WHERE status=? "
+                             "ORDER BY updated DESC", (status,)).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM tg_users ORDER BY updated DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def tg_counts() -> dict:
+    with _conn() as c:
+        rows = c.execute("SELECT status, COUNT(*) n FROM tg_users GROUP BY status").fetchall()
+    d = {r["status"]: r["n"] for r in rows}
+    return {"pending": d.get("pending", 0), "approved": d.get("approved", 0),
+            "blocked": d.get("blocked", 0),
+            "total": sum(d.values())}
+
+
+def tg_log_request(chat_id: int, username: str | None, question: str, answer: str,
+                   n_hits: int, top_score: float, latency_ms: int,
+                   answered: bool, sources: list) -> int:
+    now = datetime.now()
+    with _LOCK, _conn() as c:
+        cur = c.execute(
+            """INSERT INTO tg_requests(ts,day,chat_id,username,question,answer,
+               n_hits,top_score,latency_ms,answer_chars,answered,sources)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (now.timestamp(), now.strftime("%Y-%m-%d"), int(chat_id), username or "",
+             question, answer, n_hits, round(top_score, 4), latency_ms,
+             len(answer or ""), int(answered),
+             json.dumps(sources, ensure_ascii=False)))
+        c.execute("UPDATE tg_users SET n_requests=n_requests+1 WHERE chat_id=?",
+                  (int(chat_id),))
+        return cur.lastrowid
+
+
+def tg_recent(limit: int = 200) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM tg_requests ORDER BY id DESC LIMIT ?",
+                         (int(limit),)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["sources"] = json.loads(d.get("sources") or "[]")
+        out.append(d)
+    return out
+
+
+def tg_stats() -> dict:
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _conn() as c:
+        total = c.execute("SELECT COUNT(*) n FROM tg_requests").fetchone()["n"]
+        today_n = c.execute("SELECT COUNT(*) n FROM tg_requests WHERE day=?",
+                            (today,)).fetchone()["n"]
+        agg = c.execute("SELECT AVG(latency_ms) lat, AVG(answered) ans "
+                        "FROM tg_requests").fetchone()
+        users = c.execute("SELECT COUNT(DISTINCT chat_id) n FROM tg_requests").fetchone()["n"]
+    counts = tg_counts()
+    return {"total": total, "today": today_n, "users": users,
+            "avg_latency_ms": round(agg["lat"] or 0),
+            "answer_rate": round((agg["ans"] or 0) * 100, 1),
+            "pending": counts["pending"], "approved": counts["approved"],
+            "blocked": counts["blocked"]}
+
+
+def tg_clear_history() -> int:
+    with _LOCK, _conn() as c:
+        n = c.execute("SELECT COUNT(*) n FROM tg_requests").fetchone()["n"]
+        c.execute("DELETE FROM tg_requests")
+    return n

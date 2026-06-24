@@ -68,6 +68,10 @@ PARSE_CAD = _bool("PARSE_CAD", True)          # чертежи DXF/DWG и 3D-CAD
 TRANSCRIBE_AV = _bool("TRANSCRIBE_AV", True)  # транскрибация аудио/видео (Whisper, минуты на файл)
 FILE_PARSE_TIMEOUT = _int("FILE_PARSE_TIMEOUT", 0)  # лимит времени на файл, c (0 = без лимита)
 
+# Телеграм-бот: токен от @BotFather (пусто = бот выключен) и авто-подтверждение
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_AUTO_APPROVE = _bool("TELEGRAM_AUTO_APPROVE", False)
+
 # Доступ
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = _int("API_PORT", 8000)

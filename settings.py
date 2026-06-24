@@ -163,6 +163,17 @@ FIELDS: list[dict] = [
     {"key": "FINETUNE_BASE", "label": "Базовая модель для дообучения (пусто = из VLLM_MODEL)",
      "group": "Дообучение (fine-tuning)", "type": "text", "scope": "live", "default": config.FINETUNE_BASE},
 
+    # --- Телеграм-бот ---
+    {"key": "TELEGRAM_BOT_TOKEN", "label": "Токен бота (@BotFather)", "group": "Телеграм-бот",
+     "type": "secret", "scope": "live", "default": config.TELEGRAM_BOT_TOKEN,
+     "desc": "Создайте бота у @BotFather в Telegram и вставьте его токен. После изменения "
+             "нажмите «Перезапустить бота» в разделе «Телеграм». Пусто = бот выключен."},
+    {"key": "TELEGRAM_AUTO_APPROVE", "label": "Авто-подтверждение новых пользователей",
+     "group": "Телеграм-бот", "type": "bool", "scope": "live", "default": config.TELEGRAM_AUTO_APPROVE,
+     "desc": "Если включено — любой написавший боту сразу получает доступ. По умолчанию "
+             "выключено: новый пользователь попадает в «Запросы на доступ», и вы подтверждаете "
+             "его вручную в разделе «Телеграм»."},
+
     # --- Доступ ---
     {"key": "ADMIN_TOKEN", "label": "Токен администратора", "group": "Доступ",
      "type": "secret", "scope": "live", "default": config.ADMIN_TOKEN},
