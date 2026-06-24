@@ -6,23 +6,27 @@
 # финальный образ не попадают. Сборка best-effort: при сбое образ всё равно
 # собирается, просто без поддержки DWG.
 
-# ---------- стадия 1: сборка libredwg (dwg2dxf) ----------
+# ---------- стадия 1: сборка libredwg (dwg2dxf) из исходников ----------
+# Собираем из git (не зависим от имени релиза). Весь вывод сборки пишем в лог,
+# который копируется в финальный образ — при проблеме его видно в чеклисте.
 FROM ubuntu:24.04 AS dwgbuild
 ENV DEBIAN_FRONTEND=noninteractive
-ARG LIBREDWG_VERSION=0.13.3
+ARG LIBREDWG_REF=master
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential curl ca-certificates pkg-config perl \
+        build-essential git ca-certificates pkg-config perl \
+        autoconf automake libtool gperf texinfo \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /dwgout/usr/local && \
     ( set -e; \
-      curl -fsSL "https://github.com/LibreDWG/libredwg/releases/download/${LIBREDWG_VERSION}/libredwg-${LIBREDWG_VERSION}.tar.gz" -o /tmp/libredwg.tar.gz; \
-      mkdir /tmp/libredwg; \
-      tar -xf /tmp/libredwg.tar.gz -C /tmp/libredwg --strip-components=1; \
+      git clone --depth 1 --branch "${LIBREDWG_REF}" https://github.com/LibreDWG/libredwg /tmp/libredwg 2>/dev/null \
+        || git clone --depth 1 https://github.com/LibreDWG/libredwg /tmp/libredwg; \
       cd /tmp/libredwg; \
+      sh autogen.sh; \
       ./configure --disable-bindings --disable-werror --prefix=/usr/local; \
       make -j"$(nproc)"; \
-      make install DESTDIR=/dwgout ) \
-    || echo "libredwg build failed — DWG support skipped"
+      make install DESTDIR=/dwgout; \
+      echo "OK: dwg2dxf собран" ) > /dwgout/libredwg-build.log 2>&1 \
+    || echo "FAILED: сборка libredwg не удалась (см. лог ниже)" >> /dwgout/libredwg-build.log
 
 # ---------- стадия 2: приложение ----------
 FROM ubuntu:24.04
@@ -45,8 +49,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# dwg2dxf и libredwg.so из стадии сборки (если собрались)
+# dwg2dxf и libredwg.so из стадии сборки (если собрались) + лог сборки (для диагностики)
 COPY --from=dwgbuild /dwgout/usr/local /usr/local
+COPY --from=dwgbuild /dwgout/libredwg-build.log /opt/libredwg-build.log
 RUN ldconfig
 
 # venv — чистый pip без конфликта с системным Python (PEP 668 externally-managed)

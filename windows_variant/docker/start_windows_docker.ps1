@@ -223,7 +223,7 @@ if ($ollamaUp) {
 if ($appUp) {
     if (InAppHas "dwg2dxf")   { Item ok "DWG-конвертер (dwg2dxf) в образе" }
     else { Item warn "DWG-конвертер недоступен" "DWG-чертежи не индексируются"; $warns++
-           ShowLog "проверка libredwg в образе" { docker exec rag_app sh -lc "ls -l /usr/local/bin/dwg2dxf 2>&1; echo '— сборка libredwg могла быть пропущена (см. лог сборки образа)'" } }
+           ShowLog "лог сборки libredwg (последние строки)" { docker exec rag_app sh -lc "tail -n 40 /opt/libredwg-build.log 2>/dev/null || echo 'лог сборки не найден'" } }
     if (InAppHas "tesseract") { Item ok "OCR (tesseract) в образе" } else { Item warn "tesseract недоступен" "OCR картинок отключён"; $warns++ }
     if (InAppHas "ffmpeg")    { Item ok "ffmpeg (видео/аудио) в образе" } else { Item warn "ffmpeg недоступен" "кадры/транскрибация отключены"; $warns++ }
 }
