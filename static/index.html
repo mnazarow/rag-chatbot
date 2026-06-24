@@ -891,7 +891,9 @@ async function loadSystem(){
   let s; try{ s=await (await fetch('/api/system?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
   // Qdrant
   const q=s.qdrant||{}; let qh;
-  if(q.online){
+  if(q.online && q.collection_exists===false){
+    qh='<div class="note"><span style="color:#4ade80">● Qdrant в сети</span> — коллекция «'+esc(q.collection||'')+'» ещё не создана. Выполните «Переиндексировать», чтобы наполнить базу.</div>';
+  } else if(q.online){
     qh=sysCards([['Точек (чанков)',nz(q.points)],['Сегментов',nz(q.segments)],
       ['Размерность',nz(q.vector_size)],['Метрика',nz(q.distance)],['Статус',nz(q.status)]]);
     if(q.by_category) qh+='<div class="note" style="margin:12px 0 4px">Чанков по категориям:</div>'+

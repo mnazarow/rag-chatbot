@@ -1253,32 +1253,43 @@ def system_info() -> dict:
     qbase = settings.get("QDRANT_URL")
 
     # ---- Qdrant ----
-    qd: dict = {"online": False}
+    # «online» = сервер Qdrant доступен (проверяем по списку коллекций), отдельно —
+    # существует ли наша коллекция. На свежей установке коллекции ещё нет (не было
+    # индексации) — это НЕ значит, что Qdrant недоступен.
+    qd: dict = {"online": False, "collection_exists": False}
     try:
-        r = httpx.get(f"{qbase}/collections/{coll}", timeout=4)
-        if r.status_code == 200:
-            res = r.json().get("result", {}) or {}
-            params = (res.get("config", {}) or {}).get("params", {}) or {}
-            vec = params.get("vectors", {}) or {}
-            qd = {
-                "online": True, "collection": coll,
-                "points": res.get("points_count", 0),
-                "segments": res.get("segments_count", 0),
-                "status": res.get("status"),
-                "vector_size": vec.get("size"),
-                "distance": vec.get("distance"),
-                "payload_fields": sorted((res.get("payload_schema") or {}).keys()),
-                "by_category": {
-                    cat: _qcount(qbase, coll,
-                                 {"must": [{"key": "doc_category",
-                                            "match": {"value": cat}}]})
-                    for cat in ("price", "presentation", "training", "document")
-                },
-                "with_product": _qcount(qbase, coll,
-                                        {"must_not": [{"is_empty": {"key": "product"}}]}),
-            }
+        ping = httpx.get(f"{qbase}/collections", timeout=4)
+        if ping.status_code == 200:
+            qd["online"] = True
+            qd["collection"] = coll
+            r = httpx.get(f"{qbase}/collections/{coll}", timeout=4)
+            if r.status_code == 200:
+                res = r.json().get("result", {}) or {}
+                params = (res.get("config", {}) or {}).get("params", {}) or {}
+                vec = params.get("vectors", {}) or {}
+                qd.update({
+                    "collection_exists": True,
+                    "points": res.get("points_count", 0),
+                    "segments": res.get("segments_count", 0),
+                    "status": res.get("status"),
+                    "vector_size": vec.get("size"),
+                    "distance": vec.get("distance"),
+                    "payload_fields": sorted((res.get("payload_schema") or {}).keys()),
+                    "by_category": {
+                        cat: _qcount(qbase, coll,
+                                     {"must": [{"key": "doc_category",
+                                                "match": {"value": cat}}]})
+                        for cat in ("price", "presentation", "training", "document")
+                    },
+                    "with_product": _qcount(qbase, coll,
+                                            {"must_not": [{"is_empty": {"key": "product"}}]}),
+                })
+            else:
+                qd["note"] = "коллекция ещё не создана — выполните «Переиндексировать»"
+        else:
+            qd["error"] = f"Qdrant вернул HTTP {ping.status_code}"
     except Exception as e:
-        qd = {"online": False, "error": str(e)}
+        qd = {"online": False, "collection_exists": False, "error": str(e)}
 
     # ---- LightRAG / граф ----
     gdir = ROOT / "graph_storage"
@@ -1519,8 +1530,12 @@ def component_analytics() -> dict:
     qbase = settings.get("QDRANT_URL")
 
     # ---- Qdrant: по категориям, типам файлов, покрытию метаданными ----
+    # online = сервер доступен; коллекции может не быть (свежая установка).
     qd: dict = {"online": False}
     try:
+        ping = httpx.get(f"{qbase}/collections", timeout=4)
+        if ping.status_code != 200:
+            raise RuntimeError(f"HTTP {ping.status_code}")
         r = httpx.get(f"{qbase}/collections/{coll}", timeout=4)
         if r.status_code == 200:
             res = r.json().get("result", {}) or {}
