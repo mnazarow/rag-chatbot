@@ -291,6 +291,18 @@ def api_benchmark(x_admin_token: str | None = Header(None)):
     return admin_ops.benchmark()
 
 
+@app.post("/api/admin/benchmark/stop")
+def api_benchmark_stop(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.stop_benchmark()
+
+
+@app.post("/api/admin/benchmark/stop")
+def api_benchmark_stop(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.stop_benchmark()
+
+
 @app.get("/api/analytics-components")
 def api_analytics_components():
     return admin_ops.component_analytics()

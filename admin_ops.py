@@ -147,6 +147,71 @@ def status() -> dict:
 
 
 # ============================ бенчмарк компонентов ============================
+def _bench_embed():
+    from retriever import _embedder
+    texts = [f"строка для эмбеддинга номер {i} с небольшим текстом" for i in range(16)]
+    t = time.time()
+    _embedder().encode(texts, normalize_embeddings=True)
+    dt = (time.time() - t) * 1000
+    return "Эмбеддер (bge-m3)", dt, f"16 текстов · {dt/16:.1f} мс/текст · {16/(dt/1000):.0f} текст/с"
+
+
+def _bench_rerank():
+    from retriever import _reranker
+    pairs = [["тестовый вопрос", f"кандидатный документ номер {i}"] for i in range(16)]
+    t = time.time()
+    _reranker().compute_score(pairs, normalize=True)
+    dt = (time.time() - t) * 1000
+    return "Реранкер (bge-reranker)", dt, f"16 пар · {dt/16:.1f} мс/пара"
+
+
+def _bench_search():
+    from retriever import search
+    N = 5
+    t = time.time()
+    for _ in range(N):
+        search("тестовый вопрос для замера поиска")
+    dt = (time.time() - t) * 1000
+    return "Поиск + реранк (search)", dt / N, f"среднее по {N} запросам"
+
+
+def _bench_qdrant():
+    coll = settings.get("QDRANT_COLLECTION")
+    t = time.time()
+    httpx.get(f"{settings.get('QDRANT_URL')}/collections/{coll}", timeout=10)
+    return "Qdrant (REST)", (time.time() - t) * 1000, "запрос метаданных коллекции"
+
+
+def _bench_llm():
+    b, m = settings.get("LLM_BACKEND"), settings.get("LLM_MODEL")
+    if b == "openai":
+        t = time.time()
+        r = httpx.post(f"{settings.get('LLM_BASE_URL')}/chat/completions",
+                       headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
+                       json={"model": m, "messages": [{"role": "user", "content": "Напиши короткий абзац о тестировании."}],
+                             "max_tokens": 64, "temperature": 0}, timeout=120)
+        dt = time.time() - t
+        ct = (r.json().get("usage", {}) or {}).get("completion_tokens", 0)
+        return "LLM генерация", dt * 1000, f"{m}: {ct} токенов · {ct/dt if dt else 0:.1f} ток/с"
+    r = httpx.post(f"{settings.get('OLLAMA_URL')}/api/generate",
+                   json={"model": m, "prompt": "Напиши короткий абзац о тестировании.",
+                         "stream": False, "options": {"num_predict": 64}}, timeout=180)
+    j = r.json()
+    ec = j.get("eval_count", 0)
+    ed = (j.get("eval_duration", 0) or 0) / 1e9
+    return "LLM генерация", ed * 1000, f"{m}: {ec} токенов · {ec/ed if ed else 0:.1f} ток/с"
+
+
+_BENCH_STEPS = [_bench_embed, _bench_rerank, _bench_search, _bench_qdrant, _bench_llm]
+
+
+def stop_benchmark() -> dict:
+    if not _bench_job["running"]:
+        return {"ok": False, "msg": "бенчмарк не запущен"}
+    _bench_job["cancel"] = True
+    return {"ok": True, "msg": "остановка запрошена (после текущего шага)"}
+
+
 def benchmark() -> dict:
     if _bench_job["running"]:
         return {"ok": False, "msg": "бенчмарк уже идёт"}
@@ -154,88 +219,29 @@ def benchmark() -> dict:
 
     def run():
         _bench_job.update(running=True, started=time.time(), finished=None, ok=None,
-                          log="", logfile=logfile, results=[])
+                          log="", logfile=logfile, results=[], cancel=False)
         results = []
         with open(logfile, "w", buffering=1, errors="ignore") as fp:
-            def add(component, ms, detail, extra=None):
-                row = {"component": component, "ms": round(ms), "detail": detail}
-                if extra:
-                    row.update(extra)
+            fp.write("=== Бенчмарк производительности ===\n")
+            stopped = False
+            for step in _BENCH_STEPS:
+                if _bench_job.get("cancel"):
+                    fp.write("⏹ Остановлено пользователем.\n")
+                    stopped = True
+                    break
+                try:
+                    comp, ms, detail = step()
+                except Exception as e:
+                    comp, ms, detail = step.__name__, 0, f"ошибка: {e}"
+                row = {"component": comp, "ms": round(ms), "detail": detail}
                 results.append(row)
                 _bench_job["results"] = list(results)
-                fp.write(f"{component}: {round(ms)} мс — {detail}\n")
+                fp.write(f"{comp}: {round(ms)} мс — {detail}\n")
                 fp.flush()
-
-            fp.write("=== Бенчмарк производительности ===\n")
-            # эмбеддер
-            try:
-                from retriever import _embedder
-                texts = [f"строка для эмбеддинга номер {i} с небольшим текстом" for i in range(16)]
-                t = time.time()
-                _embedder().encode(texts, normalize_embeddings=True)
-                dt = (time.time() - t) * 1000
-                add("Эмбеддер (bge-m3)", dt, f"16 текстов · {dt/16:.1f} мс/текст · {16/(dt/1000):.0f} текст/с")
-            except Exception as e:
-                add("Эмбеддер (bge-m3)", 0, f"ошибка: {e}")
-            # реранкер
-            try:
-                from retriever import _reranker
-                pairs = [["тестовый вопрос", f"кандидатный документ номер {i}"] for i in range(16)]
-                t = time.time()
-                _reranker().compute_score(pairs, normalize=True)
-                dt = (time.time() - t) * 1000
-                add("Реранкер (bge-reranker)", dt, f"16 пар · {dt/16:.1f} мс/пара")
-            except Exception as e:
-                add("Реранкер (bge-reranker)", 0, f"ошибка: {e}")
-            # поиск (end-to-end retrieval)
-            try:
-                from retriever import search
-                N = 5
-                t = time.time()
-                for _ in range(N):
-                    search("тестовый вопрос для замера поиска")
-                dt = (time.time() - t) * 1000
-                add("Поиск + реранк (search)", dt / N, f"среднее по {N} запросам")
-            except Exception as e:
-                add("Поиск + реранк (search)", 0, f"ошибка: {e}")
-            # Qdrant raw latency
-            try:
-                coll = settings.get("QDRANT_COLLECTION")
-                t = time.time()
-                httpx.get(f"{settings.get('QDRANT_URL')}/collections/{coll}", timeout=10)
-                add("Qdrant (REST)", (time.time() - t) * 1000, "запрос метаданных коллекции")
-            except Exception as e:
-                add("Qdrant (REST)", 0, f"ошибка: {e}")
-            # LLM генерация (tokens/sec)
-            try:
-                b = settings.get("LLM_BACKEND")
-                m = settings.get("LLM_MODEL")
-                if b == "openai":
-                    t = time.time()
-                    r = httpx.post(f"{settings.get('LLM_BASE_URL')}/chat/completions",
-                                   headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
-                                   json={"model": m, "messages": [{"role": "user", "content": "Напиши короткий абзац о тестировании."}],
-                                         "max_tokens": 64, "temperature": 0}, timeout=120)
-                    dt = time.time() - t
-                    ct = (r.json().get("usage", {}) or {}).get("completion_tokens", 0)
-                    tps = ct / dt if dt else 0
-                    add("LLM генерация", dt * 1000, f"{m}: {ct} токенов · {tps:.1f} ток/с")
-                else:
-                    r = httpx.post(f"{settings.get('OLLAMA_URL')}/api/generate",
-                                   json={"model": m, "prompt": "Напиши короткий абзац о тестировании.",
-                                         "stream": False, "options": {"num_predict": 64}}, timeout=180)
-                    j = r.json()
-                    ec = j.get("eval_count", 0)
-                    ed = (j.get("eval_duration", 0) or 0) / 1e9
-                    tps = ec / ed if ed else 0
-                    add("LLM генерация", ed * 1000, f"{m}: {ec} токенов · {tps:.1f} ток/с")
-            except Exception as e:
-                add("LLM генерация", 0, f"ошибка: {e}")
-
-            fp.write("\nГотово.\n")
+            fp.write("\n" + ("Остановлено." if stopped else "Готово.") + "\n")
         _bench_job["results"] = results
         _bench_job["log"] = _tail(logfile)
-        _bench_job["ok"] = True
+        _bench_job["ok"] = not _bench_job.get("cancel")
         _bench_job["running"] = False
         _bench_job["finished"] = time.time()
 

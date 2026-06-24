@@ -324,6 +324,7 @@
     <h1>Бенчмарк производительности</h1>
     <div class="sub">Замер скорости каждого компонента
       <button class="act" onclick="runBench()">▶ Запустить бенчмарк</button>
+      <button class="act ghost" onclick="stopBench()">⏹ Остановить</button>
       <span id="benchmsg"></span></div>
     <div class="box"><h3>Результаты (мс, меньше — быстрее)</h3>
       <canvas id="ch_bench" height="160"></canvas>
@@ -635,6 +636,10 @@ async function runBench(){
   const r=await adminPost('/api/admin/benchmark');
   benchMsg(r.msg||(r.ok?'идёт…':'ошибка'),r.ok!==false);
   if(r.ok!==false) pollBench();
+}
+async function stopBench(){
+  benchMsg('остановка…'); const r=await adminPost('/api/admin/benchmark/stop');
+  benchMsg(r.msg||(r.ok?'останавливается':'не запущен'),r.ok!==false);
 }
 function loadBench(){ pollBench(true); }
 async function pollBench(once){
