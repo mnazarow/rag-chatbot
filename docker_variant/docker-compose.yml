@@ -1,0 +1,88 @@
+# RAG в Docker с включённым Redis — единый вариант для Windows, Linux и macOS.
+#
+# Сервисы:
+#   qdrant : векторная БД (контейнер)
+#   redis  : кэш агрегатов (контейнер, ВКЛЮЧЁН и настроен по умолчанию)
+#   app    : RAG-приложение (контейнер, CPU)
+#
+# Генерация (LLM) — через Ollama, установленный на ХОСТЕ; контейнер обращается к нему
+# по адресу host.docker.internal:11434 (на Linux это имя добавляется через extra_hosts).
+#
+# Быстрый старт:
+#   Windows : дважды кликните start.cmd  (или: docker compose up -d --build)
+#   Linux   : ./start.sh
+#   macOS   : ./start.sh
+#
+# Папка с документами задаётся переменной DOCS_DIR_HOST (в файле .env рядом с compose
+# или в окружении). По умолчанию — ./docs.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: rag_qdrant
+    restart: unless-stopped
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    ports:
+      - "6333:6333"          # доступ к БД с хоста (необязательно, для диагностики)
+
+  redis:
+    image: redis:7-alpine
+    container_name: rag_redis
+    restart: unless-stopped
+    # Конфиг с лимитом памяти, политикой вытеснения и персистентностью (см. redis.conf)
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis_data:/data
+    # Порт НЕ публикуется наружу: Redis доступен только внутри сети compose (безопаснее).
+    # Чтобы открыть для диагностики с хоста, раскомментируйте:
+    # ports:
+    #   - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build:
+      context: ../..                               # корень репозитория
+      dockerfile: windows_variant/docker/Dockerfile
+    container_name: rag_app
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+      - redis
+    env_file:
+      - .env.docker
+    environment:
+      - HF_HOME=/root/.cache/huggingface           # кеш моделей эмбеддингов/реранка
+      # Адрес Qdrant в сети compose — фиксируем здесь (приоритет над .env.docker)
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=company_kb
+      # --- Redis ВКЛЮЧЁН и настроен (сервис redis в этой сети compose) ---
+      - REDIS_ENABLED=1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      # - REDIS_PASSWORD=        # если задали requirepass в redis.conf — укажите тот же пароль
+    extra_hosts:
+      - "host.docker.internal:host-gateway"        # доступ к Ollama на хосте (в т.ч. Linux)
+    ports:
+      - "8000:8000"                                # веб-интерфейс: http://localhost:8000
+    volumes:
+      # папка с документами — на запись (загрузки файлов/папок, сайты, восстановление)
+      - "${DOCS_DIR_HOST:-./docs}:/data/docs"
+      - hf_cache:/root/.cache/huggingface          # чтобы не качать модели заново
+      - ./state/runtime_config.json:/app/runtime_config.json  # настройки админки
+      - ./state/rag_logs.db:/app/rag_logs.db                   # логи/оценки (если SQLite)
+      - ./state/ingest_stats.json:/app/ingest_stats.json       # время обработки файлов
+      - ./backups:/app/backups                     # резервные копии (доступны на хосте)
+      - previews_cache:/app/previews               # кеш превью (миниатюры/кадры)
+
+volumes:
+  qdrant_storage:
+  redis_data:
+  hf_cache:
+  previews_cache:

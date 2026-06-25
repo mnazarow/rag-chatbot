@@ -247,6 +247,27 @@ powershell -ExecutionPolicy Bypass -File start_windows_docker.ps1 `
 считаются на CPU; индекс и кеш моделей сохраняются в томах Docker. Подробности —
 в `windows_variant/README_windows.md` (раздел «Установка полностью в Docker»).
 
+## 4c. Docker с Redis (Windows / Linux / macOS)
+
+Единый кросс-платформенный Docker-вариант, где **Redis включён и настроен**: три
+контейнера — `qdrant`, `redis`, `app` — в одной сети. Папка — `docker_variant/`.
+
+```bash
+# Windows: дважды кликните start.cmd (или в терминале: start.cmd)
+# Linux/macOS:
+cd docker_variant
+chmod +x start.sh && ./start.sh
+# своя папка документов:  DOCS_DIR_HOST=/path/to/docs ./start.sh
+# универсально:           docker compose up -d --build
+```
+
+Стартовый скрипт проверит Docker, подготовит `.env.docker`/состояние, соберёт и
+поднимет контейнеры и покажет статус (Qdrant / Redis / приложение). Redis включается
+автоматически (`REDIS_ENABLED=1`, `REDIS_HOST=redis`); его статистика видна в разделе
+«Система» → «⚡ Кэш Redis». Настройки Redis — в `docker_variant/redis.conf`
+(лимит памяти, персистентность, опциональный пароль). Генерация — через Ollama на
+хосте. Подробности — в `docker_variant/README.md`.
+
 ## 5a. Вариант с дообучением (fine-tuning, LoRA)
 
 Только GPU. Дообучает модель на ваших документах (QLoRA) и подаёт адаптер через

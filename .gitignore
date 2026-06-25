@@ -16,6 +16,13 @@ windows_variant/docker/.env.docker
 windows_variant/docker/state/
 windows_variant/docker/docs/
 
+# Docker-вариант с Redis (Windows/Linux/macOS): состояние и локальные данные
+docker_variant/.env
+docker_variant/.env.docker
+docker_variant/state/
+docker_variant/docs/
+docker_variant/backups/
+
 # Рантайм-данные (не версионируются)
 runtime_config.json
 ingest_stats.json
