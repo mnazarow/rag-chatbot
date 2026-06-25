@@ -210,6 +210,7 @@ def main():
 
     run_start = time.time()
     run_proc_ms = 0
+    run_parse_ms = run_embed_ms = 0   # для диагностики узкого места
     n_new = n_chunks = n_skip = n_timeout = 0
     errors = []  # (файл, причина)
     tmpdir = tempfile.mkdtemp(prefix="rag_pg_") if from_pg else None
@@ -225,8 +226,9 @@ def main():
     print(f"Потоков извлечения: {workers}")
 
     # --- эмбеддинг + запись в Qdrant (всегда в основном потоке) ---
-    def _embed_upsert(source, fhash, points, ftype, meta_path, t_file):
-        nonlocal n_new, n_chunks, run_proc_ms
+    def _embed_upsert(source, fhash, points, ftype, meta_path, parse_ms=0):
+        nonlocal n_new, n_chunks, run_proc_ms, run_parse_ms, run_embed_ms
+        t_embed = time.time()
         md = meta.extract(meta_path)
         if settings.get("LLM_METADATA"):
             try:
@@ -266,11 +268,16 @@ def main():
                     for p, vec in zip(batch, vectors)
                 ],
             )
+        embed_ms = int((time.time() - t_embed) * 1000)
         n_new += 1
         n_chunks += len(points)
-        proc_ms = int((time.time() - t_file) * 1000)
+        run_parse_ms += parse_ms
+        run_embed_ms += embed_ms
+        proc_ms = parse_ms + embed_ms
         run_proc_ms += proc_ms
         file_times[source] = {"ms": proc_ms, "chunks": len(points), "ts": time.time()}
+        print(f"    · {source}: парсинг {parse_ms} мс · эмбеддинг+Qdrant {embed_ms} мс "
+              f"· чанков {len(points)}", flush=True)
         if from_pg:
             try:
                 full = "\n\n".join(p["chunk"] for p in points)[:500_000]
@@ -282,6 +289,7 @@ def main():
     def _parse(item):
         tmp_path = None
         source = ""
+        t_parse = time.time()
         try:
             if from_pg:
                 source = item["rel_path"]
@@ -311,7 +319,7 @@ def main():
                 return {"status": "empty", "tmp": tmp_path}
             return {"status": "ok", "source": source, "fhash": fhash, "points": points,
                     "ftype": path.suffix.lower().lstrip("."), "meta_path": meta_path,
-                    "tmp": tmp_path, "t0": time.time()}
+                    "tmp": tmp_path, "parse_ms": int((time.time() - t_parse) * 1000)}
         except Exception as e:
             return {"status": "error", "source": source, "msg": str(e)[:200],
                     "tmp": tmp_path}
@@ -336,7 +344,7 @@ def main():
                   f"индексирую: {source}", flush=True)
             delete_old_versions(client, source)
             _embed_upsert(source, res["fhash"], res["points"], res["ftype"],
-                          res["meta_path"], res.get("t0", time.time()))
+                          res["meta_path"], res.get("parse_ms", 0))
         finally:
             if tmp is not None:
                 try:
@@ -375,6 +383,7 @@ def main():
                       f"индексирую: {source}", flush=True)
                 if use_alarm:
                     signal.alarm(file_timeout)
+                t_parse = time.time()
                 points = []
                 for part in load_file(path):
                     for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
@@ -383,11 +392,12 @@ def main():
                                        "t_end": part.get("t_end")})
                 if use_alarm:
                     signal.alarm(0)
+                parse_ms = int((time.time() - t_parse) * 1000)
                 if not points:
                     n_skip += 1
                     continue
                 _embed_upsert(source, fhash, points, path.suffix.lower().lstrip("."),
-                              meta_path, t_file)
+                              meta_path, parse_ms)
             except _Timeout:
                 if use_alarm:
                     signal.alarm(0)
@@ -445,8 +455,13 @@ def main():
     if tmpdir:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+    wall = max(1, int((time.time() - run_start) * 1000))
     print(f"Готово. Обновлено файлов: {n_new}, чанков добавлено: {n_chunks}, "
           f"пропущено пустых: {n_skip}, по таймауту: {n_timeout}, ошибок: {len(errors)}")
+    print(f"Тайминги (сумма по файлам): извлечение {run_parse_ms} мс, эмбеддинг+Qdrant "
+          f"{run_embed_ms} мс; общее время {wall} мс, потоков {workers}. "
+          f"Если 'извлечение' >> общего времени — параллельность работает; если "
+          f"'эмбеддинг+Qdrant' доминирует — узкое место в эмбеддере/Qdrant (потоки не помогут).")
     if errors:
         print("Файлы с ошибками:")
         for s, e in errors[:50]:
