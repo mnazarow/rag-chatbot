@@ -99,6 +99,12 @@ def health():
 
 
 # ============================ ЧАТ ============================
+def _stg(key: str, status: str = "done", info: dict | None = None, ms: int = 0) -> str:
+    """NDJSON-событие этапа конвейера (для анимации в интерфейсе)."""
+    return json.dumps({"type": "stage", "key": key, "status": status,
+                       "ms": ms, "info": info or {}}, ensure_ascii=False) + "\n"
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest):
     t0 = time.time()
@@ -114,6 +120,10 @@ async def chat(req: ChatRequest):
             cat = "lightrag" if use_lightrag_all else "graph"
 
             async def gstream():
+                yield _stg("engine", "done", {
+                    "engine": "LightRAG (граф)" if use_lightrag_all
+                    else "граф (hybrid, сводный вопрос)",
+                    "mode": settings.get("GRAPH_MODE"), "model": settings.active_model()})
                 for i in range(0, len(text), 40):
                     yield json.dumps({"type": "answer", "text": text[i:i + 40]},
                                      ensure_ascii=False) + "\n"
@@ -152,6 +162,7 @@ async def chat(req: ChatRequest):
             cached = None
         if cached:
             async def cached_stream():
+                yield _stg("answer_cache", "done", {"hit": True})
                 txt = cached.get("answer", "")
                 for i in range(0, len(txt), 40):
                     yield json.dumps({"type": "answer", "text": txt[i:i + 40]},
@@ -175,7 +186,8 @@ async def chat(req: ChatRequest):
             return StreamingResponse(cached_stream(), media_type="application/x-ndjson")
 
     t_ret = time.time()
-    hits = search(req.question, filters=req.filters)
+    trace = []
+    hits = search(req.question, filters=req.filters, trace=trace)
     retrieve_ms = int((time.time() - t_ret) * 1000)
     category = (req.filters or {}).get("doc_category") or infer_category(req.question)
 
@@ -187,6 +199,9 @@ async def chat(req: ChatRequest):
                              session_id=req.session_id)
 
         async def empty():
+            for s in trace:
+                yield _stg(s["key"], "done", s.get("info"), s.get("ms", 0))
+            yield _stg("context", "done", {"chunks": 0, "chars": 0})
             yield json.dumps({"type": "answer", "text": msg}, ensure_ascii=False) + "\n"
             yield json.dumps({"type": "sources", "items": []}, ensure_ascii=False) + "\n"
             yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
@@ -205,12 +220,23 @@ async def chat(req: ChatRequest):
                for h in hits]
 
     async def stream():
+        # анимация конвейера: этапы поиска (измерены), затем контекст и генерация
+        for s in trace:
+            yield _stg(s["key"], "done", s.get("info"), s.get("ms", 0))
+        yield _stg("context", "done",
+                   {"chunks": len(hits), "chars": len(context),
+                    "retrieve_ms": retrieve_ms})
+        yield _stg("generate", "start", {"backend": settings.get("LLM_BACKEND"),
+                                         "model": settings.active_model(),
+                                         "temperature": settings.get("TEMPERATURE")})
         acc = []
         async for tok in llm_backend.chat_stream(
                 messages, temperature=settings.get("TEMPERATURE"),
                 model=settings.active_model()):
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
+        gen_ms = max(0, int((time.time() - t0) * 1000) - retrieve_ms)
+        yield _stg("generate", "done", {"chars": len("".join(acc)), "ms": gen_ms}, gen_ms)
         yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
         latency = int((time.time() - t0) * 1000)
         if req.debug:
@@ -309,12 +335,20 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
                 "score": round(h["score"], 3)} for h in hits]
 
     async def stream():
+        yield _stg("attach", "done", {"file": name, "fragments": len(items)})
+        yield _stg("rerank", "done", {"model": settings.get("RERANK_MODEL"),
+                                      "kept": len(hits), "candidates": len(items)})
+        yield _stg("context", "done", {"chunks": len(hits), "chars": len(context)})
+        yield _stg("generate", "start", {"backend": settings.get("LLM_BACKEND"),
+                                         "model": settings.active_model(),
+                                         "temperature": settings.get("TEMPERATURE")})
         acc = []
         async for tok in llm_backend.chat_stream(
                 messages, temperature=settings.get("TEMPERATURE"),
                 model=settings.active_model()):
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
+        yield _stg("generate", "done", {"chars": len("".join(acc))})
         yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
         latency = int((time.time() - t0) * 1000)
         if debug in ("1", "true", "on", "yes"):

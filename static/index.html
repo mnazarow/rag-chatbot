@@ -86,6 +86,22 @@
   .me{background:var(--me);margin-left:auto}
   .bot{background:var(--bot)}
   .src{font-size:12px;color:var(--muted);margin-top:8px;border-top:1px solid var(--line);padding-top:6px}
+  /* анимация конвейера ответа */
+  details.pipe{margin:0 0 9px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);padding:6px 10px;font-size:12px}
+  details.pipe>summary{cursor:pointer;color:var(--muted);list-style:none;user-select:none}
+  details.pipe>summary::-webkit-details-marker{display:none}
+  .pstep{display:flex;align-items:center;gap:9px;padding:4px 2px;opacity:0;transform:translateY(5px);transition:opacity .3s ease,transform .3s ease}
+  .pstep.in{opacity:1;transform:none}
+  .pstep .pi{width:20px;text-align:center;flex:none}
+  .pstep .pl{min-width:170px;color:var(--txt);font-weight:600;flex:none}
+  .pstep .pp{flex:1;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pstep .pms{flex:none;color:#60a5fa;font-variant-numeric:tabular-nums;min-width:46px;text-align:right}
+  .pstep.active .pl{color:#fbbf24}
+  .pstep.active .pi{animation:spin 1s linear infinite;display:inline-block}
+  .pstep.active{animation:pglow 1.1s ease-in-out infinite}
+  .pstep.done .pms{color:#4ade80}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes pglow{0%,100%{opacity:1}50%{opacity:.6}}
   #bar{display:flex;gap:8px;margin-top:12px}
   #q{flex:1;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--txt)}
   /* ---- админка ---- */
@@ -2375,6 +2391,7 @@ async function ask(){
   const file=$('#chatfile').files[0];
   $('#q').value=''; $('#send').disabled=true;
   add('me', q + (file?(' 📎 '+file.name):'')); const bot=add('bot',''); let ans='';
+  bot._ansEl=bot.firstChild;   // ссылка на span ответа (конвейер вставляется ПЕРЕД ним)
   chatLog.push({role:'user',content:q+(file?(' [файл: '+file.name+']'):'')});
   let curSources=[];
   try{
@@ -2395,7 +2412,9 @@ async function ask(){
       buf+=dec.decode(value,{stream:true}); let nl;
       while((nl=buf.indexOf('\n'))>=0){ const ln=buf.slice(0,nl).trim(); buf=buf.slice(nl+1);
         if(!ln)continue; const ev=JSON.parse(ln);
-        if(ev.type==='answer'){ans+=ev.text;bot.firstChild.textContent=ans;}
+        if(ev.type==='stage'){ handleStage(bot,ev); }
+        else if(ev.type==='answer'){ans+=ev.text;bot._ansEl.textContent=ans;
+          if(bot._genStep){ const pp=bot._genStep.querySelector('.pp'); if(pp) pp.textContent=ans.length+' симв.'; } }
         else if(ev.type==='sources'&&ev.items.length){
           curSources=ev.items;
           const s=document.createElement('div');s.className='src';
@@ -2410,7 +2429,7 @@ async function ask(){
     chatLog.push({role:'assistant',content:ans,sources:curSources});
     addSpeak(bot);                       // кнопка «озвучить» под ответом
     if(ttsOn() && ans.trim()) speak(ans); // авто-озвучка, если включена
-  }catch(e){ bot.firstChild.textContent='Ошибка: '+e.message;
+  }catch(e){ bot._ansEl.textContent='Ошибка: '+e.message;
     chatLog.push({role:'assistant',content:'Ошибка: '+e.message}); }
   $('#send').disabled=false; $('#q').focus();
 }
@@ -2520,9 +2539,62 @@ function saveTts(){ try{ localStorage.setItem('rag_chattts',ttsOn()?'1':''); }ca
 function addSpeak(bot){
   if(!('speechSynthesis' in window)) return;
   const b=document.createElement('button'); b.className='dirbtn'; b.title='Озвучить ответ'; b.textContent='🔊';
-  b.onclick=()=>{ const t=bot.firstChild?bot.firstChild.textContent:'';
+  b.onclick=()=>{ const t=(bot._ansEl||bot.firstChild)?(bot._ansEl||bot.firstChild).textContent:'';
     if(window.speechSynthesis.speaking){ stopSpeak(); b.textContent='🔊'; } else { speak(t); b.textContent='⏹'; } };
   bot.appendChild(b);
+}
+// ---- анимация конвейера ответа (этапы и параметры в реальном времени) ----
+const STAGE_META={
+  cache:{icon:'⚡',label:'Кэш поиска'},
+  answer_cache:{icon:'⚡',label:'Кэш ответа'},
+  embed:{icon:'🧮',label:'Эмбеддинг запроса'},
+  filter:{icon:'🧭',label:'Фильтр'},
+  dense:{icon:'🗄',label:'Векторный поиск (Qdrant)'},
+  bm25:{icon:'🔤',label:'Лексика BM25'},
+  rerank:{icon:'🎯',label:'Реранк (cross-encoder)'},
+  attach:{icon:'📎',label:'Разбор документа'},
+  context:{icon:'📋',label:'Сборка контекста'},
+  generate:{icon:'🧠',label:'Генерация (LLM)'},
+  engine:{icon:'🧩',label:'Движок'},
+};
+function stageParams(key,info){
+  info=info||{}; const p=[];
+  if(key==='embed'){ if(info.model)p.push(esc(info.model)); if(info.device)p.push(esc(info.device)); }
+  else if(key==='filter'){ p.push('тип: '+esc(info.type||'нет')); if(info.filters&&Object.keys(info.filters).length)p.push(esc(JSON.stringify(info.filters))); }
+  else if(key==='dense'){ p.push('top-k '+nz(info.top_k)); p.push('кандидатов '+nz(info.candidates)); if(info.fallback)p.push('фолбэк без фильтра'); }
+  else if(key==='bm25'){ p.push('кандидатов '+nz(info.candidates)); }
+  else if(key==='rerank'){ if(info.model)p.push(esc(info.model)); if(info.min_score!=null)p.push('порог '+info.min_score); p.push('оставлено '+nz(info.kept)+'/'+nz(info.candidates)); }
+  else if(key==='attach'){ if(info.file)p.push(esc(info.file)); p.push('фрагментов '+nz(info.fragments)); }
+  else if(key==='context'){ p.push('фрагментов '+nz(info.chunks)); if(info.chars!=null)p.push(info.chars+' симв.'); }
+  else if(key==='generate'){ if(info.model)p.push(esc(info.model)); if(info.backend)p.push(esc(info.backend)); if(info.temperature!=null)p.push('t='+info.temperature); if(info.chars!=null)p.push(info.chars+' симв.'); }
+  else if(key==='engine'){ if(info.engine)p.push(esc(info.engine)); if(info.model)p.push(esc(info.model)); if(info.mode)p.push('режим '+esc(info.mode)); }
+  else if(key==='cache'||key==='answer_cache'){ p.push(info.hit?'попадание':'мимо'); }
+  return p.join(' · ');
+}
+function handleStage(bot,ev){
+  let pipe=bot._pipe;
+  if(!pipe){
+    pipe=document.createElement('details'); pipe.className='pipe'; pipe.open=true;
+    const sm=document.createElement('summary'); sm.textContent='⚙️ Конвейер ответа'; pipe.appendChild(sm);
+    bot.insertBefore(pipe, bot._ansEl||bot.firstChild); bot._pipe=pipe; bot._steps={};
+  }
+  const meta=STAGE_META[ev.key]||{icon:'•',label:ev.key};
+  let step=bot._steps[ev.key];
+  if(!step){
+    step=document.createElement('div'); step.className='pstep';
+    step.innerHTML='<span class="pi"></span><span class="pl"></span><span class="pp"></span><span class="pms"></span>';
+    pipe.appendChild(step); bot._steps[ev.key]=step;
+    requestAnimationFrame(()=>step.classList.add('in'));
+  }
+  const active = ev.status==='start';
+  step.querySelector('.pi').textContent = active ? '⏳' : meta.icon;
+  step.querySelector('.pl').textContent = meta.label;
+  step.querySelector('.pp').textContent = stageParams(ev.key,ev.info);
+  step.querySelector('.pms').textContent = active ? '…' : ((ev.ms!=null&&ev.ms>0)?ev.ms+' мс':'✓');
+  step.classList.toggle('active', active);
+  step.classList.toggle('done', !active);
+  if(ev.key==='generate') bot._genStep = active ? step : null;
+  $('#msgs').scrollTop=$('#msgs').scrollHeight;
 }
 function addDebug(bot,info){
   const d=document.createElement('details'); d.className='src'; d.open=true;

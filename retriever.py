@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 import hashlib
+import time
 from functools import lru_cache
 
 from qdrant_client import QdrantClient
@@ -98,10 +99,11 @@ def _dense_search(qvec, qfilter):
 
 
 def search(question: str, filters: dict | None = None,
-           auto_filter: bool | None = None) -> list[dict]:
+           auto_filter: bool | None = None, trace: list | None = None) -> list[dict]:
     """Поиск с кэшированием результата в Redis. Ключ включает вопрос, явные фильтры и
     влияющие настройки; кэш в пространстве 'index' (сбрасывается при переиндексации).
-    При выключенном/недоступном Redis считается напрямую."""
+    При выключенном/недоступном Redis считается напрямую. trace (если передан список) —
+    наполняется этапами конвейера {key, ms, info} для анимации в интерфейсе."""
     if auto_filter is None:
         auto_filter = settings.get("AUTO_FILTER")
     keyparts = "|".join(str(x) for x in [
@@ -112,40 +114,67 @@ def search(question: str, filters: dict | None = None,
     ckey = "search:" + hashlib.sha1(keyparts.encode("utf-8")).hexdigest()
     try:
         import cache
-        return cache.get_or_set(
-            ckey, 300, lambda: _search_raw(question, filters, auto_filter), ns="index")
+        hit = cache.get_json(ckey, ns="index")
+        if hit is not None:
+            if trace is not None:
+                trace.append({"key": "cache", "ms": 0, "info": {"hit": True}})
+            return hit
+        res = _search_raw(question, filters, auto_filter, trace)
+        cache.set_json(ckey, 300, res, ns="index")
+        return res
     except Exception:
-        return _search_raw(question, filters, auto_filter)
+        return _search_raw(question, filters, auto_filter, trace)
 
 
 def _search_raw(question: str, filters: dict | None = None,
-                auto_filter: bool | None = None) -> list[dict]:
+                auto_filter: bool | None = None, trace: list | None = None) -> list[dict]:
+    def rec(key, t0, info=None):
+        if trace is not None:
+            trace.append({"key": key, "ms": int((time.time() - t0) * 1000),
+                          "info": info or {}})
+
     if auto_filter is None:
         auto_filter = settings.get("AUTO_FILTER")
+
+    t = time.time()
     qvec = _embed_query(question)
+    rec("embed", t, {"model": settings.get("EMBED_MODEL"), "device": settings.device()})
 
     # 1) определяем фильтр: явный > умный (LLM) > авто-угаданная категория (правила)
+    t = time.time()
+    ftype = "явный" if filters is not None else "нет"
     if filters is None:
         if settings.get("SMART_FILTER"):
             filters = query_filters.extract(question) or None
+            ftype = "умный (LLM)"
         elif auto_filter:
             cat = infer_category(question)
             filters = {"doc_category": cat} if cat else None
+            ftype = ("авто: " + cat) if cat else "авто: нет"
+    rec("filter", t, {"type": ftype, "filters": filters or {}})
 
     # 2) плотный поиск с фильтром; если фильтр дал мало — фолбэк без фильтра
+    t = time.time()
     cands = _dense_search(qvec, _build_filter(filters))
+    fb = False
     if len(cands) < 3 and filters:
         cands = _dense_search(qvec, None)
+        fb = True
+    rec("dense", t, {"top_k": settings.get("TOP_K_RETRIEVE"),
+                     "candidates": len(cands), "fallback": fb})
     if not cands:
         return []
 
     # 2) лексический реранж по BM25 внутри кандидатов (дешёвый гибрид)
+    t = time.time()
     bm25 = BM25Okapi([_tokenize(c["text"]) for c in cands])
     bm_scores = bm25.get_scores(_tokenize(question))
     for c, s in zip(cands, bm_scores):
         c["bm25"] = float(s)
+    rec("bm25", t, {"candidates": len(cands)})
 
     # 3) кросс-энкодер реранк — финальная релевантность 0..1
+    t = time.time()
     pairs = [[question, c["text"]] for c in cands]
     scores = _reranker().compute_score(pairs, normalize=True)
     if not isinstance(scores, list):
@@ -157,6 +186,9 @@ def _search_raw(question: str, filters: dict | None = None,
     min_score = settings.get("MIN_SCORE")
     top_k = settings.get("TOP_K_RERANK")
     top = [c for c in cands if c["score"] >= min_score][:top_k]
+    rec("rerank", t, {"model": settings.get("RERANK_MODEL"), "top_k": top_k,
+                      "min_score": min_score, "kept": len(top),
+                      "candidates": len(cands)})
     return top
 
 
