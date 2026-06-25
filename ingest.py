@@ -240,12 +240,17 @@ def main():
                     md["doc_category"] = e["category"]
             except Exception as me:
                 print(f"  ~ метаданные LLM пропущены для {source}: {me}")
-        BATCH = 256
+        try:
+            enc_batch = int(settings.get("EMBED_BATCH") or 32)
+        except Exception:
+            enc_batch = 32
+        enc_batch = max(1, enc_batch)
+        BATCH = max(256, enc_batch)   # размер группы upsert не меньше batch эмбеддера
         for i in range(0, len(points), BATCH):
             batch = points[i:i + BATCH]
             vectors = embedder.encode(
                 [p["chunk"] for p in batch],
-                normalize_embeddings=True, batch_size=32, show_progress_bar=False,
+                normalize_embeddings=True, batch_size=enc_batch, show_progress_bar=False,
             )
             if len(points) > BATCH:
                 done = min(i + BATCH, len(points))

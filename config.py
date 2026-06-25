@@ -23,6 +23,9 @@ LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.6:35b-a3b-q4_K_M")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 DEVICE = os.getenv("DEVICE", "mps")          # mps (Apple) | cuda (GPU) | cpu
+# Размер пачки эмбеддера при индексации: сколько чанков считать за один проход.
+# Больше — выше пропускная способность на GPU, но больше расход видеопамяти.
+EMBED_BATCH = _int("EMBED_BATCH", 32)
 
 # Бэкенд генерации: ollama (Apple/CPU) | openai (vLLM, OpenAI-совместимый API)
 LLM_BACKEND = os.getenv("LLM_BACKEND", "ollama")
