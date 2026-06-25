@@ -81,7 +81,11 @@ TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")
 # ходить ли только по тому же домену.
 WEB_CRAWL_DEPTH = _int("WEB_CRAWL_DEPTH", 1)
 WEB_MAX_PAGES = _int("WEB_MAX_PAGES", 20)
+WEB_MAX_FILES = _int("WEB_MAX_FILES", 5000)       # лимит скачиваемых файлов на сайт
 WEB_SAME_DOMAIN = _bool("WEB_SAME_DOMAIN", True)
+# Рендерить страницы headless-браузером (Playwright Chromium) — для сайтов на
+# JavaScript. Если Playwright/браузер не установлены — мягкий откат на обычную загрузку.
+WEB_JS_RENDER = _bool("WEB_JS_RENDER", True)
 
 # --- База данных приложения (журнал/история/настройки) ---
 # sqlite (по умолчанию, без внешних сервисов) | mysql | postgresql

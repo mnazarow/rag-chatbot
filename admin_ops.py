@@ -622,11 +622,89 @@ def delete_web(url: str) -> dict:
     return {"ok": True, "msg": "сайт удалён из базы знаний"}
 
 
-# расширения, по которым не ходим при обходе сайта (это файлы, а не страницы)
-_WEB_SKIP_EXT = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico",
-                 ".zip", ".rar", ".7z", ".gz", ".tar", ".mp4", ".mov", ".avi", ".webm",
-                 ".mp3", ".wav", ".m4a", ".doc", ".docx", ".xls", ".xlsx", ".ppt",
-                 ".pptx", ".exe", ".dmg", ".css", ".js"}
+# расширения «страниц» (их обходим как HTML); всё остальное считаем файлами и скачиваем
+_WEB_PAGE_EXT = {"", ".html", ".htm", ".php", ".asp", ".aspx", ".jsp", ".cfm", ".shtml"}
+
+
+def _web_is_file(url: str) -> bool:
+    from urllib.parse import urlparse
+    return os.path.splitext(urlparse(url).path)[1].lower() not in _WEB_PAGE_EXT
+
+
+class _Renderer:
+    """Однократно запущенный headless-Chromium (Playwright) для JS-страниц."""
+
+    def __init__(self):
+        from playwright.sync_api import sync_playwright
+        self._pw = sync_playwright().start()
+        self._b = self._pw.chromium.launch(
+            args=["--no-sandbox", "--disable-dev-shm-usage"])
+
+    def render(self, url: str):
+        try:
+            pg = self._b.new_page(user_agent="Mozilla/5.0 (RAGBot)")
+            try:
+                pg.goto(url, wait_until="networkidle", timeout=45000)
+            except Exception:
+                pg.goto(url, wait_until="domcontentloaded", timeout=45000)
+            html = pg.content()
+            pg.close()
+            return html
+        except Exception as e:
+            print(f"[web] render {url}: {e}")
+            return None
+
+    def close(self):
+        for fn in (getattr(self._b, "close", None), getattr(self._pw, "stop", None)):
+            try:
+                if fn:
+                    fn()
+            except Exception:
+                pass
+
+
+def _web_fetch(url: str, renderer, log):
+    """HTML страницы: через headless-браузер (если включён и доступен) или httpx."""
+    if renderer is not None:
+        html = renderer.render(url)
+        if html:
+            return html
+    try:
+        r = httpx.get(url, timeout=30, follow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0 (RAGBot)"})
+        ct = r.headers.get("content-type", "")
+        if ct and "html" not in ct.lower():
+            return None
+        return r.text
+    except Exception as e:
+        log(f"ERR {url}: {e}")
+        return None
+
+
+def _web_download(url: str, dest_dir, log):
+    """Скачать файл по ссылке (любого типа) в dest_dir. Возвращает путь или None."""
+    import re
+    from urllib.parse import urlparse, unquote
+    try:
+        r = httpx.get(url, timeout=60, follow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0 (RAGBot)"})
+        if r.status_code != 200:
+            log(f"ERR файл {url}: HTTP {r.status_code}")
+            return None
+        name = unquote(os.path.basename(urlparse(url).path)) or _web_slug(url)
+        name = re.sub(r"[^\w.\-]+", "_", name)[:150] or "file"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        out = dest_dir / name
+        i = 1
+        while out.exists() and out.stat().st_size != len(r.content):
+            out = dest_dir / f"{i}_{name}"
+            i += 1
+        out.write_bytes(r.content)
+        log(f"ФАЙЛ {url} -> {out.name} ({len(r.content)} б)")
+        return out
+    except Exception as e:
+        log(f"ERR файл {url}: {e}")
+        return None
 
 
 def _web_extract(html: str) -> str:
@@ -665,7 +743,8 @@ def _web_title(html: str, url: str) -> str:
 
 
 def _web_links(html: str, base: str, seed_netloc: str, same_domain: bool) -> list:
-    """Ссылки на страницы для дальнейшего обхода (http/https, без файлов/якорей)."""
+    """Все ссылки страницы (http/https, без mailto/tel/якорей). Без фильтра по типу —
+    классификация на «страницы»/«файлы» делается в обходе."""
     from urllib.parse import urljoin, urlparse
     out = []
     try:
@@ -678,8 +757,6 @@ def _web_links(html: str, base: str, seed_netloc: str, same_domain: bool) -> lis
             pr = urlparse(urljoin(base, href))
             if pr.scheme not in ("http", "https"):
                 continue
-            if os.path.splitext(pr.path)[1].lower() in _WEB_SKIP_EXT:
-                continue
             if same_domain and pr.netloc.replace("www.", "") != \
                     seed_netloc.replace("www.", ""):
                 continue
@@ -689,36 +766,37 @@ def _web_links(html: str, base: str, seed_netloc: str, same_domain: bool) -> lis
     return out
 
 
-def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, log) -> list:
-    """Обойти сайт из стартовой страницы (BFS) до depth/max_pages. Возвращает список
-    (url, title, text). log(msg) — журналирование в лог парсинга."""
+def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, renderer, log):
+    """Обойти сайт из стартовой страницы (BFS) до depth/max_pages. Возвращает
+    (pages, files): pages — список (url, title, text); files — множество URL файлов
+    (любого типа) для скачивания. log(msg) — журналирование."""
     from urllib.parse import urlparse
     seed_netloc = urlparse(seed).netloc
-    seen, queue, pages = set(), [(seed, 0)], []
+    seen, queue, pages, files = set(), [(seed, 0)], [], set()
     while queue and len(pages) < max_pages:
         url, d = queue.pop(0)
         if url in seen:
             continue
         seen.add(url)
-        try:
-            r = httpx.get(url, timeout=30, follow_redirects=True,
-                          headers={"User-Agent": "Mozilla/5.0 (RAGBot)"})
-            ctype = r.headers.get("content-type", "")
-            if ctype and "html" not in ctype.lower():
-                continue
-            html = r.text
-        except Exception as e:
-            log(f"ERR {url}: {e}")
+        if _web_is_file(url):          # сам адрес — файл (например, прямая ссылка на PDF)
+            files.add(url)
+            continue
+        html = _web_fetch(url, renderer, log)
+        if html is None:
             continue
         text = _web_extract(html)
         if text:
             pages.append((url, _web_title(html, url), text))
             log(f"OK  {url}  ({len(text)} симв.)")
-        if d < depth and len(pages) < max_pages:
-            for link in _web_links(html, url, seed_netloc, same_domain):
-                if link not in seen:
-                    queue.append((link, d + 1))
-    return pages
+        # ссылки: файлы собираем всегда, страницы — пока не достигли глубины
+        for link in _web_links(html, url, seed_netloc, same_domain):
+            if link in seen:
+                continue
+            if _web_is_file(link):
+                files.add(link)
+            elif d < depth and all(link != q[0] for q in queue):
+                queue.append((link, d + 1))
+    return pages, files
 
 
 def ingest_web(urls: list) -> dict:
@@ -746,43 +824,69 @@ def ingest_web(urls: list) -> dict:
             web_paths = []
             depth = max(0, int(settings.get("WEB_CRAWL_DEPTH") or 0))
             max_pages = max(1, int(settings.get("WEB_MAX_PAGES") or 1))
+            max_files = max(0, int(settings.get("WEB_MAX_FILES") or 0))
             same_domain = bool(settings.get("WEB_SAME_DOMAIN"))
+            filesdir = webdir / "files"
             with open(logfile, "w", buffering=1, errors="ignore") as fp:
                 def _log(m):
                     fp.write(m + "\n")
                     fp.flush()
 
-                fp.write(f"Парсинг: глубина {depth}, до {max_pages} стр./сайт, "
-                         f"{'тот же домен' if same_domain else 'любой домен'}\n")
-                for u in urls:
+                # headless-браузер (Playwright) — один на весь прогон, если включён/доступен
+                renderer = None
+                if settings.get("WEB_JS_RENDER"):
                     try:
-                        pages = _web_crawl(u, depth, max_pages, same_domain, _log)
-                        if not pages:
-                            err += 1
-                            fp.write(f"ERR {u}: текст не извлечён (возможно, сайт "
-                                     "рендерится через JavaScript)\n")
-                            fp.flush()
-                            continue
-                        parts, total = [], 0
-                        for (pu, pt, ptext) in pages:
-                            parts.append(
-                                "<h2>%s</h2>\n<p><small>%s</small></p>\n<pre>%s</pre>"
-                                % (_html.escape(pt or pu), _html.escape(pu),
-                                   _html.escape(ptext)))
-                            total += len(ptext)
-                        doc = ("<html><body><!-- source: %s -->\n<h1>%s</h1>\n%s</body></html>"
-                               % (_html.escape(u), _html.escape(pages[0][1] or u),
-                                  "\n".join(parts)))
-                        out = webdir / (_slug(u) + ".html")
-                        out.write_text(doc, encoding="utf-8")
-                        web_paths.append(out)
-                        ok += 1
-                        fp.write(f"ИТОГО {u}: страниц {len(pages)}, текста {total} симв. "
-                                 f"-> {out.name}\n")
+                        renderer = _Renderer()
+                        _log("Headless-браузер (Playwright Chromium) активен")
                     except Exception as e:
-                        err += 1
-                        fp.write(f"ERR {u}: {e}\n")
-                    fp.flush()
+                        _log(f"Headless-браузер недоступен ({e}); обычная загрузка. "
+                             "Установка: pip install playwright && playwright install chromium")
+                        renderer = None
+                fp.write(f"Парсинг: глубина {depth}, до {max_pages} стр. и {max_files} "
+                         f"файлов/сайт, "
+                         f"{'тот же домен' if same_domain else 'любой домен'}\n")
+                try:
+                    for u in urls:
+                        try:
+                            pages, file_urls = _web_crawl(u, depth, max_pages,
+                                                          same_domain, renderer, _log)
+                            # скачиваем найденные файлы (любого типа), лимит на сайт
+                            dl = 0
+                            for furl in list(file_urls)[:max_files]:
+                                p = _web_download(furl, filesdir, _log)
+                                if p is not None:
+                                    web_paths.append(p)
+                                    dl += 1
+                            # текст страниц — в один документ web/<slug>.html
+                            if pages:
+                                parts, total = [], 0
+                                for (pu, pt, ptext) in pages:
+                                    parts.append(
+                                        "<h2>%s</h2>\n<p><small>%s</small></p>\n<pre>%s</pre>"
+                                        % (_html.escape(pt or pu), _html.escape(pu),
+                                           _html.escape(ptext)))
+                                    total += len(ptext)
+                                doc = ("<html><body><!-- source: %s -->\n<h1>%s</h1>\n"
+                                       "%s</body></html>"
+                                       % (_html.escape(u), _html.escape(pages[0][1] or u),
+                                          "\n".join(parts)))
+                                out = webdir / (_slug(u) + ".html")
+                                out.write_text(doc, encoding="utf-8")
+                                web_paths.append(out)
+                            if pages or dl:
+                                ok += 1
+                                fp.write(f"ИТОГО {u}: страниц {len(pages)}, файлов {dl}\n")
+                            else:
+                                err += 1
+                                fp.write(f"ERR {u}: ни текста, ни файлов (пустая страница "
+                                         "или JS-сайт без headless-браузера)\n")
+                        except Exception as e:
+                            err += 1
+                            fp.write(f"ERR {u}: {e}\n")
+                        fp.flush()
+                finally:
+                    if renderer is not None:
+                        renderer.close()
                 # активен каталог PostgreSQL — кладём спарсенные страницы и в него,
                 # чтобы индексация из БД их увидела (без папки)
                 added = catalog_add_paths(web_paths)

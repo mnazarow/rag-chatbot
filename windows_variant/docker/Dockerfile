@@ -72,6 +72,12 @@ RUN pip install --no-cache-dir --upgrade pip wheel \
 COPY windows_variant/docker/requirements-docker.txt /app/requirements-docker.txt
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
+# Headless-браузер для парсинга JS-сайтов (Playwright Chromium + системные зависимости).
+# Best-effort: при сбое образ всё равно собирается (парсинг откатится на обычную загрузку).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN python -m playwright install --with-deps chromium \
+    || echo "playwright chromium: установка пропущена (JS-рендер будет недоступен)"
+
 # Код приложения
 COPY . /app
 

@@ -43,6 +43,7 @@ pandas==2.2.3
 unstructured==0.16.11
 beautifulsoup4==4.12.3
 trafilatura==1.12.2        # извлечение основного текста веб-страниц (парсинг сайтов)
+playwright==1.48.0         # headless-браузер для JS-сайтов (нужно: playwright install chromium)
 markdown-it-py==3.0.0
 
 # --- транскрибация на GPU ---
