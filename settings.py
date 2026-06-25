@@ -270,6 +270,14 @@ FIELDS: list[dict] = [
     {"key": "REDIS_PASSWORD", "label": "Redis: пароль (если задан)",
      "group": "База данных и кэш", "type": "secret", "scope": "live",
      "default": config.REDIS_PASSWORD},
+    {"key": "CATALOG_SOURCE", "label": "Источник каталога документов",
+     "group": "База данных и кэш", "type": "select", "scope": "live",
+     "options": ["filesystem", "postgresql"], "default": config.CATALOG_SOURCE,
+     "desc": "Откуда брать список документов и их текст для просмотра в «Каталоге "
+             "документов». <code>filesystem</code> — папка <code>DOCS_DIR</code> (по "
+             "умолчанию). <code>postgresql</code> — таблица <code>doc_catalog</code> в "
+             "активной PostgreSQL (доступно после загрузки каталога). Переключается "
+             "кнопками в блоке «База данных и кэш» — менять вручную обычно не нужно."},
 
     # --- Доступ ---
     {"key": "ADMIN_TOKEN", "label": "Токен администратора", "group": "Доступ",

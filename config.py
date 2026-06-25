@@ -90,6 +90,10 @@ PG_USER = os.getenv("PG_USER", "")
 PG_PASSWORD = os.getenv("PG_PASSWORD", "")
 PG_DB = os.getenv("PG_DB", "rag")
 
+# Источник каталога документов: filesystem (папка DOCS_DIR) | postgresql (таблица
+# doc_catalog в активной PostgreSQL). Переключается кнопками в админке.
+CATALOG_SOURCE = os.getenv("CATALOG_SOURCE", "filesystem")
+
 # --- Кэш Redis (по умолчанию выключен) ---
 REDIS_ENABLED = _bool("REDIS_ENABLED", False)
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")

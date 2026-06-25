@@ -619,6 +619,24 @@ def admin_cache_clear(x_admin_token: str | None = Header(None)):
     return admin_ops.cache_clear()
 
 
+@app.get("/api/admin/catalog/status")
+def admin_catalog_status(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.catalog_status()
+
+
+@app.post("/api/admin/catalog/load")
+def admin_catalog_load(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.catalog_load()
+
+
+@app.post("/api/admin/catalog/use")
+def admin_catalog_use(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.catalog_use(payload.get("source", ""))
+
+
 @app.post("/api/admin/check-data")
 def admin_check_data(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

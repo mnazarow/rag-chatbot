@@ -1753,8 +1753,9 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
     Поддерживает пагинацию (limit/offset), сортировку
     (sort=name|date|size|chunks|proc, order=asc|desc), фильтр файлов с ошибками и
     фильтр по способу (method=transcribed|recognized|ocr|tool|text)."""
+    pg = _catalog_pg_active()
     docs = Path(settings.get("DOCS_DIR")).expanduser()
-    if not docs.exists():
+    if not pg and not docs.exists():
         return {"ok": False, "msg": f"папка документов не найдена: {docs}"}
 
     # карта «файл -> проблема» из последней завершённой проверки каталога
@@ -1782,26 +1783,44 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
 
     files, by_ext = [], {}
     total_size = indexed = 0
-    for p in sorted(docs.rglob("*")):
-        if not p.is_file() or p.suffix.lower() not in _SUPPORTED:
-            continue
-        rel = str(p.relative_to(docs))
-        ext = p.suffix.lower().lstrip(".")
-        try:
-            sz = p.stat().st_size
-            mt = int(p.stat().st_mtime)
-        except Exception:
-            sz, mt = 0, 0
-        ch = counts.get(rel, 0)
-        if ch:
-            indexed += 1
-        total_size += sz
-        by_ext[ext] = by_ext.get(ext, 0) + 1
-        meth = _file_method(p.suffix.lower())
-        files.append({"path": rel, "ext": ext, "size": sz, "mtime": mt,
-                      "chunks": ch, "indexed": bool(ch),
-                      "error": err_map.get(rel), "proc_ms": proc_map.get(rel),
-                      "method": meth})
+    if pg:
+        # источник — таблица doc_catalog в PostgreSQL
+        for r in db.catalog_rows():
+            rel = r.get("rel_path") or ""
+            ext = (r.get("ext") or "").lstrip(".")
+            sz = int(r.get("size") or 0)
+            mt = int(r.get("mtime") or 0)
+            ch = counts.get(rel, 0)
+            if ch:
+                indexed += 1
+            total_size += sz
+            by_ext[ext] = by_ext.get(ext, 0) + 1
+            meth = r.get("method") or _file_method("." + ext if ext else "")
+            files.append({"path": rel, "ext": ext, "size": sz, "mtime": mt,
+                          "chunks": ch, "indexed": bool(ch),
+                          "error": err_map.get(rel), "proc_ms": proc_map.get(rel),
+                          "method": meth})
+    else:
+        for p in sorted(docs.rglob("*")):
+            if not p.is_file() or p.suffix.lower() not in _SUPPORTED:
+                continue
+            rel = str(p.relative_to(docs))
+            ext = p.suffix.lower().lstrip(".")
+            try:
+                sz = p.stat().st_size
+                mt = int(p.stat().st_mtime)
+            except Exception:
+                sz, mt = 0, 0
+            ch = counts.get(rel, 0)
+            if ch:
+                indexed += 1
+            total_size += sz
+            by_ext[ext] = by_ext.get(ext, 0) + 1
+            meth = _file_method(p.suffix.lower())
+            files.append({"path": rel, "ext": ext, "size": sz, "mtime": mt,
+                          "chunks": ch, "indexed": bool(ch),
+                          "error": err_map.get(rel), "proc_ms": proc_map.get(rel),
+                          "method": meth})
 
     total = len(files)
     error_count = sum(1 for f in files if f["error"])
@@ -1843,7 +1862,9 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
             "recognized_count": recognized_count,
             "total_proc_ms": total_proc_ms, "timed_files": len(proc_map),
             "last_run": last_run,
-            "by_ext": by_ext, "files": page, "dir": str(docs),
+            "by_ext": by_ext, "files": page,
+            "dir": "PostgreSQL · doc_catalog" if pg else str(docs),
+            "source": "postgresql" if pg else "filesystem",
             "offset": offset, "limit": limit, "sort": sort, "order": order,
             "only_errors": only_errors, "method": method}
 
@@ -1854,6 +1875,17 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
     source = (source or "").strip()
     if not source:
         return {"ok": False, "msg": "не указан файл"}
+    # источник — PostgreSQL: отдаём сохранённый текст из doc_catalog
+    if _catalog_pg_active():
+        r = db.catalog_text(source, max_chars)
+        if r is None:
+            return {"ok": True, "source": source, "text": "", "chunks": 0,
+                    "method": _file_method(Path(source).suffix),
+                    "note": "файл отсутствует в каталоге PostgreSQL"}
+        return {"ok": True, "source": source, "text": r["text"],
+                "chunks": None, "method": r.get("method") or _file_method(Path(source).suffix),
+                "n_chars": r.get("n_chars"), "truncated": r.get("truncated"),
+                "from": "postgresql"}
     base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
     points, next_off = [], None
     try:
@@ -2100,6 +2132,117 @@ def db_copy(target: str, migrate: bool = False) -> dict:
 def cache_clear() -> dict:
     import cache
     return {"ok": True, "cleared": cache.clear()}
+
+
+# ----- Каталог документов в PostgreSQL -----
+
+_CAT_JOB: dict = {"running": False, "ok": None, "processed": 0, "total": 0,
+                  "errors": 0, "log": "", "started": None, "finished": None}
+_CAT_TEXT_CAP = 500_000   # макс. символов текста на файл в каталоге
+
+
+def _catalog_pg_active() -> bool:
+    """Каталог сейчас читается из PostgreSQL (настройка включена И активна PG)."""
+    return (settings.get("CATALOG_SOURCE") == "postgresql"
+            and db._dialect() == "postgresql")
+
+
+def catalog_status() -> dict:
+    active_pg = db._dialect() == "postgresql"
+    src = settings.get("CATALOG_SOURCE") or "filesystem"
+    meta = db.catalog_meta() if active_pg else {"count": 0, "total_size": 0,
+                                                "updated": None, "by_ext": {}}
+    job = dict(_CAT_JOB)
+    if job["started"] and job["running"]:
+        job["elapsed"] = round(time.time() - job["started"], 1)
+    return {"pg_active": active_pg,
+            "source": src if active_pg else "filesystem",
+            "pg": meta, "job": job,
+            "can_use_pg": active_pg and meta.get("count", 0) > 0}
+
+
+def catalog_load() -> dict:
+    """Загрузить каталог документов (метаданные + извлечённый текст) из DOCS_DIR в
+    таблицу doc_catalog активной PostgreSQL. Фоновая задача с прогрессом."""
+    if db._dialect() != "postgresql":
+        return {"ok": False, "msg": "Активная БД — не PostgreSQL. Сначала мигрируйте "
+                                    "на PostgreSQL в блоке «База данных и кэш»."}
+    t = db.test_connection("postgresql")
+    if not t.get("ok"):
+        return {"ok": False, "msg": "PostgreSQL недоступна: " + t.get("msg", "")}
+    if _CAT_JOB["running"]:
+        return {"ok": False, "msg": "загрузка каталога уже идёт"}
+    docs = Path(settings.get("DOCS_DIR")).expanduser()
+    if not docs.exists():
+        return {"ok": False, "msg": f"папка документов не найдена: {docs}"}
+
+    def run():
+        import loaders
+        _CAT_JOB.update(running=True, ok=None, processed=0, total=0, errors=0,
+                        log="сканирование папки…", started=time.time(), finished=None)
+        try:
+            paths = [p for p in sorted(docs.rglob("*"))
+                     if p.is_file() and p.suffix.lower() in _SUPPORTED]
+            _CAT_JOB["total"] = len(paths)
+            for i, p in enumerate(paths, 1):
+                rel = str(p.relative_to(docs))
+                ext = p.suffix.lower().lstrip(".")
+                try:
+                    sz = p.stat().st_size
+                    mt = int(p.stat().st_mtime)
+                except Exception:
+                    sz, mt = 0, 0
+                parts, total = [], 0
+                try:
+                    for chunk in loaders.load_file(p):
+                        tx = (chunk.get("text") or "").strip()
+                        if not tx:
+                            continue
+                        parts.append(tx)
+                        total += len(tx) + 2
+                        if total >= _CAT_TEXT_CAP:
+                            break
+                except Exception as e:
+                    _CAT_JOB["errors"] += 1
+                    print(f"[catalog] {rel}: {e}")
+                txt = "\n\n".join(parts)[:_CAT_TEXT_CAP]
+                try:
+                    db.catalog_upsert(rel, ext, sz, mt, len(txt),
+                                      _file_method(p.suffix.lower()), txt)
+                except Exception as e:
+                    _CAT_JOB["errors"] += 1
+                    print(f"[catalog] upsert {rel}: {e}")
+                _CAT_JOB["processed"] = i
+                if i % 25 == 0 or i == len(paths):
+                    _CAT_JOB["log"] = (f"загружено {i} из {len(paths)} "
+                                       f"(ошибок: {_CAT_JOB['errors']})")
+            _CAT_JOB["ok"] = True
+            _CAT_JOB["log"] = (f"готово: загружено {_CAT_JOB['processed']} файлов, "
+                               f"ошибок {_CAT_JOB['errors']}. Теперь доступна кнопка "
+                               "«Перейти на работу с каталогом в PostgreSQL».")
+        except Exception as e:
+            _CAT_JOB["ok"] = False
+            _CAT_JOB["log"] = f"ОШИБКА: {e}"
+        _CAT_JOB["running"] = False
+        _CAT_JOB["finished"] = time.time()
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": "загрузка каталога в PostgreSQL запущена"}
+
+
+def catalog_use(source: str) -> dict:
+    """Переключить источник каталога: postgresql | filesystem."""
+    source = "postgresql" if source == "postgresql" else "filesystem"
+    if source == "postgresql":
+        if db._dialect() != "postgresql":
+            return {"ok": False, "msg": "Активная БД — не PostgreSQL"}
+        if db.catalog_count() <= 0:
+            return {"ok": False, "msg": "Каталог в PostgreSQL пуст — сначала загрузите его"}
+    settings.update({"CATALOG_SOURCE": source})
+    return {"ok": True, "source": source,
+            "msg": ("Каталог документов теперь читается из PostgreSQL"
+                    if source == "postgresql"
+                    else "Каталог документов снова читается из папки (файловая система)")}
 
 
 def _update_env(path: Path, kv: dict) -> None:

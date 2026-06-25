@@ -786,6 +786,8 @@
         </div>
       </div>
 
+      <div id="db_catalog" style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px"></div>
+
       <pre id="dblog" style="margin-top:12px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;display:none"></pre>
       <div class="note" style="margin-top:8px">Для MySQL нужен пакет <code>PyMySQL</code>, для PostgreSQL — <code>psycopg2</code>, для Redis — <code>redis</code> (входят в зависимости; при ручной установке поставьте их через «Переустановить окружение» или pip). Базу данных (например <code>rag</code>) создайте на сервере заранее — таблицы приложение создаст само.</div>
     </div>
@@ -1278,7 +1280,7 @@ async function loadFiles(){
     ['🎤 Транскрибировано',nz(r.transcribed_count)],['🔍 Распознано',nz(r.recognized_count)],
     ['С ошибками',r.checked?(r.error_count||0):'—'],
     ['Общее время обработки',fmtMs(r.total_proc_ms)],
-    ['Объём',fcSize(r.total_size)]])+'<div class="note" style="margin-top:8px">По типам: '+byext+'</div>'+lrNote
+    ['Объём',fcSize(r.total_size)]])+'<div class="note" style="margin-top:8px">Источник каталога: <b>'+(r.source==='postgresql'?'PostgreSQL · doc_catalog':'папка документов')+'</b> · По типам: '+byext+'</div>'+lrNote
     +(r.checked?'':'<div class="note" style="margin-top:6px;color:#f59e0b">Чтобы увидеть файлы с ошибками, запустите «Проверить каталог с данными» выше.</div>')
     +(r.err_truncated?'<div class="note" style="margin-top:4px">Ошибок очень много — показаны первые из проверки; см. блок «Проверка каталога».</div>':'');
   const methChip=m=>({transcribed:'<span class="tag" title="Транскрибация (Whisper)">🎤 транскр.</span>',
@@ -1635,7 +1637,50 @@ async function loadDbCache(){
   const j=r.job||{};
   if(j.running) dbLog((j.label||'операция')+': идёт… '+(j.elapsed||0)+' c');
   else if(j.finished&&j.log) dbLog((j.ok?'✅ ':'❌ ')+(j.label||'')+'\n'+j.log);
+  loadCatalogStatus();
 }
+async function loadCatalogStatus(){
+  const el=$('#db_catalog'); if(!el) return;
+  let r; try{ r=await adminGet('/api/admin/catalog/status'); }catch(e){ el.innerHTML=''; return; }
+  if(!r||!r.pg_active){
+    el.innerHTML='<b style="font-size:13px">Каталог данных в PostgreSQL</b>'+
+      '<div class="note" style="margin-top:4px">Доступно, когда активна PostgreSQL. Сейчас активная БД другая — мигрируйте на PostgreSQL, затем сюда добавится загрузка каталога.</div>';
+    return;
+  }
+  const pg=r.pg||{}, job=r.job||{}, src=r.source;
+  let html='<b style="font-size:13px">Каталог данных в PostgreSQL</b>';
+  html+='<div class="note" style="margin:4px 0 8px">Текущий источник каталога: <b style="color:#60a5fa">'+
+    (src==='postgresql'?'PostgreSQL (doc_catalog)':'папка документов (файловая система)')+'</b>. '+
+    'В PostgreSQL: файлов '+(pg.count||0)+', объём '+gb(pg.total_size||0)+
+    (pg.updated?', обновлён '+fmtTime(pg.updated):'')+'.</div>';
+  if(job.running){
+    const pct=job.total?Math.round(job.processed/job.total*100):0;
+    html+='<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'+
+      '<progress value="'+(job.processed||0)+'" max="'+(job.total||1)+'" style="width:260px"></progress>'+
+      '<span class="note">загрузка: '+(job.processed||0)+' / '+(job.total||0)+' ('+pct+'%), ошибок '+(job.errors||0)+'</span></div>';
+  }
+  html+='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'+
+    '<button class="act" '+(job.running?'disabled':'')+' onclick="catalogLoad()">⬆️ Загрузить каталог данных в PostgreSQL</button>'+
+    '<button class="act" '+(r.can_use_pg&&src!=='postgresql'?'':'disabled')+' onclick="catalogUse(\'postgresql\')">➡️ Перейти на работу с каталогом данных в PostgreSQL</button>'+
+    '<button class="act ghost" '+(src==='postgresql'?'':'disabled')+' onclick="catalogUse(\'filesystem\')">↩︎ Вернуться на работу с каталогом данных</button>'+
+    '<span id="catmsg" class="note"></span></div>';
+  html+='<div class="note" style="margin-top:6px">Загрузка переносит список документов из <code>DOCS_DIR</code> и их извлечённый текст в таблицу <code>doc_catalog</code>. После переключения «Каталог документов» (раздел «Система») и просмотр текста файлов читаются из PostgreSQL. Поиск/ответы по-прежнему используют Qdrant.</div>';
+  el.innerHTML=html;
+}
+async function catalogLoad(){
+  if(!confirm('Загрузить каталог документов (метаданные и текст) в PostgreSQL? Это может занять время на большом каталоге.'))return;
+  const r=await adminPost('/api/admin/catalog/load');
+  const m=$('#catmsg'); if(m){ m.textContent=r.msg||(r.ok?'запущено':'ошибка'); m.className=r.ok!==false?'saved':'note'; }
+  catPoll();
+}
+async function catalogUse(source){
+  const r=await adminPost('/api/admin/catalog/use',{source});
+  const m=$('#catmsg'); if(m){ m.textContent=r.msg||(r.ok?'ок':'ошибка'); m.className=r.ok!==false?'saved':'note'; }
+  loadCatalogStatus();
+}
+let catPollT=null;
+function catPoll(){ clearInterval(catPollT); catPollT=setInterval(loadCatalogStatus,2000);
+  setTimeout(()=>clearInterval(catPollT),600000); }
 let dbPollT=null;
 function dbPoll(){ clearInterval(dbPollT); dbPollT=setInterval(loadDbCache,2500);
   setTimeout(()=>clearInterval(dbPollT),180000); }

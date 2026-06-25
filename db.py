@@ -214,6 +214,10 @@ def _ddl(d: str) -> list[str]:
                 ) CHARACTER SET utf8mb4""",
             """CREATE TABLE IF NOT EXISTS kv_store(
                 k VARCHAR(190) PRIMARY KEY, v LONGTEXT) CHARACTER SET utf8mb4""",
+            """CREATE TABLE IF NOT EXISTS doc_catalog(
+                rel_path VARCHAR(700) PRIMARY KEY, ext VARCHAR(32), size BIGINT,
+                mtime BIGINT, n_chars INT, method VARCHAR(32), txt LONGTEXT,
+                updated DOUBLE) CHARACTER SET utf8mb4""",
         ]
     if d == "postgresql":
         return [
@@ -233,6 +237,9 @@ def _ddl(d: str) -> list[str]:
                 question TEXT, answer TEXT, n_hits INTEGER, top_score DOUBLE PRECISION,
                 latency_ms INTEGER, answer_chars INTEGER, answered INTEGER, sources TEXT)""",
             """CREATE TABLE IF NOT EXISTS kv_store(k TEXT PRIMARY KEY, v TEXT)""",
+            """CREATE TABLE IF NOT EXISTS doc_catalog(
+                rel_path TEXT PRIMARY KEY, ext TEXT, size BIGINT, mtime BIGINT,
+                n_chars INTEGER, method TEXT, txt TEXT, updated DOUBLE PRECISION)""",
         ]
     # sqlite (по умолчанию)
     return [
@@ -252,6 +259,9 @@ def _ddl(d: str) -> list[str]:
             question TEXT, answer TEXT, n_hits INTEGER, top_score REAL,
             latency_ms INTEGER, answer_chars INTEGER, answered INTEGER, sources TEXT)""",
         """CREATE TABLE IF NOT EXISTS kv_store(k TEXT PRIMARY KEY, v TEXT)""",
+        """CREATE TABLE IF NOT EXISTS doc_catalog(
+            rel_path TEXT PRIMARY KEY, ext TEXT, size INTEGER, mtime INTEGER,
+            n_chars INTEGER, method TEXT, txt TEXT, updated REAL)""",
     ]
 
 
@@ -797,7 +807,7 @@ def _backend_detail(dialect: str) -> dict:
                 info["size_mb"] = _f(_rv(c.fetchone(), "m"))
             except Exception:
                 pass
-        for t in ("requests", "tg_requests", "tg_users", "kv_store"):
+        for t in ("requests", "tg_requests", "tg_users", "kv_store", "doc_catalog"):
             try:
                 c.execute(f"SELECT COUNT(*) n FROM {t}")
                 info["counts"][t] = _rv(c.fetchone(), "n")
@@ -843,3 +853,88 @@ def db_status() -> dict:
                 info["error"] = str(e)[:200]
         out["backends"][d] = info
     return out
+
+
+# ===================== Каталог документов в БД (doc_catalog) =====================
+
+def catalog_upsert(rel_path: str, ext: str, size: int, mtime: int,
+                   n_chars: int, method: str, txt: str) -> None:
+    """Вставить/обновить одну запись каталога в активной БД."""
+    now = datetime.now().timestamp()
+    params = (rel_path, ext, int(size or 0), int(mtime or 0), int(n_chars or 0),
+              method or "", txt or "", now)
+    with _LOCK, _cursor() as (d, conn, cur):
+        if d == "mysql":
+            cur.execute(
+                "INSERT INTO doc_catalog(rel_path,ext,size,mtime,n_chars,method,txt,updated)"
+                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                "ext=VALUES(ext),size=VALUES(size),mtime=VALUES(mtime),"
+                "n_chars=VALUES(n_chars),method=VALUES(method),txt=VALUES(txt),"
+                "updated=VALUES(updated)", params)
+        elif d == "postgresql":
+            cur.execute(
+                "INSERT INTO doc_catalog(rel_path,ext,size,mtime,n_chars,method,txt,updated)"
+                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(rel_path) DO UPDATE SET "
+                "ext=excluded.ext,size=excluded.size,mtime=excluded.mtime,"
+                "n_chars=excluded.n_chars,method=excluded.method,txt=excluded.txt,"
+                "updated=excluded.updated", params)
+        else:
+            cur.execute(
+                "INSERT INTO doc_catalog(rel_path,ext,size,mtime,n_chars,method,txt,updated)"
+                " VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(rel_path) DO UPDATE SET "
+                "ext=excluded.ext,size=excluded.size,mtime=excluded.mtime,"
+                "n_chars=excluded.n_chars,method=excluded.method,txt=excluded.txt,"
+                "updated=excluded.updated", params)
+        if d == "sqlite":
+            conn.commit()
+
+
+def catalog_clear() -> int:
+    try:
+        with _LOCK:
+            return _exec("DELETE FROM doc_catalog")
+    except Exception as e:
+        print(f"[db] catalog_clear: {e}")
+        return 0
+
+
+def catalog_count() -> int:
+    try:
+        return _one("SELECT COUNT(*) n FROM doc_catalog")["n"]
+    except Exception:
+        return 0
+
+
+def catalog_meta() -> dict:
+    try:
+        m = _one("SELECT COUNT(*) n, COALESCE(SUM(size),0) sz, MAX(updated) up "
+                 "FROM doc_catalog")
+        by = _all("SELECT ext, COUNT(*) n FROM doc_catalog GROUP BY ext ORDER BY n DESC")
+        return {"count": m["n"], "total_size": int(_f(m["sz"])),
+                "updated": _fn(m["up"]),
+                "by_ext": {r["ext"]: r["n"] for r in by}}
+    except Exception:
+        return {"count": 0, "total_size": 0, "updated": None, "by_ext": {}}
+
+
+def catalog_rows() -> list[dict]:
+    """Метаданные всех записей каталога (без текста) — для списка."""
+    try:
+        return _all("SELECT rel_path, ext, size, mtime, n_chars, method "
+                    "FROM doc_catalog")
+    except Exception:
+        return []
+
+
+def catalog_text(rel_path: str, max_chars: int = 20000) -> dict | None:
+    try:
+        r = _one("SELECT txt, method, n_chars FROM doc_catalog WHERE rel_path=?",
+                 (rel_path,))
+    except Exception:
+        r = None
+    if not r:
+        return None
+    t = r.get("txt") or ""
+    return {"text": t[:max_chars], "method": r.get("method"),
+            "n_chars": r.get("n_chars") if r.get("n_chars") is not None else len(t),
+            "truncated": len(t) > max_chars}
