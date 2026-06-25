@@ -266,8 +266,11 @@ def _rerank_keep(question: str, cands: list, relaxed: bool = True) -> list:
     for c, s in zip(cands, scores):
         c["score"] = float(s)
     cands.sort(key=lambda c: c["score"], reverse=True)
-    thr = 0.15 if relaxed else settings.get("MIN_SCORE")
-    return [c for c in cands if c["score"] >= thr][:settings.get("TOP_K_RERANK")]
+    # в режиме фолбэка порог не применяем: возвращаем лучшие фрагменты найденных
+    # файлов и отдаём их LLM (он сам ответит по контексту или честно скажет «нет»).
+    if relaxed:
+        return cands[:settings.get("TOP_K_RERANK")]
+    return [c for c in cands if c["score"] >= settings.get("MIN_SCORE")][:settings.get("TOP_K_RERANK")]
 
 
 def lexical_search(question: str) -> list:
@@ -299,7 +302,8 @@ def deep_search(question: str):
     sources = _all_sources()
     if not sources:
         return [], []
-    sources = sources[:300]
+    # ограничиваем список имён для LLM — иначе на больших каталогах вызов очень долгий
+    sources = sources[:120]
     listing = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sources))
     sys_p = ("Помоги найти документы. Ниже нумерованный список файлов. Назови номера "
              "не более 3 файлов, которые вероятнее всего содержат ответ на вопрос. "
