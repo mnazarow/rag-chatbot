@@ -47,7 +47,7 @@ services:
 
   app:
     build:
-      context: ../..                               # корень репозитория
+      context: ..                                  # корень репозитория (docker_variant лежит в нём)
       dockerfile: windows_variant/docker/Dockerfile
     container_name: rag_app
     restart: unless-stopped
