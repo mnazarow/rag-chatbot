@@ -8,14 +8,14 @@
 #         -AdminToken "пароль" -Model "qwen3.6:35b-a3b-q4_K_M"
 #  Параметры:
 #     -AdminToken  пароль админ-панели (рекомендуется)
-#     -DocsDir     папка с документами (по умолчанию C:\rag\db)
+#     -DocsDir     папка с документами (по умолчанию C:\db)
 #     -Model       модель Ollama (по умолчанию qwen3.6:35b-a3b-q4_K_M)
 #     -Cuda        ставить torch под CUDA (нужна видеокарта NVIDIA + драйвер)
 # =============================================================================
 #Requires -RunAsAdministrator
 param(
   [string]$AdminToken = "",
-  [string]$DocsDir    = "C:\rag\db",
+  [string]$DocsDir    = "C:\db",
   # Модель генерации Ollama. Выбор по памяти — см. docs/MODELS.md:
   #   8–16 ГБ: qwen3:8b, gemma3:12b ; 24 ГБ: qwen2.5:32b, qwen3.6:35b-a3b ; CPU: qwen3:4b, llama3.2:3b
   [string]$Model      = "qwen3.6:35b-a3b-q4_K_M",

@@ -238,7 +238,7 @@ powershell -ExecutionPolicy Bypass -File windows_variant\deploy_windows.ps1 `
 ```powershell
 # из папки windows_variant\docker
 powershell -ExecutionPolicy Bypass -File start_windows_docker.ps1 `
-    -DocsDir "C:\rag\BD" -LlmModel "qwen2.5:7b-instruct-q4_K_M"
+    -DocsDir "C:\db" -LlmModel "qwen2.5:7b-instruct-q4_K_M"
 ```
 
 Скрипт проверит Docker, скачает модель в Ollama, подготовит `.env`/состояние и

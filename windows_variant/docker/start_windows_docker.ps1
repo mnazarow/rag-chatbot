@@ -5,7 +5,7 @@
 #       -DocsDir "C:\path\to\BD" -AdminToken "ваш-пароль"
 # Требуется: Docker Desktop и (для генерации) Ollama, установленные на Windows.
 param(
-    [string]$DocsDir = "",                              # папка с документами (Windows-путь)
+    [string]$DocsDir = "C:\db",                         # папка с документами (по умолчанию C:\db)
     [string]$LlmModel = "qwen3.6:35b-a3b-q4_K_M",   # модель Ollama для генерации
     [string]$AdminToken = ""                            # пароль админ-панели (пусто = не менять)
 )
@@ -124,10 +124,9 @@ if ($AdminToken -ne "") {
 }
 
 # ----- 4. Папка с документами -----
-if (-not $DocsDir) {
-    $DocsDir = Read-Host "Укажите полный путь к папке с документами (например C:\rag\BD)"
-}
-if (-not (Test-Path $DocsDir)) { throw "Папка не найдена: $DocsDir" }
+if (-not $DocsDir) { $DocsDir = "C:\db" }            # каталог документов по умолчанию
+New-Item -ItemType Directory -Force -Path $DocsDir | Out-Null   # создаём, если ещё нет
+Log "Папка документов: $DocsDir (положите туда файлы и запустите переиндексацию)."
 "DOCS_DIR_HOST=$DocsDir" | Set-Content ".env"   # compose читает .env для подстановки пути
 
 # ----- 5. Файлы состояния (настройки + логи) -----

@@ -1,11 +1,11 @@
 # Автоматическая установка RAG в Docker с Redis (Windows) — одной командой.
 # Проще всего: двойной клик по start.cmd (он чинит кодировку и зовёт этот скрипт).
 # Либо напрямую:
-#   powershell -ExecutionPolicy Bypass -File install.ps1 [-DocsDir "C:\rag\BD"] [-AdminToken "пароль"]
+#   powershell -ExecutionPolicy Bypass -File install.ps1 [-DocsDir "C:\db"] [-AdminToken "пароль"]
 # Скрипт сам ставит Docker Desktop и Ollama (winget), скачивает модель, поднимает
 # контейнеры qdrant + redis + app (Redis включён) и печатает чеклист.
 param(
-    [string]$DocsDir = "",                            # папка с документами (по умолчанию .\docs)
+    [string]$DocsDir = "C:\db",                       # папка с документами (по умолчанию C:\db)
     [string]$LlmModel = "qwen3.6:35b-a3b-q4_K_M",     # модель Ollama для генерации
     [string]$AdminToken = ""                          # пароль админ-панели (пусто = не менять)
 )
@@ -101,13 +101,10 @@ if ($AdminToken -ne "") {
     Log "Пароль админ-панели задан."
 }
 
-# ----- 4. Папка с документами (по умолчанию .\docs — без вопросов) -----
-if (-not $DocsDir) {
-    $DocsDir = Join-Path $Here "docs"
-    New-Item -ItemType Directory -Force -Path $DocsDir | Out-Null
-    Log "Папка документов по умолчанию: $DocsDir (положите туда файлы и переиндексируйте)."
-}
-if (-not (Test-Path $DocsDir)) { throw "Папка не найдена: $DocsDir" }
+# ----- 4. Папка с документами (по умолчанию C:\db — без вопросов) -----
+if (-not $DocsDir) { $DocsDir = "C:\db" }
+New-Item -ItemType Directory -Force -Path $DocsDir | Out-Null
+Log "Папка документов: $DocsDir (положите туда файлы и запустите переиндексацию)."
 "DOCS_DIR_HOST=$DocsDir" | Set-Content ".env"
 
 # ----- 5. Файлы состояния -----

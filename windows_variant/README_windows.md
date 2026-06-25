@@ -33,7 +33,7 @@ powershell -ExecutionPolicy Bypass -File windows_variant\setup_windows.ps1 `
 
 Скрипт: ставит Python/Git/Ollama (winget), качает модель, поднимает Qdrant в
 Docker (если установлен), создаёт `.venv` и зависимости, прописывает `.env`
-(папка документов по умолчанию `C:\rag\db`, бэкенд Ollama, Whisper = faster) и
+(папка документов по умолчанию `C:\db`, бэкенд Ollama, Whisper = faster) и
 регистрирует автозапуск (Scheduled Task `RagApi`). Откройте `http://localhost:8000`.
 
 С GPU NVIDIA добавьте `-Cuda` (поставит torch под CUDA `cu124`).
@@ -96,12 +96,12 @@ powershell -File windows_variant\manage_windows.ps1 start|stop|restart|logs
 
 ```bat
 start.cmd
-start.cmd -DocsDir "C:\rag\BD" -AdminToken "ваш-пароль"
+start.cmd -DocsDir "C:\db" -AdminToken "ваш-пароль"
 ```
 
 `start.cmd` сам приводит `.ps1` к UTF-8 с BOM (чтобы Windows PowerShell 5.1 не
-ломался на кириллице) и запускает установку. Если путь к документам не задан —
-спросит его в консоли. Дальше всё делает автоматически: проверяет Docker, качает
+ломался на кириллице) и запускает установку. Папка документов по умолчанию —
+`C:\db` (создаётся автоматически). Дальше всё делает автоматически: проверяет Docker, качает
 модель в Ollama, создаёт `.env.docker`/`.env`, готовит тома и выполняет
 `docker compose up -d --build`. По завершении откройте `http://localhost:8000`.
 
@@ -109,7 +109,7 @@ start.cmd -DocsDir "C:\rag\BD" -AdminToken "ваш-пароль"
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File start_windows_docker.ps1 `
-    -DocsDir "C:\rag\BD" -AdminToken "ваш-пароль"
+    -DocsDir "C:\db" -AdminToken "ваш-пароль"
 ```
 
 ### Запуск вручную
@@ -118,7 +118,7 @@ powershell -ExecutionPolicy Bypass -File start_windows_docker.ps1 `
 cd windows_variant\docker
 copy .env.docker.example .env.docker         # при желании отредактируйте модель и т.п.
 # путь к папке с документами (его читает compose для подстановки):
-"DOCS_DIR_HOST=C:\rag\BD" | Set-Content .env
+"DOCS_DIR_HOST=C:\db" | Set-Content .env
 docker compose -f docker-compose.windows.yml up -d --build
 ```
 

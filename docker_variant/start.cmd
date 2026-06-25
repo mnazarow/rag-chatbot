@@ -3,7 +3,7 @@ rem ============================================================================
 rem  RAG in Docker with Redis - one-click AUTOMATIC installer (Windows).
 rem  Double-click this file. It installs Docker Desktop and Ollama if missing,
 rem  pulls the model, builds and starts qdrant + redis + app, and opens the UI.
-rem  Optional: start.cmd -DocsDir "C:\rag\BD" -AdminToken "your-password"
+rem  Optional: start.cmd -DocsDir "C:\db" -AdminToken "your-password"  (default: C:\db)
 rem  Messages stay ASCII here; the PowerShell installer prints Russian.
 rem ============================================================================
 chcp 65001 >nul
