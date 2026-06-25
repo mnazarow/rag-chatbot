@@ -188,7 +188,10 @@ def _search_raw(question: str, filters: dict | None = None,
     top = [c for c in cands if c["score"] >= min_score][:top_k]
     rec("rerank", t, {"model": settings.get("RERANK_MODEL"), "top_k": top_k,
                       "min_score": min_score, "kept": len(top),
-                      "candidates": len(cands)})
+                      "candidates": len(cands),
+                      "top": [{"source": c.get("source", ""),
+                               "score": round(c.get("score", 0), 3)}
+                              for c in cands[:5]]})
     return top
 
 

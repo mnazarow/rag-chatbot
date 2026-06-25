@@ -2563,7 +2563,8 @@ function stageParams(key,info){
   else if(key==='filter'){ p.push('тип: '+esc(info.type||'нет')); if(info.filters&&Object.keys(info.filters).length)p.push(esc(JSON.stringify(info.filters))); }
   else if(key==='dense'){ p.push('top-k '+nz(info.top_k)); p.push('кандидатов '+nz(info.candidates)); if(info.fallback)p.push('фолбэк без фильтра'); }
   else if(key==='bm25'){ p.push('кандидатов '+nz(info.candidates)); }
-  else if(key==='rerank'){ if(info.model)p.push(esc(info.model)); if(info.min_score!=null)p.push('порог '+info.min_score); p.push('оставлено '+nz(info.kept)+'/'+nz(info.candidates)); }
+  else if(key==='rerank'){ if(info.model)p.push(esc(info.model)); if(info.min_score!=null)p.push('порог '+info.min_score); p.push('оставлено '+nz(info.kept)+'/'+nz(info.candidates));
+    if(info.kept===0 && info.top && info.top.length) p.push('ближайшие: '+info.top.slice(0,3).map(t=>esc(short(t.source))+' '+t.score).join('; ')); }
   else if(key==='attach'){ if(info.file)p.push(esc(info.file)); p.push('фрагментов '+nz(info.fragments)); }
   else if(key==='context'){ p.push('фрагментов '+nz(info.chunks)); if(info.chars!=null)p.push(info.chars+' симв.'); }
   else if(key==='generate'){ if(info.model)p.push(esc(info.model)); if(info.backend)p.push(esc(info.backend)); if(info.temperature!=null)p.push('t='+info.temperature); if(info.chars!=null)p.push(info.chars+' симв.'); }
