@@ -19,6 +19,8 @@ import tempfile
 import time
 import uuid
 import warnings
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # до импорта моделей: отключаем параллелизм HF-токенайзеров (fork при распаковке
@@ -212,139 +214,234 @@ def main():
     errors = []  # (файл, причина)
     tmpdir = tempfile.mkdtemp(prefix="rag_pg_") if from_pg else None
     total_work = len(work)
-    for idx, item in enumerate(work, 1):
+
+    # число потоков извлечения: 0 = авто (по ядрам, ≤8). Таймаут на файл (SIGALRM)
+    # работает только однопоточно — при нём принудительно 1 поток.
+    workers = int(settings.get("INGEST_WORKERS") or 0)
+    if workers <= 0:
+        workers = min(8, os.cpu_count() or 4)
+    if use_alarm:
+        workers = 1
+    print(f"Потоков извлечения: {workers}")
+
+    # --- эмбеддинг + запись в Qdrant (всегда в основном потоке) ---
+    def _embed_upsert(source, fhash, points, ftype, meta_path, t_file):
+        nonlocal n_new, n_chunks, run_proc_ms
+        md = meta.extract(meta_path)
+        if settings.get("LLM_METADATA"):
+            try:
+                e = enrich.extract_structured(points[0]["chunk"])
+                for k in ("product", "topic", "doc_type"):
+                    if e.get(k):
+                        md[k] = e[k]
+                if md.get("doc_category") == "document" and e.get("category"):
+                    md["doc_category"] = e["category"]
+            except Exception as me:
+                print(f"  ~ метаданные LLM пропущены для {source}: {me}")
+        BATCH = 256
+        for i in range(0, len(points), BATCH):
+            batch = points[i:i + BATCH]
+            vectors = embedder.encode(
+                [p["chunk"] for p in batch],
+                normalize_embeddings=True, batch_size=32, show_progress_bar=False,
+            )
+            if len(points) > BATCH:
+                done = min(i + BATCH, len(points))
+                print(f"    {source}: {int(done * 100 / len(points))}% "
+                      f"({done}/{len(points)} чанков)", flush=True)
+            client.upsert(
+                COLLECTION, wait=False,
+                points=[
+                    qm.PointStruct(
+                        id=str(uuid.uuid4()), vector=vec.tolist(),
+                        payload={
+                            "text": p["chunk"], "source": source, "page": p["page"],
+                            "ftype": ftype, "fhash": fhash,
+                            "indexed_at": time.strftime("%Y-%m-%d"),
+                            **({"t_start": p["t_start"], "t_end": p["t_end"]}
+                               if p.get("t_start") is not None else {}),
+                            **md,
+                        },
+                    )
+                    for p, vec in zip(batch, vectors)
+                ],
+            )
+        n_new += 1
+        n_chunks += len(points)
+        proc_ms = int((time.time() - t_file) * 1000)
+        run_proc_ms += proc_ms
+        file_times[source] = {"ms": proc_ms, "chunks": len(points), "ts": time.time()}
+        if from_pg:
+            try:
+                full = "\n\n".join(p["chunk"] for p in points)[:500_000]
+                db.catalog_update_text(source, full)
+            except Exception:
+                pass
+
+    # --- извлечение одного файла (в рабочем потоке; без записей в Qdrant) ---
+    def _parse(item):
         tmp_path = None
         source = ""
-        t_file = time.time()
         try:
             if from_pg:
-                # документ берётся из PostgreSQL: пишем содержимое во временный файл
-                # (с исходным именем — чтобы загрузчик выбрал парсер по расширению)
                 source = item["rel_path"]
                 fhash = item.get("sha256") or ""
                 if not args.reset and fhash and already_indexed(client, source, fhash):
-                    continue
+                    return {"status": "skip"}
                 base = Path(item.get("fname") or Path(source).name).name or "file"
-                tmp_path = Path(tmpdir) / base
-                # потоковая выгрузка содержимого (bytea или Large Object) во временный файл
+                tmp_path = Path(tmpdir) / f"{uuid.uuid4().hex}_{base}"
                 if not db.catalog_export_to(source, tmp_path):
-                    n_skip += 1
-                    continue
+                    return {"status": "empty", "tmp": tmp_path}
                 path = tmp_path
-                meta_path = Path(source)   # метаданные — по исходному пути (с папками)
+                meta_path = Path(source)
             else:
                 path = item
                 source = str(path.relative_to(DOCS_DIR))
                 fhash = file_hash(path)
                 if not args.reset and already_indexed(client, source, fhash):
-                    continue
+                    return {"status": "skip"}
                 meta_path = path
-            delete_old_versions(client, source)  # файл новый/изменился — чистим старое
-
-            opct = int(idx * 100 / total_work) if total_work else 100
-            print(f"[{idx}/{total_work}] {opct}% индексирую: {source}", flush=True)
-
-            if use_alarm:
-                signal.alarm(file_timeout)
             points = []
             for part in load_file(path):
                 for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
                     points.append({"chunk": chunk, "page": part["page"],
                                    "t_start": part.get("t_start"),
                                    "t_end": part.get("t_end")})
-            if use_alarm:
-                signal.alarm(0)
-
             if not points:
-                n_skip += 1  # пустой/нечитаемый файл — пропускаем, не ошибка
-                continue
-
-            md = meta.extract(meta_path)  # rule-based метаданные (категория, дата, заголовок)
-            if settings.get("LLM_METADATA"):
-                try:
-                    e = enrich.extract_structured(points[0]["chunk"])
-                    for k in ("product", "topic", "doc_type"):
-                        if e.get(k):
-                            md[k] = e[k]
-                    if md.get("doc_category") == "document" and e.get("category"):
-                        md["doc_category"] = e["category"]
-                except Exception as me:
-                    # обогащение метаданными не критично — продолжаем без него
-                    print(f"  ~ метаданные LLM пропущены для {source}: {me}")
-
-            # пишем пачками — большие файлы не упираются в таймаут и не съедают память
-            BATCH = 256
-            for i in range(0, len(points), BATCH):
-                batch = points[i:i + BATCH]
-                vectors = embedder.encode(
-                    [p["chunk"] for p in batch],
-                    normalize_embeddings=True, batch_size=32, show_progress_bar=False,
-                )
-                # процент по текущему файлу (для крупных файлов из многих чанков)
-                if len(points) > BATCH:
-                    done = min(i + BATCH, len(points))
-                    print(f"    {source}: {int(done * 100 / len(points))}% "
-                          f"({done}/{len(points)} чанков)", flush=True)
-                client.upsert(
-                    COLLECTION,
-                    points=[
-                        qm.PointStruct(
-                            id=str(uuid.uuid4()),
-                            vector=vec.tolist(),
-                            payload={
-                                "text": p["chunk"],
-                                "source": source,
-                                "page": p["page"],
-                                "ftype": path.suffix.lower().lstrip("."),
-                                "fhash": fhash,
-                                "indexed_at": time.strftime("%Y-%m-%d"),
-                                # тайминги для аудио/видео (кадры/фрагменты в выдаче)
-                                **({"t_start": p["t_start"], "t_end": p["t_end"]}
-                                   if p.get("t_start") is not None else {}),
-                                **md,  # doc_category, title, date
-                            },
-                        )
-                        for p, vec in zip(batch, vectors)
-                    ],
-                )
-            n_new += 1
-            n_chunks += len(points)
-            proc_ms = int((time.time() - t_file) * 1000)
-            run_proc_ms += proc_ms
-            file_times[source] = {"ms": proc_ms, "chunks": len(points),
-                                  "ts": time.time()}
-            # индексация из БД: сохраняем извлечённый текст обратно в каталог, чтобы
-            # предпросмотр работал без папки с файлами
-            if from_pg:
-                try:
-                    full = "\n\n".join(p["chunk"] for p in points)[:500_000]
-                    db.catalog_update_text(source, full)
-                except Exception:
-                    pass
-        except _Timeout:
-            if use_alarm:
-                signal.alarm(0)
-            n_timeout += 1
-            errors.append((source, f"превышен лимит {file_timeout} c — пропущен"))
-            print(f"  ⏱ таймаут {file_timeout} c, пропуск: {source}")
-            continue
-        except KeyboardInterrupt:
-            if use_alarm:
-                signal.alarm(0)
-            raise
+                return {"status": "empty", "tmp": tmp_path}
+            return {"status": "ok", "source": source, "fhash": fhash, "points": points,
+                    "ftype": path.suffix.lower().lstrip("."), "meta_path": meta_path,
+                    "tmp": tmp_path, "t0": time.time()}
         except Exception as e:
-            if use_alarm:
-                signal.alarm(0)
-            # один битый файл не должен ронять всю индексацию
-            errors.append((source, str(e)[:200]))
-            print(f"  ! ошибка обработки {source}: {e}")
-            continue
+            return {"status": "error", "source": source, "msg": str(e)[:200],
+                    "tmp": tmp_path}
+
+    # --- обработка результата извлечения (основной поток) ---
+    def _consume(res, idx):
+        nonlocal n_skip
+        tmp = res.get("tmp")
+        try:
+            st = res.get("status")
+            if st == "skip":
+                return
+            if st == "empty":
+                n_skip += 1
+                return
+            if st == "error":
+                errors.append((res.get("source", ""), res.get("msg", "")))
+                print(f"  ! ошибка обработки {res.get('source','')}: {res.get('msg','')}")
+                return
+            source = res["source"]
+            print(f"[{idx}/{total_work}] {int(idx * 100 / total_work)}% "
+                  f"индексирую: {source}", flush=True)
+            delete_old_versions(client, source)
+            _embed_upsert(source, res["fhash"], res["points"], res["ftype"],
+                          res["meta_path"], res.get("t0", time.time()))
         finally:
-            if tmp_path is not None:
+            if tmp is not None:
                 try:
-                    tmp_path.unlink()
+                    tmp.unlink()
                 except Exception:
                     pass
+
+    if workers <= 1:
+        # последовательный путь (поддерживает лимит времени на файл через SIGALRM)
+        for idx, item in enumerate(work, 1):
+            t_file = time.time()
+            tmp_path = None
+            source = ""
+            try:
+                if from_pg:
+                    source = item["rel_path"]
+                    fhash = item.get("sha256") or ""
+                    if not args.reset and fhash and already_indexed(client, source, fhash):
+                        continue
+                    base = Path(item.get("fname") or Path(source).name).name or "file"
+                    tmp_path = Path(tmpdir) / base
+                    if not db.catalog_export_to(source, tmp_path):
+                        n_skip += 1
+                        continue
+                    path = tmp_path
+                    meta_path = Path(source)
+                else:
+                    path = item
+                    source = str(path.relative_to(DOCS_DIR))
+                    fhash = file_hash(path)
+                    if not args.reset and already_indexed(client, source, fhash):
+                        continue
+                    meta_path = path
+                delete_old_versions(client, source)
+                print(f"[{idx}/{total_work}] {int(idx * 100 / total_work)}% "
+                      f"индексирую: {source}", flush=True)
+                if use_alarm:
+                    signal.alarm(file_timeout)
+                points = []
+                for part in load_file(path):
+                    for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
+                        points.append({"chunk": chunk, "page": part["page"],
+                                       "t_start": part.get("t_start"),
+                                       "t_end": part.get("t_end")})
+                if use_alarm:
+                    signal.alarm(0)
+                if not points:
+                    n_skip += 1
+                    continue
+                _embed_upsert(source, fhash, points, path.suffix.lower().lstrip("."),
+                              meta_path, t_file)
+            except _Timeout:
+                if use_alarm:
+                    signal.alarm(0)
+                n_timeout += 1
+                errors.append((source, f"превышен лимит {file_timeout} c — пропущен"))
+                print(f"  ⏱ таймаут {file_timeout} c, пропуск: {source}")
+                continue
+            except KeyboardInterrupt:
+                if use_alarm:
+                    signal.alarm(0)
+                raise
+            except Exception as e:
+                if use_alarm:
+                    signal.alarm(0)
+                errors.append((source, str(e)[:200]))
+                print(f"  ! ошибка обработки {source}: {e}")
+                continue
+            finally:
+                if tmp_path is not None:
+                    try:
+                        tmp_path.unlink()
+                    except Exception:
+                        pass
+    else:
+        # параллельный путь: до workers извлечений одновременно, запись — в осн. потоке
+        with ThreadPoolExecutor(max_workers=workers) as exio:
+            work_it = iter(work)
+            pend = deque()
+
+            def _submit():
+                try:
+                    it = next(work_it)
+                except StopIteration:
+                    return False
+                pend.append(exio.submit(_parse, it))
+                return True
+
+            for _ in range(workers * 2):
+                if not _submit():
+                    break
+            idx = 0
+            while pend:
+                res = pend.popleft().result()
+                idx += 1
+                try:
+                    _consume(res, idx)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    src = res.get("source", "") if isinstance(res, dict) else ""
+                    errors.append((src, str(e)[:200]))
+                    print(f"  ! ошибка записи {src}: {e}")
+                _submit()
+
     if tmpdir:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

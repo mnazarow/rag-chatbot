@@ -67,6 +67,10 @@ OCR_RAW = _bool("OCR_RAW", True)              # OCR RAW-фото (CR2/NEF/…)
 PARSE_CAD = _bool("PARSE_CAD", True)          # чертежи DXF/DWG и 3D-CAD (конвертация DWG долгая)
 TRANSCRIBE_AV = _bool("TRANSCRIBE_AV", True)  # транскрибация аудио/видео (Whisper, минуты на файл)
 FILE_PARSE_TIMEOUT = _int("FILE_PARSE_TIMEOUT", 0)  # лимит времени на файл, c (0 = без лимита)
+# Параллельное извлечение файлов при индексации (парсинг/OCR/конвертация в несколько
+# потоков; эмбеддинг и запись в Qdrant — в основном потоке). 0 = авто (по числу ядер).
+# При заданном FILE_PARSE_TIMEOUT принудительно 1 (таймаут работает только однопоточно).
+INGEST_WORKERS = _int("INGEST_WORKERS", 0)
 
 # Телеграм-бот: токен от @BotFather (пусто = бот выключен) и авто-подтверждение
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -79,6 +83,10 @@ TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")
 # --- Парсинг сайтов в базу знаний ---
 # Глубина обхода ссылок (0 = только указанная страница), лимит страниц на сайт,
 # ходить ли только по тому же домену.
+# Фолбэк, когда обычный поиск не нашёл ответа: лексический (полнотекст/имена файлов),
+# затем «глубокий» (LLM выбирает файлы по списку имён). По умолчанию выключен.
+NO_ANSWER_FALLBACK = _bool("NO_ANSWER_FALLBACK", False)
+
 WEB_CRAWL_DEPTH = _int("WEB_CRAWL_DEPTH", 1)
 WEB_MAX_PAGES = _int("WEB_MAX_PAGES", 20)
 WEB_MAX_FILES = _int("WEB_MAX_FILES", 5000)       # лимит скачиваемых файлов на сайт

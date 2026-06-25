@@ -2560,6 +2560,8 @@ const STAGE_META={
   dense:{icon:'🗄',label:'Векторный поиск (Qdrant)'},
   bm25:{icon:'🔤',label:'Лексика BM25'},
   rerank:{icon:'🎯',label:'Реранк (cross-encoder)'},
+  fb_lexical:{icon:'🔎',label:'Доп. поиск (лексический)'},
+  fb_deep:{icon:'🕵️',label:'Глубокий поиск (по каталогу)'},
   attach:{icon:'📎',label:'Разбор документа'},
   context:{icon:'📋',label:'Сборка контекста'},
   generate:{icon:'🧠',label:'Генерация (LLM)'},
@@ -2574,6 +2576,8 @@ function stageParams(key,info){
   else if(key==='rerank'){ if(info.model)p.push(esc(info.model)); if(info.min_score!=null)p.push('порог '+info.min_score); p.push('оставлено '+nz(info.kept)+'/'+nz(info.candidates));
     if(info.kept===0 && info.top && info.top.length) p.push('ближайшие: '+info.top.slice(0,3).map(t=>esc(short(t.source))+' '+t.score).join('; ')); }
   else if(key==='attach'){ if(info.file)p.push(esc(info.file)); p.push('фрагментов '+nz(info.fragments)); }
+  else if(key==='fb_lexical'){ p.push('найдено '+nz(info.found)); }
+  else if(key==='fb_deep'){ p.push('найдено '+nz(info.found)); if(info.files&&info.files.length)p.push('файлы: '+info.files.map(f=>esc(short(f))).join('; ')); }
   else if(key==='context'){ p.push('фрагментов '+nz(info.chunks)); if(info.chars!=null)p.push(info.chars+' симв.'); }
   else if(key==='generate'){ if(info.model)p.push(esc(info.model)); if(info.backend)p.push(esc(info.backend)); if(info.temperature!=null)p.push('t='+info.temperature); if(info.chars!=null)p.push(info.chars+' симв.'); }
   else if(key==='engine'){ if(info.engine)p.push(esc(info.engine)); if(info.model)p.push(esc(info.model)); if(info.mode)p.push('режим '+esc(info.mode)); }

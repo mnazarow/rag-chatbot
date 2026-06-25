@@ -188,6 +188,12 @@ async def chat(req: ChatRequest):
     t_ret = time.time()
     trace = []
     hits = search(req.question, filters=req.filters, trace=trace)
+    # расширенный поиск, если ничего не нашлось (опционально): лексический → глубокий
+    if not hits and settings.get("NO_ANSWER_FALLBACK"):
+        try:
+            hits = retriever.no_answer_fallback(req.question, trace=trace) or []
+        except Exception as e:
+            print(f"  ! фолбэк-поиск не удался: {e}")
     retrieve_ms = int((time.time() - t_ret) * 1000)
     category = (req.filters or {}).get("doc_category") or infer_category(req.question)
 
