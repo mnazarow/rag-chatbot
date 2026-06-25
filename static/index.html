@@ -2428,10 +2428,18 @@ async function ask(){
     history.push({role:'user',content:q}); history.push({role:'assistant',content:ans});
     chatLog.push({role:'assistant',content:ans,sources:curSources});
     addSpeak(bot);                       // кнопка «озвучить» под ответом
+    addRepeat(bot,q);                    // кнопка «повторить запрос»
     if(ttsOn() && ans.trim()) speak(ans); // авто-озвучка, если включена
   }catch(e){ bot._ansEl.textContent='Ошибка: '+e.message;
-    chatLog.push({role:'assistant',content:'Ошибка: '+e.message}); }
+    chatLog.push({role:'assistant',content:'Ошибка: '+e.message}); addRepeat(bot,q); }
   $('#send').disabled=false; $('#q').focus();
+}
+// кнопка «повторить запрос» под ответом — задаёт тот же вопрос заново
+function addRepeat(bot,q){
+  const b=document.createElement('button'); b.className='dirbtn';
+  b.title='Повторить запрос'; b.textContent='🔁';
+  b.onclick=()=>{ if($('#send').disabled) return; $('#q').value=q; ask(); };
+  bot.appendChild(b);
 }
 function add(cls,text){ const d=document.createElement('div'); d.className='msg '+cls;
   const span=document.createElement('span'); span.textContent=text; d.appendChild(span);

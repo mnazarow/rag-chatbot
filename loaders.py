@@ -120,13 +120,33 @@ def _enabled(key: str) -> bool:
         return True
 
 
+def _ocr_pdf_page(page, i):
+    """Распознать «картиночную» страницу PDF (текст нарисован графикой): рендерим
+    страницу в изображение и прогоняем через OCR. Возвращает {'text','page'}."""
+    try:
+        import fitz  # pymupdf
+        from PIL import Image
+        pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))  # ~180 DPI для читабельности
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        for part in _ocr_image(img):
+            if part.get("text", "").strip():
+                yield {"text": part["text"], "page": i}
+    except Exception as e:
+        print(f"  ~ OCR страницы PDF {i} не удался: {e}")
+
+
 def _load_pdf(path: Path):
     import fitz  # pymupdf
     doc = fitz.open(path)
+    # OCR страниц без текстового слоя (сканы/дизайн-страницы) — по флагу OCR_IMAGES
+    ocr_on = _enabled("OCR_IMAGES")
     for i, page in enumerate(doc, 1):
         txt = page.get_text("text")
         if txt.strip():
             yield {"text": txt, "page": i}
+        # мало или нет текста — вероятно, страница нарисована картинкой: распознаём
+        if ocr_on and len(txt.strip()) < 25 and _ocr_available():
+            yield from _ocr_pdf_page(page, i)
 
 
 def _load_docx(path: Path):
