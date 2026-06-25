@@ -25,6 +25,7 @@ import httpx
 import settings
 import db
 import backup
+import fsutil
 
 ROOT = Path(__file__).resolve().parent
 
@@ -133,10 +134,18 @@ def check_data_dir() -> dict:
 
         with open(logfile, "w", buffering=1, errors="ignore") as fp:
             fp.write(f"=== Проверка каталога: {docs} ===\n")
-            # 1) быстрый обход и классификация (без парсинга)
-            for p in docs.rglob("*"):
-                if not p.is_file():
-                    continue
+
+            # недоступные папки (Errno 5 на сетевой/битой шаре и т.п.) не срывают
+            # проверку — пропускаются с пометкой в проблемах
+            def _werr(e):
+                wp = getattr(e, "filename", "") or str(e)
+                fp.write(f"  ! недоступный путь пропущен: {wp} ({e})\n")
+                problems.append({"path": wp, "ext": "",
+                                 "issue": f"папка недоступна (ввод/вывод): {e}",
+                                 "fix": "проверьте носитель/сеть/права доступа к папке"})
+
+            # 1) быстрый обход и классификация (без парсинга), устойчивый к ошибкам I/O
+            for p in fsutil.walk_files(docs, onerror=_werr):
                 counts["total"] += 1
                 rel = str(p.relative_to(docs))
                 ext = p.suffix.lower()
@@ -1801,9 +1810,7 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
                           "error": err_map.get(rel), "proc_ms": proc_map.get(rel),
                           "method": meth})
     else:
-        for p in sorted(docs.rglob("*")):
-            if not p.is_file() or p.suffix.lower() not in _SUPPORTED:
-                continue
+        for p in sorted(fsutil.iter_doc_files(docs, _SUPPORTED)):
             rel = str(p.relative_to(docs))
             ext = p.suffix.lower().lstrip(".")
             try:
@@ -2181,8 +2188,7 @@ def catalog_load() -> dict:
         _CAT_JOB.update(running=True, ok=None, processed=0, total=0, errors=0,
                         log="сканирование папки…", started=time.time(), finished=None)
         try:
-            paths = [p for p in sorted(docs.rglob("*"))
-                     if p.is_file() and p.suffix.lower() in _SUPPORTED]
+            paths = sorted(fsutil.iter_doc_files(docs, _SUPPORTED))
             _CAT_JOB["total"] = len(paths)
             for i, p in enumerate(paths, 1):
                 rel = str(p.relative_to(docs))

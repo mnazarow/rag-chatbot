@@ -36,6 +36,7 @@ import config
 import settings
 import metadata as meta
 import enrich
+import fsutil
 from loaders import load_file
 
 
@@ -158,9 +159,20 @@ def main():
     except Exception as e:
         raise SystemExit(f"FATAL: не удалось загрузить модель эмбеддингов '{embed_model}' на {device}: {e}")
 
-    files = [p for p in DOCS_DIR.rglob("*")
-             if p.is_file() and p.suffix.lower() in SUPPORTED]
+    # Устойчивый обход: одна недоступная папка (Errno 5 на сетевой/битой шаре и т.п.)
+    # не должна срывать всю индексацию — такие каталоги пропускаются с пометкой в логе.
+    _skipped_dirs = []
+
+    def _walk_err(e):
+        path = getattr(e, "filename", "") or str(e)
+        _skipped_dirs.append(path)
+        print(f"  ! пропущен недоступный путь: {path} ({e})")
+
+    files = list(fsutil.iter_doc_files(DOCS_DIR, SUPPORTED, onerror=_walk_err))
     print(f"Найдено файлов: {len(files)}")
+    if _skipped_dirs:
+        print(f"Пропущено недоступных папок: {len(_skipped_dirs)} "
+              f"(см. строки выше — проверьте носитель/доступ к этим путям)")
 
     # время обработки по файлам: сохраняем прошлые значения (для пропущенных
     # неизменённых файлов), при --reset считаем заново

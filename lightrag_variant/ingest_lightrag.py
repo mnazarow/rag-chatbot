@@ -19,6 +19,7 @@ from tqdm import tqdm
 # переиспользуем загрузчики основного проекта
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from loaders import load_file  # noqa: E402
+import fsutil  # noqa: E402
 
 from rag_lightrag import build_rag  # noqa: E402
 
@@ -35,8 +36,7 @@ async def main():
         raise SystemExit(f"DOCS_DIR не найдена: {DOCS_DIR}")
     rag = await build_rag()
 
-    files = [p for p in DOCS_DIR.rglob("*")
-             if p.is_file() and p.suffix.lower() in SUPPORTED]
+    files = list(fsutil.iter_doc_files(DOCS_DIR, SUPPORTED))
     print(f"Файлов к индексации: {len(files)}")
 
     for path in tqdm(files, desc="LightRAG ingest"):

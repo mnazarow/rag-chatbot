@@ -101,7 +101,8 @@ async def _ingest():
     except Exception as e:
         sys.exit(f"FATAL: не удалось инициализировать граф (проверьте Qdrant/LLM/эмбеддер): {e}")
 
-    files = [p for p in docs.rglob("*") if p.is_file()]
+    import fsutil
+    files = list(fsutil.walk_files(docs))
     print(f"Файлов: {len(files)}")
     ok = skip = 0
     errors = []

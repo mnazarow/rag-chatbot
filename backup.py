@@ -79,9 +79,9 @@ def _iter_files(scope: str):
     if scope == "full":
         docs = Path(settings.get("DOCS_DIR")).expanduser()
         if docs.is_dir():
-            for p in sorted(docs.rglob("*")):
-                if p.is_file():
-                    yield ("docs", str(p.relative_to(docs)), p)
+            import fsutil
+            for p in sorted(fsutil.walk_files(docs)):
+                yield ("docs", str(p.relative_to(docs)), p)
 
 
 def create(scope: str, progress=None) -> dict:
