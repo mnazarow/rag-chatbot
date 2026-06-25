@@ -681,29 +681,58 @@ def _web_fetch(url: str, renderer, log):
         return None
 
 
+def _fmt_bytes(n: int) -> str:
+    n = float(n or 0)
+    for unit in ("Б", "КБ", "МБ", "ГБ"):
+        if n < 1024 or unit == "ГБ":
+            return f"{n:.0f} {unit}" if unit == "Б" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} ГБ"
+
+
 def _web_download(url: str, dest_dir, log):
-    """Скачать файл по ссылке (любого типа) в dest_dir. Возвращает путь или None."""
+    """Скачать файл по ссылке (любого типа) в dest_dir потоково, с процентом загрузки.
+    Возвращает путь или None."""
     import re
     from urllib.parse import urlparse, unquote
+    tmp = None
     try:
-        r = httpx.get(url, timeout=60, follow_redirects=True,
-                      headers={"User-Agent": "Mozilla/5.0 (RAGBot)"})
-        if r.status_code != 200:
-            log(f"ERR файл {url}: HTTP {r.status_code}")
-            return None
         name = unquote(os.path.basename(urlparse(url).path)) or _web_slug(url)
         name = re.sub(r"[^\w.\-]+", "_", name)[:150] or "file"
         dest_dir.mkdir(parents=True, exist_ok=True)
         out = dest_dir / name
         i = 1
-        while out.exists() and out.stat().st_size != len(r.content):
+        while out.exists():
             out = dest_dir / f"{i}_{name}"
             i += 1
-        out.write_bytes(r.content)
-        log(f"ФАЙЛ {url} -> {out.name} ({len(r.content)} б)")
+        tmp = out.with_name(out.name + ".part")
+        with httpx.stream("GET", url, timeout=120, follow_redirects=True,
+                          headers={"User-Agent": "Mozilla/5.0 (RAGBot)"}) as r:
+            if r.status_code != 200:
+                log(f"    ERR файл {url}: HTTP {r.status_code}")
+                return None
+            total = int(r.headers.get("content-length") or 0)
+            got, last = 0, -20
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_bytes(256 * 1024):
+                    f.write(chunk)
+                    got += len(chunk)
+                    if total:
+                        pct = int(got * 100 / total)
+                        if pct >= last + 20:          # отметки 0/20/40/60/80/100%
+                            last = pct
+                            log(f"        {name}: {pct}% "
+                                f"({_fmt_bytes(got)} из {_fmt_bytes(total)})")
+        tmp.rename(out)
+        log(f"    ФАЙЛ сохранён: {out.name} ({_fmt_bytes(got)})")
         return out
     except Exception as e:
-        log(f"ERR файл {url}: {e}")
+        try:
+            if tmp is not None:
+                tmp.unlink()
+        except Exception:
+            pass
+        log(f"    ERR файл {url}: {e}")
         return None
 
 
@@ -787,7 +816,9 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
         text = _web_extract(html)
         if text:
             pages.append((url, _web_title(html, url), text))
-            log(f"OK  {url}  ({len(text)} симв.)")
+            log(f"  стр. {len(pages)}/{max_pages}: {url}  ({len(text)} симв.)")
+        else:
+            log(f"  стр. (без текста): {url}")
         # ссылки: файлы собираем всегда, страницы — пока не достигли глубины
         for link in _web_links(html, url, seed_netloc, same_domain):
             if link in seen:
@@ -848,11 +879,18 @@ def ingest_web(urls: list) -> dict:
                 try:
                     for u in urls:
                         try:
+                            _log(f"САЙТ: {u}")
                             pages, file_urls = _web_crawl(u, depth, max_pages,
                                                           same_domain, renderer, _log)
                             # скачиваем найденные файлы (любого типа), лимит на сайт
+                            file_list = list(file_urls)[:max_files]
+                            nf = len(file_list)
+                            if nf:
+                                _log(f"  файлов к скачиванию: {nf}")
                             dl = 0
-                            for furl in list(file_urls)[:max_files]:
+                            for fi, furl in enumerate(file_list, 1):
+                                fpct = int(fi * 100 / nf) if nf else 100
+                                _log(f"  [файл {fi}/{nf}] {fpct}% скачиваю: {furl}")
                                 p = _web_download(furl, filesdir, _log)
                                 if p is not None:
                                     web_paths.append(p)

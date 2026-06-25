@@ -211,7 +211,8 @@ def main():
     n_new = n_chunks = n_skip = n_timeout = 0
     errors = []  # (файл, причина)
     tmpdir = tempfile.mkdtemp(prefix="rag_pg_") if from_pg else None
-    for item in tqdm(work, desc="Индексация"):
+    total_work = len(work)
+    for idx, item in enumerate(work, 1):
         tmp_path = None
         source = ""
         t_file = time.time()
@@ -239,6 +240,9 @@ def main():
                     continue
                 meta_path = path
             delete_old_versions(client, source)  # файл новый/изменился — чистим старое
+
+            opct = int(idx * 100 / total_work) if total_work else 100
+            print(f"[{idx}/{total_work}] {opct}% индексирую: {source}", flush=True)
 
             if use_alarm:
                 signal.alarm(file_timeout)
@@ -276,6 +280,11 @@ def main():
                     [p["chunk"] for p in batch],
                     normalize_embeddings=True, batch_size=32, show_progress_bar=False,
                 )
+                # процент по текущему файлу (для крупных файлов из многих чанков)
+                if len(points) > BATCH:
+                    done = min(i + BATCH, len(points))
+                    print(f"    {source}: {int(done * 100 / len(points))}% "
+                          f"({done}/{len(points)} чанков)", flush=True)
                 client.upsert(
                     COLLECTION,
                     points=[
