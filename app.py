@@ -855,12 +855,20 @@ def admin_calib_example(x_admin_token: str | None = Header(None)):
     return {"items": calibrate.example_testset()}
 
 
+@app.get("/api/admin/calib/modes")
+def admin_calib_modes(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"modes": calibrate.available_modes(),
+            "current": settings.current_mode()}
+
+
 @app.post("/api/admin/calib/run")
 def admin_calib_run(payload: dict = Body(default={}),
                     x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return calibrate.start(use_llm=bool(payload.get("use_llm")),
-                           grid=payload.get("grid"))
+                           grid=payload.get("grid"),
+                           modes=payload.get("modes"))
 
 
 @app.get("/api/admin/calib/status")
@@ -875,7 +883,8 @@ def admin_calib_apply(payload: dict = Body(default={}),
     _check_admin(x_admin_token)
     return calibrate.apply_params(payload.get("min_score"),
                                   payload.get("k_rerank"),
-                                  payload.get("k_retrieve"))
+                                  payload.get("k_retrieve"),
+                                  mode=payload.get("mode"))
 
 
 @app.post("/api/admin/reindex")

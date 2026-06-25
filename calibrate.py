@@ -42,7 +42,8 @@ DEFAULT_GRID = {
 
 # Состояние фонового задания
 _job: dict = {"running": False, "phase": "", "done": 0, "total": 0,
-              "result": None, "error": None, "started": 0.0, "finished": 0.0}
+              "result": None, "error": None, "started": 0.0, "finished": 0.0,
+              "live": None}
 _lock = threading.Lock()
 
 
@@ -96,12 +97,35 @@ def example_testset() -> list:
 
 
 # ----------------------------- ядро калибровки -----------------------------
-def _candidates(question: str, pool: int) -> list:
-    """Широкий пул кандидатов с реранк-оценкой и плотным рангом (один раз на вопрос)."""
+def _mode_filter(question: str, flags: dict | None):
+    """Фильтр для плотного поиска по флагам режима (умный LLM / авто по категории / нет)."""
+    flags = flags or {}
+    filters = None
+    if flags.get("SMART_FILTER"):
+        try:
+            import query_filters
+            filters = query_filters.extract(question) or None
+        except Exception:
+            filters = None
+    elif flags.get("AUTO_FILTER"):
+        cat = retriever.infer_category(question)
+        filters = {"doc_category": cat} if cat else None
+    return filters
+
+
+def _candidates(question: str, pool: int, flags: dict | None = None) -> list:
+    """Широкий пул кандидатов с реранк-оценкой и плотным рангом (один раз на вопрос).
+    Фильтр плотного поиска воспроизводит поведение выбранного режима работы."""
     qvec = retriever._embed_query(question)
     qv = qvec.tolist() if hasattr(qvec, "tolist") else qvec
+    qfilter = retriever._build_filter(_mode_filter(question, flags))
     pts = retriever._client.query_points(
-        retriever._COLLECTION, query=qv, limit=pool, with_payload=True).points
+        retriever._COLLECTION, query=qv, query_filter=qfilter, limit=pool,
+        with_payload=True).points
+    if len(pts) < 3 and qfilter is not None:   # фолбэк без фильтра, как в конвейере
+        pts = retriever._client.query_points(
+            retriever._COLLECTION, query=qv, query_filter=None, limit=pool,
+            with_payload=True).points
     cands = []
     for rank, p in enumerate(pts):
         pl = p.payload or {}
@@ -194,6 +218,149 @@ def _answer_accuracy(items, all_cands, ms, krr, krt) -> dict:
             "acc": round(ok / tot, 4) if tot else None, "details": details}
 
 
+def _fmt_hits(sel: list) -> str:
+    if not sel:
+        return "      (ничего не выбрано — система ответит «не знаю»)"
+    out = []
+    for h in sel:
+        loc = (h.get("source") or "?")
+        if h.get("page"):
+            loc += f", стр. {h['page']}"
+        out.append(f"      • score={h.get('score', 0):.3f}  [{loc}]")
+    return "\n".join(out)
+
+
+def _mode_filter_desc(flags: dict) -> str:
+    if flags.get("SMART_FILTER"):
+        return "умные фильтры из вопроса (LLM)"
+    if flags.get("AUTO_FILTER"):
+        return "авто-фильтр по категории (правила)"
+    return "без фильтров"
+
+
+def _report_header(items, g, n_pos, n_neg, mode_labels) -> str:
+    import datetime
+    L = []
+    L.append("=" * 78)
+    L.append("ОТЧЁТ АВТОКАЛИБРОВКИ ПАРАМЕТРОВ ПОИСКА")
+    L.append(datetime.datetime.now().strftime("Дата: %Y-%m-%d %H:%M:%S"))
+    L.append("=" * 78)
+    L.append("")
+    L.append("ЧТО ЭТО. Подбор параметров MIN_SCORE / TOP_K_RERANK / TOP_K_RETRIEVE на")
+    L.append("эталонном наборе «вопрос → ожидаемый результат». Для каждого вопроса поиск и")
+    L.append("кросс-энкодер реранк выполняются один раз по широкому пулу кандидатов, далее")
+    L.append("перебирается сетка параметров (это лишь нарезка уже посчитанных кандидатов —")
+    L.append("реранк-оценки не зависят от размера пула, поэтому результат в точности")
+    L.append("воспроизводит рабочий конвейер).")
+    L.append("")
+    L.append("РЕЖИМЫ РАБОТЫ (варианты), для которых выполнена калибровка:")
+    for ml in mode_labels:
+        L.append(f"  • {ml}")
+    L.append("  Режимы различаются фильтрацией кандидатов перед реранком; параметры порога/")
+    L.append("  выборки подбираются под каждый режим отдельно. Граф-RAG (Hybrid+) для сводных")
+    L.append("  вопросов не параметризуется этими настройками — калибруется его векторная часть.")
+    L.append("")
+    L.append("МЕТРИКИ:")
+    L.append("  • Точность      — доля корректно обработанных вопросов (нашёл нужное ИЛИ")
+    L.append("                    корректно промолчал на негативном вопросе).")
+    L.append("  • Полнота       — доля позитивных вопросов, где найден ожидаемый результат.")
+    L.append("  • Специфичность — доля негативных вопросов, где система корректно промолчала.")
+    L.append("  Засчитывается попадание, если среди выбранных фрагментов есть ожидаемый файл")
+    L.append("  (по части имени) ИЛИ их текст содержит ожидаемое ключевое слово.")
+    L.append("  Негативный вопрос — без ожиданий: правильно ответить «не знаю».")
+    L.append("")
+    L.append(f"ВОПРОСОВ: {len(items)}  (позитивных: {n_pos}, негативных: {n_neg})")
+    L.append(f"СЕТКА: MIN_SCORE={g['min_score']}  TOP_K_RERANK={g['k_rerank']}  "
+             f"TOP_K_RETRIEVE={g['k_retrieve']}")
+    return "\n".join(L)
+
+
+def _report_variant(label, flags, items, all_cands, combos, best, cur_eval, llm,
+                    n_pos, n_neg) -> str:
+    """Секция отчёта для одного режима работы."""
+    L = []
+    L.append("")
+    L.append("#" * 78)
+    L.append(f"РЕЖИМ: {label}   (фильтрация: {_mode_filter_desc(flags)})")
+    L.append("#" * 78)
+    L.append("")
+    L.append("-" * 78)
+    L.append("ИТОГ")
+    L.append("-" * 78)
+    L.append(f"Текущие параметры:      MIN_SCORE={cur_eval['min_score']}  "
+             f"TOP_K_RERANK={cur_eval['k_rerank']}  TOP_K_RETRIEVE={cur_eval['k_retrieve']}")
+    L.append(f"  точность={cur_eval['accuracy'] * 100:.1f}%  "
+             f"полнота={_p(cur_eval['pos_recall'])}  специфичность={_p(cur_eval['neg_spec'])}")
+    L.append(f"Рекомендовано:          MIN_SCORE={best['min_score']}  "
+             f"TOP_K_RERANK={best['k_rerank']}  TOP_K_RETRIEVE={best['k_retrieve']}")
+    L.append(f"  точность={best['accuracy'] * 100:.1f}%  "
+             f"полнота={_p(best['pos_recall'])}  специфичность={_p(best['neg_spec'])}")
+    L.append("  (при равной точности предпочтён более высокий порог и меньшая выборка —")
+    L.append("   это честнее в части «не знаю» и дешевле по ресурсам.)")
+    L.append("")
+    L.append("-" * 78)
+    L.append("ВСЕ КОМБИНАЦИИ (по убыванию качества)")
+    L.append("-" * 78)
+    L.append(f"{'MIN_SCORE':>10} {'RERANK':>7} {'RETRIEVE':>9} {'точность':>9} "
+             f"{'полнота':>8} {'специф.':>8}")
+    for r in combos:
+        mark = "  <-- рекомендовано" if (r["min_score"] == best["min_score"]
+            and r["k_rerank"] == best["k_rerank"]
+            and r["k_retrieve"] == best["k_retrieve"]) else ""
+        L.append(f"{r['min_score']:>10} {r['k_rerank']:>7} {r['k_retrieve']:>9} "
+                 f"{r['accuracy'] * 100:>8.1f}% {_p(r['pos_recall']):>8} "
+                 f"{_p(r['neg_spec']):>8}{mark}")
+    L.append("")
+    L.append("-" * 78)
+    L.append("ПОВОПРОСНЫЙ РАЗБОР ПРИ РЕКОМЕНДОВАННЫХ ПАРАМЕТРАХ")
+    L.append("-" * 78)
+    bms, bkr, bkt = best["min_score"], best["k_rerank"], best["k_retrieve"]
+    for i, (item, cands) in enumerate(zip(items, all_cands), 1):
+        sel = _select(cands, bms, bkr, bkt)
+        neg = _is_negative(item)
+        ok = (len(sel) == 0) if neg else _covered(item, sel)
+        L.append(f"[{i}] {item['q']}")
+        L.append(f"    тип: {'негативный (ожидается «не знаю»)' if neg else 'позитивный'}")
+        if not neg:
+            if item.get("sources"):
+                L.append(f"    ожидаемые файлы: {', '.join(item['sources'])}")
+            if item.get("answer"):
+                L.append(f"    ожидаемые слова: {', '.join(item['answer'])}")
+        L.append(f"    выбрано фрагментов: {len(sel)}")
+        L.append(_fmt_hits(sel))
+        if neg:
+            verdict = ("OK — корректно промолчал" if ok
+                       else f"ОШИБКА — выбрано {len(sel)} фрагм., ожидалось молчание")
+        else:
+            if ok:
+                verdict = "OK — найден ожидаемый источник/текст"
+            else:
+                verdict = ("ОШИБКА — среди выбранных нет ожидаемых файлов и нет ключевых "
+                           "слов (тема не в индексе, либо нужен ниже порог / шире выборка)")
+        L.append(f"    вердикт: {verdict}")
+        L.append("")
+    if llm:
+        L.append("-" * 78)
+        L.append("LLM-ПРОВЕРКА ТЕКСТА ОТВЕТА")
+        L.append("-" * 78)
+        for tag, key in (("рекомендованные", "recommended"), ("текущие", "current")):
+            d = llm.get(key)
+            if not d:
+                continue
+            L.append(f"{tag}: {d['ok']}/{d['total']} ответов содержат ожидаемый текст "
+                     f"({_p(d['acc'])})")
+            for it in (d.get("details") or []):
+                mk = "OK " if it.get("ok") else "нет"
+                extra = f"  ({it['err']})" if it.get("err") else ""
+                L.append(f"    [{mk}] {it['q']}{extra}")
+            L.append("")
+    return "\n".join(L)
+
+
+def _p(x) -> str:
+    return "—" if x is None else f"{x * 100:.1f}%"
+
+
 def _grid_lists(grid: dict | None) -> dict:
     g = dict(DEFAULT_GRID)
     if grid:
@@ -204,7 +371,109 @@ def _grid_lists(grid: dict | None) -> dict:
     return g
 
 
-def _run(use_llm: bool, grid: dict | None) -> None:
+def available_modes() -> list:
+    """Список режимов работы (вариантов) для выбора в калибровке."""
+    out = []
+    for k, m in getattr(settings, "MODES", {}).items():
+        out.append({"key": k, "label": m.get("label", k),
+                    "desc": m.get("desc", ""),
+                    "filter": _mode_filter_desc(m.get("flags", {}))})
+    return out
+
+
+def _norm_modes(modes) -> list:
+    valid = list(getattr(settings, "MODES", {}).keys())
+    if not modes:
+        try:
+            cur = settings.current_mode()
+        except Exception:
+            cur = None
+        return [cur] if cur in valid else (valid[:1] or ["basic"])
+    out = [m for m in modes if m in valid]
+    return out or (valid[:1] or ["basic"])
+
+
+def _agg(combos, field):
+    out = {}
+    for r in combos:
+        v = r[field]
+        if v not in out or r["accuracy"] > out[v]:
+            out[v] = r["accuracy"]
+    return [{"v": k, "acc": out[k]} for k in sorted(out)]
+
+
+def _calibrate_mode(items, g, pool, n_pos, n_neg, mode, use_llm) -> tuple:
+    """Калибровка одного режима. Возвращает (variant_dict, report_section_text)."""
+    flags = getattr(settings, "MODES", {}).get(mode, {}).get("flags", {})
+    label = getattr(settings, "MODES", {}).get(mode, {}).get("label", mode)
+    lv = _job["live"]
+    lv.update(stage="search", q_done=0, last_q="", history=[],
+              best_acc=0.0, best_params=None, mode=mode, mode_label=label)
+    n_combos = lv["combos_total"]
+
+    _job.update(phase=f"[{label}] Поиск и реранк", total=len(items), done=0)
+    all_cands = []
+    for it in items:
+        lv["last_q"] = it["q"][:80]
+        all_cands.append(_candidates(it["q"], pool, flags))
+        _job["done"] += 1
+        lv["q_done"] = _job["done"]
+
+    _job.update(phase=f"[{label}] Перебор сетки", total=n_combos, done=0)
+    lv["stage"] = "grid"
+    combos = []
+    best_acc = -1.0
+    for ms in g["min_score"]:
+        for krr in g["k_rerank"]:
+            for krt in g["k_retrieve"]:
+                r = _evaluate_combo(items, all_cands, ms, krr, krt)
+                combos.append(r)
+                _job["done"] += 1
+                lv["combos_done"] = _job["done"]
+                if r["accuracy"] > best_acc:
+                    best_acc = r["accuracy"]
+                    lv["best_acc"] = best_acc
+                    lv["best_params"] = {"min_score": ms, "k_rerank": krr, "k_retrieve": krt}
+                if (_job["done"] % max(1, n_combos // 60) == 0 or _job["done"] == n_combos):
+                    lv["history"].append({"n": _job["done"], "acc": round(best_acc, 4)})
+
+    combos.sort(key=lambda r: (r["accuracy"], r["min_score"],
+                               -r["k_rerank"], -r["k_retrieve"]), reverse=True)
+    best = combos[0]
+    cur = {"min_score": settings.get("MIN_SCORE"),
+           "k_rerank": settings.get("TOP_K_RERANK"),
+           "k_retrieve": settings.get("TOP_K_RETRIEVE")}
+    cur_eval = _evaluate_combo(items, all_cands, cur["min_score"],
+                               cur["k_rerank"], cur["k_retrieve"])
+
+    llm = None
+    if use_llm:
+        lv["stage"] = "llm"
+        _job.update(phase=f"[{label}] LLM-проверка (рекомендованные)", total=0, done=0)
+        llm = {"recommended": _answer_accuracy(
+            items, all_cands, best["min_score"], best["k_rerank"], best["k_retrieve"])}
+        same = (best["min_score"] == cur_eval["min_score"]
+                and best["k_rerank"] == cur_eval["k_rerank"]
+                and best["k_retrieve"] == cur_eval["k_retrieve"])
+        if not same:
+            _job.update(phase=f"[{label}] LLM-проверка (текущие)")
+            llm["current"] = _answer_accuracy(
+                items, all_cands, cur["min_score"], cur["k_rerank"], cur["k_retrieve"])
+
+    section = _report_variant(label, flags, items, all_cands, combos, best,
+                              cur_eval, llm, n_pos, n_neg)
+    variant = {
+        "mode": mode, "label": label, "filter": _mode_filter_desc(flags),
+        "best": best, "current": cur_eval, "combos": combos[:15], "llm": llm,
+        "by_min_score": _agg(combos, "min_score"),
+        "by_k_rerank": _agg(combos, "k_rerank"),
+        "by_k_retrieve": _agg(combos, "k_retrieve"),
+        "history": list(lv.get("history", [])),
+    }
+    return variant, section
+
+
+def _run(use_llm: bool, grid: dict | None, modes) -> None:
     try:
         items = load_testset()
         if not items:
@@ -212,51 +481,38 @@ def _run(use_llm: bool, grid: dict | None) -> None:
         g = _grid_lists(grid)
         pool = max(g["k_retrieve"])
         n_pos = sum(0 if _is_negative(i) else 1 for i in items)
+        n_neg = len(items) - n_pos
+        modes = _norm_modes(modes)
+        n_combos = len(g["min_score"]) * len(g["k_rerank"]) * len(g["k_retrieve"])
+        _job["live"].update(q_total=len(items), combos_total=n_combos,
+                            mode_total=len(modes), mode_idx=0)
 
-        _job.update(phase="Поиск и реранк по вопросам", total=len(items), done=0)
-        all_cands = []
-        for it in items:
-            all_cands.append(_candidates(it["q"], pool))
-            _job["done"] += 1
+        mode_labels = [getattr(settings, "MODES", {}).get(m, {}).get("label", m)
+                       for m in modes]
+        variants, sections = [], []
+        for mi, mode in enumerate(modes):
+            _job["live"]["mode_idx"] = mi + 1
+            v, sec = _calibrate_mode(items, g, pool, n_pos, n_neg, mode, use_llm)
+            variants.append(v)
+            sections.append(sec)
 
-        _job.update(phase="Перебор параметров",
-                    total=len(g["min_score"]) * len(g["k_rerank"]) * len(g["k_retrieve"]),
-                    done=0)
-        combos = []
-        for ms in g["min_score"]:
-            for krr in g["k_rerank"]:
-                for krt in g["k_retrieve"]:
-                    combos.append(_evaluate_combo(items, all_cands, ms, krr, krt))
-                    _job["done"] += 1
+        report = (_report_header(items, g, n_pos, n_neg, mode_labels) + "\n"
+                  + "\n".join(sections) + "\n" + "=" * 78 + "\nКонец отчёта.")
+        log_id = None
+        try:
+            parts = "; ".join(f"{v['label']}: {v['best']['accuracy'] * 100:.0f}% "
+                              f"({v['best']['min_score']}/{v['best']['k_rerank']}/"
+                              f"{v['best']['k_retrieve']})" for v in variants)
+            summary = f"режимов: {len(variants)} — {parts} (вопросов: {len(items)})"
+            log_id = db.ingest_log_save("Автокалибровка", summary, report)
+        except Exception as e:
+            print(f"[calib] не удалось сохранить лог в БД: {e}")
 
-        # сортировка: точность ↓, затем выше порог (честнее), меньше k_rerank, меньше k_retrieve
-        combos.sort(key=lambda r: (r["accuracy"], r["min_score"],
-                                   -r["k_rerank"], -r["k_retrieve"]), reverse=True)
-        best = combos[0]
-        cur = {"min_score": settings.get("MIN_SCORE"),
-               "k_rerank": settings.get("TOP_K_RERANK"),
-               "k_retrieve": settings.get("TOP_K_RETRIEVE")}
-        cur_eval = _evaluate_combo(items, all_cands, cur["min_score"],
-                                   cur["k_rerank"], cur["k_retrieve"])
-
-        llm = None
-        if use_llm:
-            _job.update(phase="LLM-проверка ответов (рекомендованные)", total=0, done=0)
-            llm = {"recommended": _answer_accuracy(
-                items, all_cands, best["min_score"], best["k_rerank"], best["k_retrieve"])}
-            same = (best["min_score"] == cur_eval["min_score"]
-                    and best["k_rerank"] == cur_eval["k_rerank"]
-                    and best["k_retrieve"] == cur_eval["k_retrieve"])
-            if not same:
-                _job.update(phase="LLM-проверка ответов (текущие)")
-                llm["current"] = _answer_accuracy(
-                    items, all_cands, cur["min_score"], cur["k_rerank"], cur["k_retrieve"])
-
+        _job["live"]["stage"] = "report"
         _job["result"] = {
-            "n_items": len(items), "n_pos": n_pos, "n_neg": len(items) - n_pos,
-            "best": best, "current": cur_eval,
-            "combos": combos[:15], "llm": llm,
-            "grid": g,
+            "n_items": len(items), "n_pos": n_pos, "n_neg": n_neg,
+            "grid": g, "report": report, "log_id": log_id,
+            "multi": len(variants) > 1, "variants": variants,
         }
     except Exception as e:
         _job["error"] = str(e)
@@ -264,26 +520,33 @@ def _run(use_llm: bool, grid: dict | None) -> None:
         _job["running"] = False
         _job["finished"] = time.time()
         _job["phase"] = "Готово" if not _job.get("error") else "Ошибка"
+        if isinstance(_job.get("live"), dict):
+            _job["live"]["stage"] = "done" if not _job.get("error") else "error"
 
 
-def start(use_llm: bool = False, grid: dict | None = None) -> dict:
+def start(use_llm: bool = False, grid: dict | None = None, modes=None) -> dict:
     with _lock:
         if _job["running"]:
             return {"ok": False, "msg": "калибровка уже выполняется"}
         if not load_testset():
             return {"ok": False, "msg": "тестовый набор пуст — добавьте вопросы"}
         _job.update(running=True, phase="Запуск", done=0, total=0,
-                    result=None, error=None, started=time.time(), finished=0.0)
-    threading.Thread(target=_run, args=(bool(use_llm), grid), daemon=True).start()
+                    result=None, error=None, started=time.time(), finished=0.0,
+                    live={"stage": "load", "q_done": 0, "q_total": 0, "last_q": "",
+                          "combos_done": 0, "combos_total": 0, "best_acc": 0.0,
+                          "best_params": None, "history": [], "mode": "",
+                          "mode_label": "", "mode_idx": 0, "mode_total": 0})
+    threading.Thread(target=_run, args=(bool(use_llm), grid, modes), daemon=True).start()
     return {"ok": True, "msg": "калибровка запущена"}
 
 
 def status() -> dict:
     return {k: _job.get(k) for k in
-            ("running", "phase", "done", "total", "result", "error", "started", "finished")}
+            ("running", "phase", "done", "total", "result", "error", "started",
+             "finished", "live")}
 
 
-def apply_params(min_score=None, k_rerank=None, k_retrieve=None) -> dict:
+def apply_params(min_score=None, k_rerank=None, k_retrieve=None, mode=None) -> dict:
     ch = {}
     if min_score is not None:
         ch["MIN_SCORE"] = float(min_score)
@@ -291,12 +554,21 @@ def apply_params(min_score=None, k_rerank=None, k_retrieve=None) -> dict:
         ch["TOP_K_RERANK"] = int(k_rerank)
     if k_retrieve is not None:
         ch["TOP_K_RETRIEVE"] = int(k_retrieve)
-    if not ch:
+    if not ch and not mode:
         return {"ok": False, "msg": "нет параметров для применения"}
-    settings.update(ch)
+    if ch:
+        settings.update(ch)
+    switched = None
+    if mode and mode in getattr(settings, "MODES", {}):
+        try:
+            settings.set_mode(mode)
+            switched = settings.MODES[mode].get("label", mode)
+        except Exception as e:
+            return {"ok": False, "msg": f"параметры применены, но режим не переключён: {e}"}
     try:
         import cache
         cache.bump("index")
     except Exception:
         pass
-    return {"ok": True, "applied": ch, "msg": "параметры применены"}
+    msg = "параметры применены" + (f"; режим: {switched}" if switched else "")
+    return {"ok": True, "applied": ch, "mode": switched, "msg": msg}

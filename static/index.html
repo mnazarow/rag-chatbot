@@ -152,6 +152,7 @@
     <button data-t="server">🖥 Загрузка сервера</button>
     <button data-t="components">🔬 Аналитика+</button>
     <button data-t="bench">⚡ Бенчмарк</button>
+    <button data-t="calib">🎛 Автокалибровка</button>
     <button data-t="admin">⚙️ Администратор</button>
   </nav>
   <div class="spacer"></div>
@@ -497,6 +498,121 @@
     </div>
   </section>
 
+  <!-- ===== АВТОКАЛИБРОВКА ===== -->
+  <section id="calib">
+    <style>
+      #calibscheme .stg rect{fill:var(--panel2);stroke:var(--line);stroke-width:1.5;transition:all .3s}
+      #calibscheme .stg .t{fill:var(--txt);font-weight:700}
+      #calibscheme .stg .s{fill:var(--muted)}
+      #calibscheme .stg.active rect{stroke:var(--accent);fill:rgba(59,130,246,.14);animation:cpulse 1.2s infinite}
+      #calibscheme .stg.done rect{stroke:var(--accent2);fill:rgba(34,197,94,.10)}
+      @keyframes cpulse{0%,100%{stroke-width:1.5}50%{stroke-width:4}}
+      #calibscheme .arr{stroke:var(--line);stroke-width:2.5}
+      #calibscheme .arr.on{stroke:var(--accent2)}
+      .clb-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+      .clb-help{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.5}
+    </style>
+    <h1>Автокалибровка параметров поиска</h1>
+    <div class="sub">Объективный подбор <b>MIN_SCORE</b>, <b>TOP_K_RERANK</b> и
+      <b>TOP_K_RETRIEVE</b> на вашем эталонном наборе — с живой схемой процесса,
+      метриками и графиками в реальном времени.</div>
+
+    <div class="box">
+      <h3>Как это работает</h3>
+      <div class="clb-help">
+        Вы задаёте набор «вопрос → ожидаемый результат». Для каждого вопроса система
+        <b>один раз</b> выполняет эмбеддинг → плотный поиск в Qdrant → BM25 → кросс-энкодер
+        реранк по широкому пулу кандидатов. Затем перебирает сетку параметров — это лишь
+        нарезка уже посчитанных кандидатов (реранк-оценки не зависят от размера пула),
+        поэтому быстро и точно воспроизводит рабочий конвейер. Для каждой комбинации
+        считаются метрики, выбирается лучшая. <b>Метрики:</b> <b>точность</b> — доля
+        корректных (нашёл нужное / корректно промолчал); <b>полнота</b> — по позитивным
+        вопросам; <b>специфичность</b> — по негативным (где правильно ответить «не знаю»).
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>1. Тестовый набор</h3>
+      <div class="clb-help">Каждый элемент: <code>q</code> — вопрос; <code>sources</code> —
+        части имён ожидаемых файлов; <code>answer</code> — ключевые слова ответа. Элемент
+        <b>без</b> <code>sources</code> и <code>answer</code> — <b>негативный</b> (правильно
+        промолчать). Добавляйте такие вопросы, чтобы система не «выдумывала» на отсутствующих
+        темах. Набор хранится в БД и переносится при миграции между СУБД.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 6px">
+        <button class="act ghost" onclick="calibLoad()">Загрузить</button>
+        <button class="act ghost" onclick="calibSave()">💾 Сохранить</button>
+        <button class="act ghost" onclick="calibExample()">Вставить пример</button>
+        <span id="calibsetmsg" class="note"></span>
+      </div>
+      <textarea id="calibset" spellcheck="false" style="width:100%;min-height:160px;
+        font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--panel2);
+        border:1px solid var(--line);border-radius:9px;padding:10px;white-space:pre"></textarea>
+    </div>
+
+    <div class="box">
+      <h3>2. Запуск</h3>
+      <div class="clb-help" style="margin-bottom:6px"><b>Режимы работы (варианты)</b> —
+        выберите, для каких режимов подобрать параметры. Режимы отличаются фильтрацией
+        кандидатов перед реранком, поэтому оптимальные порог/выборка у них разные. Параметры
+        подбираются под каждый выбранный режим, и применить можно отдельно (в т.ч. сразу
+        переключившись на этот режим).</div>
+      <div id="calibmodes" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px"></div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="calibRun()">▶️ Запустить калибровку</button>
+        <label class="note" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="calib_llm"> проверять и текст ответа (LLM)
+        </label>
+        <span id="calibmsg" class="note"></span>
+      </div>
+      <div class="clb-help">Сетка по умолчанию: MIN_SCORE [0.10…0.40], TOP_K_RERANK [3,5,8,10],
+        TOP_K_RETRIEVE [20,30,40,60]. Галка LLM — дополнительно генерирует ответ для
+        рекомендованной и текущей комбинаций и проверяет наличие ожидаемого текста (медленнее,
+        зато оценивает качество самого ответа, а не только поиска). При выборе нескольких
+        режимов калибровка идёт по очереди — время растёт пропорционально.</div>
+    </div>
+
+    <div class="box">
+      <h3>3. Процесс в реальном времени</h3>
+      <div class="clb-help">Подсвечивается текущий этап; зелёные — завершённые. Ниже — живые
+        метрики и график роста лучшей точности по мере перебора комбинаций.</div>
+      <svg id="calibscheme" viewBox="0 0 1000 130" style="width:100%;height:auto;margin-top:8px">
+        <defs><marker id="carrow" markerWidth="10" markerHeight="10" refX="8" refY="3"
+          orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="var(--muted)"/></marker></defs>
+        <line class="arr" x1="170" y1="55" x2="205" y2="55" marker-end="url(#carrow)"/>
+        <line class="arr" x1="375" y1="55" x2="410" y2="55" marker-end="url(#carrow)"/>
+        <line class="arr" x1="580" y1="55" x2="615" y2="55" marker-end="url(#carrow)"/>
+        <line class="arr" x1="785" y1="55" x2="820" y2="55" marker-end="url(#carrow)"/>
+        <g class="stg" id="stg_load"><rect x="10" y="20" width="160" height="70" rx="12"/>
+          <text class="t" x="90" y="48" text-anchor="middle" font-size="14">Набор</text>
+          <text class="s" x="90" y="70" text-anchor="middle" font-size="12" id="sg_load">—</text></g>
+        <g class="stg" id="stg_search"><rect x="205" y="20" width="170" height="70" rx="12"/>
+          <text class="t" x="290" y="44" text-anchor="middle" font-size="14">Поиск+реранк</text>
+          <text class="s" x="290" y="66" text-anchor="middle" font-size="12" id="sg_search">—</text></g>
+        <g class="stg" id="stg_grid"><rect x="410" y="20" width="170" height="70" rx="12"/>
+          <text class="t" x="495" y="44" text-anchor="middle" font-size="14">Перебор сетки</text>
+          <text class="s" x="495" y="66" text-anchor="middle" font-size="12" id="sg_grid">—</text></g>
+        <g class="stg" id="stg_llm"><rect x="615" y="20" width="170" height="70" rx="12"/>
+          <text class="t" x="700" y="44" text-anchor="middle" font-size="14">LLM-проверка</text>
+          <text class="s" x="700" y="66" text-anchor="middle" font-size="12" id="sg_llm">опц.</text></g>
+        <g class="stg" id="stg_report"><rect x="820" y="20" width="170" height="70" rx="12"/>
+          <text class="t" x="905" y="44" text-anchor="middle" font-size="14">Отчёт</text>
+          <text class="s" x="905" y="66" text-anchor="middle" font-size="12" id="sg_report">—</text></g>
+      </svg>
+      <div class="cards" id="calivecards" style="margin-top:12px"></div>
+      <div class="clb-grid" style="margin-top:12px">
+        <div><div class="note">Лучшая точность по ходу перебора</div>
+          <canvas id="calib_live_hist" height="150"></canvas>
+          <div class="clb-help">Как быстро перебор находит хорошие комбинации. Кривая
+            монотонно растёт — это «лучшее найденное на данный момент».</div></div>
+        <div><div class="note">Прогресс этапа</div>
+          <canvas id="calib_live_prog" height="150"></canvas>
+          <div class="clb-help">Доля выполненного на текущем этапе (вопросы или комбинации).</div></div>
+      </div>
+    </div>
+
+    <div id="calibres"></div>
+  </section>
+
   <!-- ===== АДМИН ===== -->
   <section id="admin">
     <h1>Администратор</h1>
@@ -653,48 +769,16 @@
 
       <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <b style="font-size:13px">Сохранённые логи индексации</b>
+          <b style="font-size:13px">Сохранённые логи индексации и калибровки</b>
           <button class="act ghost" onclick="loadIngestLogs()">Обновить</button>
           <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="clearIngestLogs()">🗑 Удалить все</button>
           <span id="ilmsg" class="note"></span>
         </div>
-        <div class="note" style="margin:4px 0 8px">Полный лог каждой переиндексации/парсинга сохраняется в БД — его можно открыть и удалить.</div>
+        <div class="note" style="margin:4px 0 8px">Полный лог каждой переиндексации, парсинга сайтов и автокалибровки сохраняется в БД — его можно открыть и удалить.</div>
         <div id="illist"></div>
         <pre id="illog" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);
           border-radius:9px;padding:10px;font-size:12px;max-height:300px;overflow:auto;display:none;white-space:pre-wrap"></pre>
       </div>
-    </div>
-
-    <!-- автокалибровка -->
-    <div class="box">
-      <h3>Автокалибровка параметров поиска</h3>
-      <div class="note" style="margin-bottom:10px">
-        Подберите <b>MIN_SCORE</b>, <b>TOP_K_RERANK</b> и <b>TOP_K_RETRIEVE</b> на эталонном
-        наборе «вопрос → ожидаемый результат». Для каждого вопроса задайте ожидаемые
-        <b>файлы-источники</b> (часть имени) и/или <b>ключевые слова ответа</b>. Вопрос без
-        ожиданий — <b>негативный</b>: правильно ответить «не знаю». Поиск+реранк по каждому
-        вопросу считается один раз, затем перебираются параметры.
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
-        <b style="font-size:13px">Тестовый набор (JSON)</b>
-        <button class="act ghost" onclick="calibLoad()">Загрузить</button>
-        <button class="act ghost" onclick="calibSave()">💾 Сохранить</button>
-        <button class="act ghost" onclick="calibExample()">Вставить пример</button>
-        <span id="calibsetmsg" class="note"></span>
-      </div>
-      <textarea id="calibset" spellcheck="false" style="width:100%;min-height:150px;
-        font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--panel2);
-        border:1px solid var(--line);border-radius:9px;padding:10px;white-space:pre"></textarea>
-
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
-        <button class="act" onclick="calibRun()">▶️ Запустить калибровку</button>
-        <label class="note" style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="calib_llm"> проверять и текст ответа (LLM, медленнее)
-        </label>
-        <span id="calibmsg" class="note"></span>
-      </div>
-      <div id="calibprog" class="note" style="margin-top:8px"></div>
-      <div id="calibres" style="margin-top:10px"></div>
     </div>
 
     <!-- токен -->
@@ -899,7 +983,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('section').forEach(x=>x.classList.remove('active'));
   b.classList.add('active'); $('#'+b.dataset.t).classList.add('active');
   if(b.dataset.t!=='server') stopSrvAuto();   // уходим с вкладки — гасим автообновление
-  ({dash:loadStats,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,admin:loadConfig}[b.dataset.t]||(()=>{}))();
+  ({dash:loadStats,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig}[b.dataset.t]||(()=>{}))();
 });
 
 // ---- дашборд ----
@@ -1564,6 +1648,32 @@ const GROUP_HELP={
       с моделью 8–14B часто лучше гигантской модели со слабым поиском. Модель можно скачать/выбрать в
       блоке «Модель LLM» выше.
     </div></details>`,
+  'Документы и индексация': `<details class="note" style="margin:2px 0 12px" open>
+    <summary style="cursor:pointer"><b>ℹ️ Как работает индексация и как настраивать</b></summary>
+    <div style="margin-top:8px;line-height:1.6">
+      <b>Конвейер индексации:</b> обход «Папки с документами» (рекурсивно) → извлечение текста по типу
+      файла (PDF/DOCX/XLSX/PPTX/HTML/TXT/CSV…) → при включённых опциях: OCR картинок и графических
+      страниц PDF, OCR RAW-фото, текст из CAD-чертежей, транскрибация аудио/видео (Whisper) → нарезка
+      на чанки (<code>CHUNK_SIZE</code> + <code>CHUNK_OVERLAP</code>) → эмбеддинг (bge-m3) → запись
+      векторов в Qdrant. Бейдж <span class="tag" style="background:#f59e0b22;color:#f59e0b">после реиндекса</span>
+      означает, что изменение применится только после переиндексации.<br><br>
+      <b>Что сильнее всего влияет на качество поиска:</b> размер и перекрытие чанка. Мелкие чанки —
+      точные факты, но рваный контекст; крупные — связные ответы, но больше шума. Это первое, что стоит
+      подбирать (в т.ч. через раздел «🎛 Автокалибровка»).<br><br>
+      <b>Стоимость опций по времени (по возрастанию):</b> обычный текст → OCR изображений/PDF (секунды
+      на страницу) → CAD (конвертация DWG может быть долгой) → RAW-фото → транскрибация A/V (минуты на
+      файл). Рекомендуемый порядок: сначала быстрая первая индексация только по тексту, затем включайте
+      тяжёлые опции и запускайте <i>инкрементальную</i> переиндексацию — уже обработанные файлы
+      пропускаются, добавится только новое.<br><br>
+      <b>Скорость:</b> «Потоков извлечения» (<code>INGEST_WORKERS</code>) ускоряет парсинг, когда сервер
+      недозагружен (узкое место — извлечение, а не вычисления); 4–8 обычно оптимально. ⚠️ При заданном
+      «Лимите времени на файл» (<code>FILE_PARSE_TIMEOUT</code>) параллельность отключается — таймаут
+      работает только в один поток. Лимит ставьте (60–180 с), если в каталоге есть «зависающие» тяжёлые
+      файлы.<br><br>
+      <b>Типовые ситуации:</b> текст со скан-страниц не находится → включите «OCR …PDF» и переиндексируйте
+      с нуля; индексация очень долгая → выключите Whisper/CAD/RAW на первый проход; «не знаю», хотя данные
+      есть → уменьшите чанк/порог или воспользуйтесь автокалибровкой.
+    </div></details>`,
   'vLLM (GPU)': `<details class="note" style="margin:2px 0 12px" open>
     <summary style="cursor:pointer"><b>ℹ️ Описание и рекомендации по моделям vLLM</b></summary>
     <div style="margin-top:8px;line-height:1.6">
@@ -1664,12 +1774,28 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); calibLoad();
+  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs();
 }
 
 // ---- автокалибровка параметров ----
 function calibSetMsg(t,ok=true){ const e=$('#calibsetmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 function calibMsg(t,ok=true){ const e=$('#calibmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
+let calibCurMode='';
+async function loadCalib(){ await calibLoad(); await calibLoadModes(); calibScheme(null); $('#calivecards').innerHTML=''; }
+async function calibLoadModes(){
+  const box=$('#calibmodes'); if(!box) return;
+  let r; try{ r=await adminGet('/api/admin/calib/modes'); }catch(e){ return; }
+  calibCurMode=r&&r.current||'';
+  const modes=(r&&r.modes)||[];
+  box.innerHTML=modes.map(m=>{
+    const on=(m.key===calibCurMode);
+    return `<label class="note" style="display:flex;gap:7px;align-items:flex-start;cursor:pointer;max-width:300px">
+      <input type="checkbox" class="calibmode" value="${m.key}" ${on?'checked':''} style="margin-top:3px">
+      <span><b>${esc(m.label)}</b>${m.key===calibCurMode?' <span class="tag ok">активен</span>':''}
+      <div style="color:var(--muted)">${esc(m.desc||'')} <i>(фильтр: ${esc(m.filter||'')})</i></div></span></label>`;
+  }).join('');
+}
+function calibSelectedModes(){ return Array.from(document.querySelectorAll('.calibmode:checked')).map(x=>x.value); }
 async function calibLoad(){
   const el=$('#calibset'); if(!el) return;
   let r; try{ r=await adminGet('/api/admin/calib/testset'); }catch(e){ return; }
@@ -1689,61 +1815,204 @@ async function calibSave(){
   const r=await adminPost('/api/admin/calib/testset',{items});
   calibSetMsg(r.ok!==false?('сохранено: '+(r.count||0)+' вопрос(ов)'):(r.msg||'ошибка'),r.ok!==false);
 }
+// анимированная схема этапов
+const CALIB_STAGES=['load','search','grid','llm','report'];
+function calibScheme(stage){
+  const order={load:0,search:1,grid:2,llm:3,report:4,done:5};
+  const cur=(stage==null)?-1:(order[stage]!=null?order[stage]:-1);
+  CALIB_STAGES.forEach((st,i)=>{
+    const g=$('#stg_'+st); if(!g) return;
+    g.classList.remove('active','done');
+    if(stage==='done') g.classList.add('done');
+    else if(cur>i) g.classList.add('done');
+    else if(cur===i) g.classList.add('active');
+  });
+  document.querySelectorAll('#calibscheme .arr').forEach((a,i)=>{
+    a.classList.toggle('on', cur>i+0.5 || stage==='done');
+  });
+}
 let calibPoll=null;
 async function calibRun(){
   const items=calibParse(); if(items===null) return;
+  const modes=calibSelectedModes();
+  if(!modes.length){ calibMsg('выберите хотя бы один режим работы',false); return; }
   await adminPost('/api/admin/calib/testset',{items});
-  const r=await adminPost('/api/admin/calib/run',{use_llm:$('#calib_llm').checked});
+  const r=await adminPost('/api/admin/calib/run',{use_llm:$('#calib_llm').checked,modes});
   if(r.ok===false){ calibMsg(r.msg||'не удалось запустить',false); return; }
-  calibMsg('калибровка запущена…'); $('#calibres').innerHTML='';
-  clearInterval(calibPoll); calibPoll=setInterval(calibStatus,1500); calibStatus();
+  calibMsg('калибровка запущена…'); $('#calibres').innerHTML=''; calibScheme('load');
+  clearInterval(calibPoll); calibPoll=setInterval(calibStatus,1000); calibStatus();
 }
 async function calibStatus(){
   let s; try{ s=await adminGet('/api/admin/calib/status'); }catch(e){ return; }
-  const p=$('#calibprog');
-  if(s.running){ p.textContent=`${s.phase||'…'} — ${s.done||0}/${s.total||0}`; return; }
-  clearInterval(calibPoll); p.textContent='';
+  const lv=s.live||{};
+  calibScheme(s.running?(lv.stage||'load'):(s.error?null:(s.result?'done':null)));
+  calibLiveUpdate(s);
+  if(s.running){ calibMsg(`${s.phase||'…'} — ${s.done||0}/${s.total||0}`); return; }
+  clearInterval(calibPoll);
   if(s.error){ calibMsg('ошибка: '+s.error,false); return; }
   if(s.result){ calibMsg('готово'); calibRender(s.result); }
 }
 function pct(x){ return x==null?'—':(Math.round(x*1000)/10)+'%'; }
+function calibLiveUpdate(s){
+  const lv=s.live||{};
+  const set=(id,v)=>{ const e=$('#'+id); if(e) e.textContent=v; };
+  set('sg_load', lv.q_total? (lv.q_total+' вопр.'):'—');
+  set('sg_search', lv.q_total? (lv.q_done+'/'+lv.q_total):'—');
+  set('sg_grid', lv.combos_total? (lv.combos_done+'/'+lv.combos_total):'—');
+  set('sg_llm', lv.stage==='llm'?'идёт…':'опц.');
+  set('sg_report', s.result?'готово':'—');
+  const el=(s.finished&&s.started)?(s.finished-s.started):(s.started?(Date.now()/1000-s.started):0);
+  const cards=[
+    ['Режим (вариант)', (lv.mode_label?esc(lv.mode_label):'—')+(lv.mode_total?` (${lv.mode_idx||0}/${lv.mode_total})`:'')],
+    ['Этап', esc(s.phase||'—')],
+    ['Вопросы', (lv.q_done||0)+'/'+(lv.q_total||0)],
+    ['Комбинаций', (lv.combos_done||0)+'/'+(lv.combos_total||0)],
+    ['Лучшая точность', pct(lv.best_acc)],
+    ['Лучшие параметры', lv.best_params?`${lv.best_params.min_score} · ${lv.best_params.k_rerank} · ${lv.best_params.k_retrieve}`:'—'],
+    ['Время', (el>0?el.toFixed(1):'0')+' c'],
+  ];
+  $('#calivecards').innerHTML=cards.map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v" style="font-size:18px">${v}</div></div>`).join('');
+  const h=lv.history||[];
+  mkChart('calib_live_hist',{type:'line',data:{labels:h.map(p=>p.n),
+    datasets:[{data:h.map(p=>+(p.acc*100).toFixed(1)),borderColor:C.palette[1],
+      backgroundColor:'rgba(34,197,94,.15)',fill:true,tension:.25,pointRadius:0}]},
+    options:{animation:false,...axes,scales:{x:{ticks:{color:C.txt},grid:{color:C.grid},title:{display:true,text:'комбинаций перебрано',color:C.txt}},
+      y:{ticks:{color:C.txt},grid:{color:C.grid},suggestedMin:0,suggestedMax:100}},plugins:{legend:{display:false}}}});
+  let done=0,total=0;
+  if(lv.stage==='grid'){ done=lv.combos_done||0; total=lv.combos_total||0; }
+  else { done=lv.q_done||0; total=lv.q_total||0; }
+  const rem=Math.max(0,total-done);
+  mkChart('calib_live_prog',{type:'doughnut',data:{labels:['готово','осталось'],
+    datasets:[{data:[done, rem||(total?0:1)],backgroundColor:[C.palette[0],C.grid],borderWidth:0}]},
+    options:{animation:false,cutout:'62%',plugins:{legend:{labels:{color:C.txt}}}}});
+}
 function calibRender(r){
-  const b=r.best, c=r.current;
-  const rows=(r.combos||[]).map(x=>{
+  const variants=r.variants||[];
+  const headNote=`<div class="note">Вопросов: <b>${r.n_items}</b> (позитивных ${r.n_pos}, негативных ${r.n_neg}).
+    Точность = доля корректных; полнота — по позитивным, специфичность — по негативным.
+    Калибровано режимов: <b>${variants.length}</b>.</div>`;
+  // сводная таблица по режимам (если их несколько)
+  let compare='';
+  if(variants.length>1){
+    const rows=variants.map((v,i)=>{
+      const b=v.best,c=v.current,up=(b.accuracy>c.accuracy);
+      return `<tr>
+        <td><b>${esc(v.label)}</b><div class="note">${esc(v.filter)}</div></td>
+        <td>${pct(c.accuracy)}</td>
+        <td style="color:${up?'var(--accent2)':'inherit'}">${pct(b.accuracy)}${up?` (+${((b.accuracy-c.accuracy)*100).toFixed(1)})`:''}</td>
+        <td>${b.min_score} / ${b.k_rerank} / ${b.k_retrieve}</td>
+        <td style="white-space:nowrap">
+          <button class="act ghost" style="padding:4px 9px" onclick="calibApply(${b.min_score},${b.k_rerank},${b.k_retrieve})">Применить</button>
+          <button class="act" style="padding:4px 9px" onclick="calibApply(${b.min_score},${b.k_rerank},${b.k_retrieve},'${v.mode}')">Применить + режим</button>
+        </td></tr>`;
+    }).join('');
+    compare=`<div class="box"><h3>Сравнение режимов</h3>
+      <div class="clb-help">Лучшие параметры у каждого режима свои. «Применить» меняет только параметры;
+        «Применить + режим» ещё и делает этот режим активным. Текущий активный режим: <b>${esc(calibCurMode||'—')}</b>.</div>
+      <div style="overflow:auto;margin-top:8px"><table>
+        <thead><tr><th>Режим</th><th>Точность (текущие)</th><th>Точность (реком.)</th><th>MIN/RERANK/RETRIEVE</th><th>Действия</th></tr></thead>
+        <tbody>${rows}</tbody></table></div></div>`;
+  }
+  const blocks=variants.map((v,i)=>calibVariantBlock(v,i)).join('');
+  const logBox=`<div class="box">
+      <h3>Полный отчёт и сохранение</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <button class="act ghost" onclick="calibToggleLog()">📄 Показать полный лог</button>
+        ${r.log_id?`<button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="calibDelLog(${r.log_id})">🗑 Удалить сохранённый лог</button>
+        <span class="note">Лог №${r.log_id} сохранён в БД (метка «Автокалибровка», все режимы)</span>`:`<span class="note">лог не сохранён</span>`}
+      </div>
+      <pre id="caliblog" style="display:none;background:var(--panel2);border:1px solid var(--line);
+        border-radius:9px;padding:10px;font-size:12px;max-height:360px;overflow:auto;white-space:pre-wrap"></pre>
+    </div>`;
+  $('#calibres').innerHTML=`<div class="box"><h3>Результат</h3>${headNote}</div>${compare}${blocks}${logBox}`;
+  $('#caliblog')._report = r.report || '';
+  variants.forEach((v,i)=>calibCharts(v,i));
+}
+function calibVariantBlock(v,i){
+  const b=v.best,c=v.current;
+  const rows=(v.combos||[]).map(x=>{
     const isBest=(x.min_score===b.min_score&&x.k_rerank===b.k_rerank&&x.k_retrieve===b.k_retrieve);
     return `<tr style="${isBest?'background:rgba(34,197,94,.12);font-weight:600':''}">
       <td>${x.min_score}</td><td>${x.k_rerank}</td><td>${x.k_retrieve}</td>
       <td>${pct(x.accuracy)}</td><td>${pct(x.pos_recall)}</td><td>${pct(x.neg_spec)}</td></tr>`;
   }).join('');
   let llm='';
-  if(r.llm){
-    const rec=r.llm.recommended, cur=r.llm.current;
+  if(v.llm){ const rec=v.llm.recommended,cur=v.llm.current;
     llm=`<div class="note" style="margin-top:8px">LLM-проверка текста ответа: рекомендованные — <b>${pct(rec&&rec.acc)}</b> (${(rec&&rec.ok)||0}/${(rec&&rec.total)||0})`+
-        (cur?`, текущие — ${pct(cur.acc)} (${cur.ok}/${cur.total})`:'')+`</div>`;
-  }
-  $('#calibres').innerHTML=`
-    <div class="note">Вопросов: <b>${r.n_items}</b> (позитивных ${r.n_pos}, негативных ${r.n_neg}).
-      Точность = доля корректных (нашёл нужное / корректно промолчал); полнота — по позитивным, специфичность — по негативным.</div>
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:8px 0">
+        (cur?`, текущие — ${pct(cur.acc)} (${cur.ok}/${cur.total})`:'')+`</div>`; }
+  const up=(b.accuracy>c.accuracy);
+  const reco=up
+    ? `Рекомендованные параметры дают <b>${pct(b.accuracy)}</b> против текущих <b>${pct(c.accuracy)}</b> (+${((b.accuracy-c.accuracy)*100).toFixed(1)} п.п.). Стоит применить.`
+    : `Текущие параметры не хуже найденных (${pct(c.accuracy)}). Менять не обязательно.`;
+  const isActive=(v.mode===calibCurMode);
+  return `<div class="box">
+    <h3>Режим: ${esc(v.label)} ${isActive?'<span class="tag ok">активен</span>':''}</h3>
+    <div class="clb-help">Фильтрация: ${esc(v.filter)}.</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0;align-items:center">
       <div class="card"><div class="k">Текущие</div>
         <div>MIN_SCORE ${c.min_score} · RERANK ${c.k_rerank} · RETRIEVE ${c.k_retrieve}</div>
-        <div>Точность <b>${pct(c.accuracy)}</b></div></div>
-      <div class="card" style="border-color:#22c55e"><div class="k">Рекомендовано</div>
+        <div>Точность <b>${pct(c.accuracy)}</b> · полнота ${pct(c.pos_recall)} · специф. ${pct(c.neg_spec)}</div></div>
+      <div class="card" style="border-color:var(--accent2)"><div class="k">Рекомендовано</div>
         <div>MIN_SCORE ${b.min_score} · RERANK ${b.k_rerank} · RETRIEVE ${b.k_retrieve}</div>
-        <div>Точность <b>${pct(b.accuracy)}</b></div></div>
-      <div style="align-self:center">
+        <div>Точность <b>${pct(b.accuracy)}</b> · полнота ${pct(b.pos_recall)} · специф. ${pct(b.neg_spec)}</div></div>
+      <div style="display:flex;flex-direction:column;gap:8px">
         <button class="act" onclick="calibApply(${b.min_score},${b.k_rerank},${b.k_retrieve})">Применить рекомендованные</button>
+        ${isActive?'':`<button class="act ghost" onclick="calibApply(${b.min_score},${b.k_rerank},${b.k_retrieve},'${v.mode}')">Применить и включить режим «${esc(v.label)}»</button>`}
       </div>
     </div>
+    <div class="clb-help">${reco}</div>
     ${llm}
-    <div style="max-height:280px;overflow:auto;margin-top:6px"><table>
+    <div class="clb-grid" style="margin-top:12px">
+      <div><div class="note">Точность vs MIN_SCORE</div><canvas id="cch_ms_${i}" height="150"></canvas>
+        <div class="clb-help">Выше порог — честнее «не знаю», но можно потерять полноту. Пик кривой — оптимум.</div></div>
+      <div><div class="note">Точность vs TOP_K_RERANK</div><canvas id="cch_krr_${i}" height="150"></canvas>
+        <div class="clb-help">Сколько лучших фрагментов отдаём LLM. Мало — теряем контекст, много — шум.</div></div>
+      <div><div class="note">Точность vs TOP_K_RETRIEVE</div><canvas id="cch_krt_${i}" height="150"></canvas>
+        <div class="clb-help">Ширина пула кандидатов. Шире — выше шанс найти нужное, но дороже.</div></div>
+      <div><div class="note">Текущие vs рекомендованные</div><canvas id="cch_cmp_${i}" height="150"></canvas>
+        <div class="clb-help">Сравнение по трём метрикам. Зелёные — рекомендованные параметры.</div></div>
+      <div style="grid-column:1/-1"><div class="note">Топ-комбинации по точности</div><canvas id="cch_top_${i}" height="150"></canvas>
+        <div class="clb-help">Подписи: MIN_SCORE/RERANK/RETRIEVE. Лучшая — крайняя слева.</div></div>
+    </div>
+    <div style="max-height:260px;overflow:auto;margin-top:8px"><table>
       <thead><tr><th>MIN_SCORE</th><th>TOP_K_RERANK</th><th>TOP_K_RETRIEVE</th><th>Точность</th><th>Полнота</th><th>Специфичн.</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <tbody>${rows}</tbody></table></div>
+  </div>`;
 }
-async function calibApply(ms,krr,krt){
-  const r=await adminPost('/api/admin/calib/apply',{min_score:ms,k_rerank:krr,k_retrieve:krt});
-  calibMsg(r.ok!==false?'параметры применены — обновите страницу настроек':(r.msg||'ошибка'),r.ok!==false);
-  if(r.ok!==false){ loadConfig(); }
+function calibCharts(v,i){
+  const b=v.best, c=v.current, P=x=>+(((x==null?0:x))*100).toFixed(1);
+  const lineOpts={animation:false,scales:{x:{ticks:{color:C.txt},grid:{color:C.grid}},
+    y:{ticks:{color:C.txt},grid:{color:C.grid},suggestedMin:0,suggestedMax:100}},plugins:{legend:{display:false}}};
+  const ms=v.by_min_score||[], krr=v.by_k_rerank||[], krt=v.by_k_retrieve||[];
+  mkChart('cch_ms_'+i,{type:'line',data:{labels:ms.map(x=>x.v),
+    datasets:[{data:ms.map(x=>P(x.acc)),borderColor:C.palette[0],backgroundColor:'rgba(59,130,246,.15)',fill:true,tension:.3,pointRadius:3}]},options:lineOpts});
+  mkChart('cch_krr_'+i,{type:'bar',data:{labels:krr.map(x=>x.v),
+    datasets:[{data:krr.map(x=>P(x.acc)),backgroundColor:C.palette[3]}]},options:lineOpts});
+  mkChart('cch_krt_'+i,{type:'bar',data:{labels:krt.map(x=>x.v),
+    datasets:[{data:krt.map(x=>P(x.acc)),backgroundColor:C.palette[2]}]},options:lineOpts});
+  mkChart('cch_cmp_'+i,{type:'bar',data:{labels:['Точность','Полнота','Специфичность'],
+    datasets:[{label:'Текущие',data:[P(c.accuracy),P(c.pos_recall),P(c.neg_spec)],backgroundColor:C.palette[0]},
+      {label:'Рекомендовано',data:[P(b.accuracy),P(b.pos_recall),P(b.neg_spec)],backgroundColor:C.palette[1]}]},
+    options:{animation:false,scales:{x:{ticks:{color:C.txt},grid:{color:C.grid}},y:{ticks:{color:C.txt},grid:{color:C.grid},suggestedMin:0,suggestedMax:100}},plugins:{legend:{display:true,labels:{color:C.txt}}}}});
+  const top=(v.combos||[]).slice(0,15);
+  mkChart('cch_top_'+i,{type:'bar',data:{labels:top.map(x=>`${x.min_score}/${x.k_rerank}/${x.k_retrieve}`),
+    datasets:[{data:top.map(x=>P(x.accuracy)),backgroundColor:top.map(x=>(x.min_score===b.min_score&&x.k_rerank===b.k_rerank&&x.k_retrieve===b.k_retrieve)?C.palette[1]:C.palette[0])}]},options:lineOpts});
+}
+function calibToggleLog(){
+  const pre=$('#caliblog'); if(!pre) return;
+  if(pre.style.display==='none'){ pre.textContent=pre._report||'(лог пуст)'; pre.style.display='block'; }
+  else pre.style.display='none';
+}
+async function calibDelLog(id){
+  if(!confirm('Удалить сохранённый лог калибровки №'+id+'?'))return;
+  const r=await adminPost('/api/admin/ingest-logs/delete',{id});
+  calibMsg(r.msg||'удалено',r.ok!==false); loadIngestLogs();
+}
+async function calibApply(ms,krr,krt,mode){
+  const body={min_score:ms,k_rerank:krr,k_retrieve:krt}; if(mode) body.mode=mode;
+  const r=await adminPost('/api/admin/calib/apply',body);
+  calibMsg(r.ok!==false?(r.msg||'параметры применены'):(r.msg||'ошибка'),r.ok!==false);
+  if(r.ok!==false){ loadConfig(); calibLoadModes(); }
 }
 
 // ---- сохранённые логи индексации ----
