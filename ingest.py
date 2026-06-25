@@ -374,6 +374,13 @@ def main():
     except Exception as e:
         print(f"  ~ не удалось записать {INGEST_STATS.name}: {e}")
 
+    # индекс изменился — сбрасываем кэш поиска/ответов (Redis, пространство index)
+    try:
+        import cache
+        cache.bump("index")
+    except Exception:
+        pass
+
     # машиночитаемая сводка (последняя строка) — её разбирает админка
     print(f"SUMMARY files_ok={n_new} chunks={n_chunks} skipped={n_skip} errors={len(errors)}")
 

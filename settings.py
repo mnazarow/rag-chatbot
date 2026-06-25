@@ -270,6 +270,13 @@ FIELDS: list[dict] = [
     {"key": "REDIS_PASSWORD", "label": "Redis: пароль (если задан)",
      "group": "База данных и кэш", "type": "secret", "scope": "live",
      "default": config.REDIS_PASSWORD},
+    {"key": "ANSWER_CACHE", "label": "Кэшировать готовые ответы LLM (Redis)",
+     "group": "База данных и кэш", "type": "bool", "scope": "live",
+     "default": config.ANSWER_CACHE,
+     "desc": "Запоминать ответ на одинаковый вопрос и отдавать его из Redis без повторного "
+             "вызова LLM. Сильно ускоряет повторяющиеся вопросы и снижает нагрузку, но один "
+             "и тот же вопрос будет получать один и тот же ответ до переиндексации или смены "
+             "модели/промпта/температуры. Требует включённого Redis. По умолчанию выключено."},
     {"key": "CATALOG_SOURCE", "label": "Источник каталога документов",
      "group": "База данных и кэш", "type": "select", "scope": "live",
      "options": ["filesystem", "postgresql"], "default": config.CATALOG_SOURCE,

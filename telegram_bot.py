@@ -69,7 +69,23 @@ def notify_blocked(chat_id: int) -> None:
 
 
 def _answer(question: str):
-    """Синхронный RAG-ответ: поиск → контекст → LLM. Возвращает (text, sources, hits)."""
+    """Синхронный RAG-ответ: поиск → контекст → LLM. Возвращает (text, sources, hits).
+    При включённом ANSWER_CACHE одинаковые вопросы отдаются из Redis без вызова LLM."""
+    ckey = None
+    if settings.get("ANSWER_CACHE"):
+        try:
+            import cache
+            import hashlib
+            ckey = "ans:" + hashlib.sha1("|".join([
+                question, settings.get("SYSTEM_PROMPT") or "",
+                settings.active_model() or "",
+                str(settings.get("TEMPERATURE"))]).encode("utf-8")).hexdigest()
+            c = cache.get_json(ckey, ns="index")
+            if c:
+                hits = [{"score": c.get("top_score", 0.0)}] if c.get("answered") else []
+                return c.get("text", ""), c.get("sources", []), hits
+        except Exception:
+            ckey = None
     hits = search(question)
     if not hits:
         return "В доступных документах нет точного ответа на этот вопрос.", [], []
@@ -80,6 +96,14 @@ def _answer(question: str):
                             model=settings.active_model())
     sources = [{"source": h["source"], "page": h.get("page"),
                 "score": round(h.get("score", 0), 3)} for h in hits]
+    if ckey:
+        try:
+            import cache
+            cache.set_json(ckey, 86400, {"text": text, "sources": sources,
+                                         "top_score": hits[0]["score"],
+                                         "answered": True}, ns="index")
+        except Exception:
+            pass
     return text, sources, hits
 
 

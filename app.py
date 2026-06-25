@@ -3,6 +3,7 @@
 Запуск:  uvicorn app:app --host 0.0.0.0 --port 8000
 """
 from __future__ import annotations
+import hashlib
 import json
 import os
 import time
@@ -136,6 +137,43 @@ async def chat(req: ChatRequest):
         except Exception as e:
             print(f"LightRAG недоступен, фолбэк на вектор: {e}")
 
+    # Кэш готовых ответов (опционально, Redis). Только для одиночных вопросов без
+    # истории диалога; ключ учитывает фильтры, промпт, модель и температуру; кэш
+    # сбрасывается при переиндексации (пространство index).
+    acache_key = None
+    if settings.get("ANSWER_CACHE") and not req.history:
+        acache_key = "ans:" + hashlib.sha1("|".join(str(x) for x in [
+            req.question, req.filters, settings.get("SYSTEM_PROMPT"),
+            settings.active_model(), settings.get("TEMPERATURE")]).encode("utf-8")).hexdigest()
+        try:
+            import cache
+            cached = cache.get_json(acache_key, ns="index")
+        except Exception:
+            cached = None
+        if cached:
+            async def cached_stream():
+                txt = cached.get("answer", "")
+                for i in range(0, len(txt), 40):
+                    yield json.dumps({"type": "answer", "text": txt[i:i + 40]},
+                                     ensure_ascii=False) + "\n"
+                yield json.dumps({"type": "sources", "items": cached.get("sources", [])},
+                                 ensure_ascii=False) + "\n"
+                lat = int((time.time() - t0) * 1000)
+                if req.debug:
+                    yield json.dumps({"type": "debug", "info": {
+                        "engine": "векторный (ответ из кэша Redis)", "cached": True,
+                        "mode": settings.current_mode(), "model": settings.active_model(),
+                        "backend": settings.get("LLM_BACKEND"),
+                        "timings": {"retrieve_ms": 0, "gen_ms": 0, "total_ms": lat},
+                        "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
+                rid = db.log_request(req.question, cached.get("category"),
+                                     cached.get("n_hits", 0), cached.get("top_score", 0.0),
+                                     lat, len(txt), True, cached.get("sources", []),
+                                     retrieve_ms=0, gen_ms=0, session_id=req.session_id)
+                yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
+
+            return StreamingResponse(cached_stream(), media_type="application/x-ndjson")
+
     t_ret = time.time()
     hits = search(req.question, filters=req.filters)
     retrieve_ms = int((time.time() - t_ret) * 1000)
@@ -187,6 +225,14 @@ async def chat(req: ChatRequest):
                              latency, len("".join(acc)), True, sources,
                              retrieve_ms=retrieve_ms, gen_ms=max(0, latency - retrieve_ms),
                              session_id=req.session_id)
+        if acache_key and acc:
+            try:
+                import cache
+                cache.set_json(acache_key, 86400, {
+                    "answer": "".join(acc), "sources": sources, "category": category,
+                    "n_hits": len(hits), "top_score": hits[0]["score"]}, ns="index")
+            except Exception:
+                pass
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")

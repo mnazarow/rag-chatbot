@@ -1064,6 +1064,11 @@ def reset(targets: list) -> dict:
                       json={"vectors": {"size": 1024, "distance": "Cosine"}})
             # сбрасываем накопленное время обработки — оно относится к старому индексу
             _INGEST_STATS.unlink(missing_ok=True)
+            try:
+                import cache
+                cache.bump("index")   # сброс кэша поиска/ответов
+            except Exception:
+                pass
             done.append("индекс Qdrant")
         except Exception as e:
             errors.append(f"индекс: {e}")
@@ -1312,6 +1317,16 @@ def _dir_size_mb(path: Path) -> float:
 
 
 def system_info() -> dict:
+    """Сводка по компонентам с коротким кэшем (Redis, 3 с): дашборд опрашивает часто,
+    кэш снижает нагрузку на Qdrant и повторные проверки внешних БД/Redis."""
+    try:
+        import cache
+        return cache.get_or_set("system_info", 3, _system_info_raw, ns="live")
+    except Exception:
+        return _system_info_raw()
+
+
+def _system_info_raw() -> dict:
     """Полная сводка по компонентам: Qdrant, граф (LightRAG), дообучение, hybrid+."""
     coll = settings.get("QDRANT_COLLECTION")
     qbase = settings.get("QDRANT_URL")
@@ -1787,17 +1802,28 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
     proc_map = {k: (v.get("ms") if isinstance(v, dict) else None)
                 for k, v in (istats.get("files") or {}).items()}
 
-    # число чанков по каждому источнику — одним фасет-запросом к Qdrant
-    counts = {}
+    # число чанков по каждому источнику — одним фасет-запросом к Qdrant.
+    # Тяжёлый запрос кэшируется (Redis, пространство index — сбрасывается переиндексацией).
+    def _facet():
+        out = {}
+        try:
+            base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
+            r = httpx.post(f"{base}/collections/{coll}/facet",
+                           json={"key": "source", "limit": 100000, "exact": True},
+                           timeout=30)
+            if r.status_code == 200:
+                for h in (r.json().get("result", {}) or {}).get("hits", []):
+                    out[h.get("value")] = h.get("count", 0)
+        except Exception:
+            pass
+        return out
+
     try:
-        base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
-        r = httpx.post(f"{base}/collections/{coll}/facet",
-                       json={"key": "source", "limit": 100000, "exact": True}, timeout=30)
-        if r.status_code == 200:
-            for h in (r.json().get("result", {}) or {}).get("hits", []):
-                counts[h.get("value")] = h.get("count", 0)
+        import cache
+        counts = cache.get_or_set("facet:" + str(settings.get("QDRANT_COLLECTION")),
+                                  60, _facet, ns="index")
     except Exception:
-        pass
+        counts = _facet()
 
     files, by_ext = [], {}
     total_size = indexed = 0

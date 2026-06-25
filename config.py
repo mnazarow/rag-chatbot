@@ -100,6 +100,10 @@ REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = _int("REDIS_PORT", 6379)
 REDIS_DB = _int("REDIS_DB", 0)
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+# Кэшировать готовые ответы LLM в Redis (для одинаковых вопросов). По умолчанию выкл.:
+# экономит время/нагрузку, но один и тот же вопрос будет получать один ответ до
+# переиндексации/смены модели. Требует REDIS_ENABLED.
+ANSWER_CACHE = _bool("ANSWER_CACHE", False)
 
 # Доступ
 API_HOST = os.getenv("API_HOST", "0.0.0.0")

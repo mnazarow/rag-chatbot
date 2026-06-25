@@ -3,6 +3,7 @@
 Модели грузятся один раз при импорте (синглтоны).
 """
 from __future__ import annotations
+import hashlib
 from functools import lru_cache
 
 from qdrant_client import QdrantClient
@@ -61,10 +62,27 @@ def _build_filter(filters: dict | None) -> qm.Filter | None:
     return qm.Filter(must=must) if must else None
 
 
+def _embed_query(question: str):
+    """Вектор запроса с кэшированием в Redis (ключ привязан к модели эмбеддингов;
+    при выключенном/недоступном Redis считается напрямую). Возвращает list[float]."""
+    model = settings.get("EMBED_MODEL")
+
+    def _enc():
+        return _embedder().encode([question], normalize_embeddings=True)[0].tolist()
+
+    try:
+        import cache
+        key = "emb:" + hashlib.sha1(f"{model}|{question}".encode("utf-8")).hexdigest()
+        return cache.get_or_set(key, 86400, _enc, ns="embed")
+    except Exception:
+        return _enc()
+
+
 def _dense_search(qvec, qfilter):
+    qv = qvec.tolist() if hasattr(qvec, "tolist") else qvec
     res = _client.query_points(
         _COLLECTION,
-        query=qvec.tolist(),
+        query=qv,
         query_filter=qfilter,
         limit=settings.get("TOP_K_RETRIEVE"),
         with_payload=True,
@@ -81,12 +99,30 @@ def _dense_search(qvec, qfilter):
 
 def search(question: str, filters: dict | None = None,
            auto_filter: bool | None = None) -> list[dict]:
-    """filters: явные фильтры из API, напр. {'doc_category': 'price', 'date': '2024-05'}.
-    auto_filter: если явных нет — попробовать угадать категорию по вопросу
-    (по умолчанию берётся из рантайм-настроек AUTO_FILTER)."""
+    """Поиск с кэшированием результата в Redis. Ключ включает вопрос, явные фильтры и
+    влияющие настройки; кэш в пространстве 'index' (сбрасывается при переиндексации).
+    При выключенном/недоступном Redis считается напрямую."""
     if auto_filter is None:
         auto_filter = settings.get("AUTO_FILTER")
-    qvec = _embedder().encode([question], normalize_embeddings=True)[0]
+    keyparts = "|".join(str(x) for x in [
+        question, filters, auto_filter,
+        settings.get("EMBED_MODEL"), settings.get("RERANK_MODEL"),
+        settings.get("TOP_K_RETRIEVE"), settings.get("TOP_K_RERANK"),
+        settings.get("MIN_SCORE"), settings.get("SMART_FILTER")])
+    ckey = "search:" + hashlib.sha1(keyparts.encode("utf-8")).hexdigest()
+    try:
+        import cache
+        return cache.get_or_set(
+            ckey, 300, lambda: _search_raw(question, filters, auto_filter), ns="index")
+    except Exception:
+        return _search_raw(question, filters, auto_filter)
+
+
+def _search_raw(question: str, filters: dict | None = None,
+                auto_filter: bool | None = None) -> list[dict]:
+    if auto_filter is None:
+        auto_filter = settings.get("AUTO_FILTER")
+    qvec = _embed_query(question)
 
     # 1) определяем фильтр: явный > умный (LLM) > авто-угаданная категория (правила)
     if filters is None:

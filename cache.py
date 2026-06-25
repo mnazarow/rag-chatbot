@@ -13,7 +13,6 @@ import threading
 _client = None
 _client_key = None          # параметры подключения, под которые создан клиент
 _lock = threading.Lock()
-_ver_local = 0              # запасной счётчик версии (если Redis вдруг недоступен)
 
 
 def _cfg():
@@ -63,34 +62,47 @@ def client():
             return None
 
 
-def _ver() -> int:
+# Версии кэша по «пространствам имён» (ns). Разделены, чтобы инвалидация была точечной:
+#   stats — растёт при любой записи в журнал (статистика/аналитика);
+#   index — растёт при переиндексации/сбросе индекса (поиск/ответы/каталог);
+#   embed — эмбеддинги запроса (ключ уже включает модель → версию не трогаем);
+#   live  — короткоживущие снимки (system_info и т.п.; только TTL, версию не трогаем).
+_ver_local: dict = {}
+
+
+def _ver(ns: str = "stats") -> int:
     c = client()
     if not c:
-        return _ver_local
+        return _ver_local.get(ns, 0)
     try:
-        return int(c.get("rag:ver") or 0)
+        return int(c.get(f"rag:ver:{ns}") or 0)
     except Exception:
-        return _ver_local
+        return _ver_local.get(ns, 0)
 
 
-def bump() -> None:
-    """Инвалидировать кэш (вызывается при любой записи в журнал)."""
-    global _ver_local
-    _ver_local += 1
+def bump(ns: str = "stats") -> None:
+    """Инвалидировать кэш пространства ns. По умолчанию stats (запись в журнал).
+    При переиндексации/сбросе вызывайте bump('index')."""
+    _ver_local[ns] = _ver_local.get(ns, 0) + 1
     c = client()
     if c:
         try:
-            c.incr("rag:ver")
+            c.incr(f"rag:ver:{ns}")
         except Exception:
             pass
 
 
-def get_or_set(name: str, ttl: int, producer):
-    """Вернуть кэш по ключу name или вычислить producer() и закэшировать на ttl сек."""
+def _key(name: str, ns: str) -> str:
+    return f"rag:cache:{ns}:{name}:{_ver(ns)}"
+
+
+def get_or_set(name: str, ttl: int, producer, ns: str = "stats"):
+    """Вернуть кэш по ключу name или вычислить producer() и закэшировать на ttl сек.
+    ns — пространство имён инвалидации (stats|index|embed|live)."""
     c = client()
     if not c:
         return producer()
-    key = f"rag:cache:{name}:{_ver()}"
+    key = _key(name, ns)
     try:
         v = c.get(key)
         if v is not None:
@@ -105,6 +117,29 @@ def get_or_set(name: str, ttl: int, producer):
     return val
 
 
+def get_json(name: str, ns: str = "index"):
+    """Прямое чтение из кэша (None — нет/недоступен). Для ручного кэша ответов."""
+    c = client()
+    if not c:
+        return None
+    try:
+        v = c.get(_key(name, ns))
+        return json.loads(v) if v is not None else None
+    except Exception:
+        return None
+
+
+def set_json(name: str, ttl: int, value, ns: str = "index") -> None:
+    """Прямая запись в кэш (тихо игнорируется, если Redis недоступен)."""
+    c = client()
+    if not c:
+        return
+    try:
+        c.setex(_key(name, ns), ttl, json.dumps(value, ensure_ascii=False))
+    except Exception:
+        pass
+
+
 def clear() -> int:
     """Удалить все кэш-ключи приложения. Возвращает число удалённых ключей."""
     c = client()
@@ -115,7 +150,8 @@ def clear() -> int:
         for k in c.scan_iter("rag:cache:*"):
             c.delete(k)
             n += 1
-        c.incr("rag:ver")
+        for ns in ("stats", "index"):
+            c.incr(f"rag:ver:{ns}")
     except Exception:
         pass
     return n
