@@ -97,8 +97,11 @@ def _connect_for(dialect: str):
     if d == "postgresql":
         import psycopg2
         p = _params_for("postgresql")
+        # client_encoding='UTF8' — заставляем сервер отдавать данные/сообщения в UTF-8
+        # (иначе на сервере с русской локалью psycopg2 спотыкается на cp1251).
         conn = psycopg2.connect(host=p["host"], port=p["port"], user=p["user"],
-                                password=p["password"], dbname=p["db"], connect_timeout=5)
+                                password=p["password"], dbname=p["db"],
+                                connect_timeout=5, client_encoding="UTF8")
         conn.autocommit = True
         return "postgresql", conn
     conn = sqlite3.connect(DB_PATH)
@@ -180,6 +183,26 @@ def _f(x) -> float:
 
 def _fn(x):
     return None if x is None else float(x)
+
+
+def _safe_err(e) -> str:
+    """Текст ошибки, устойчивый к не-UTF-8 сообщениям СУБД.
+
+    Сервер PostgreSQL/MySQL с русской локалью присылает текст ошибки в cp1251, и
+    psycopg2 пытается декодировать его как UTF-8 → получаем загадочное «'utf-8'
+    codec can't decode…». Здесь достаём исходные байты и декодируем cp1251/latin1,
+    чтобы показать настоящую причину (неверный пароль, нет БД, pg_hba и т. п.)."""
+    obj = getattr(e, "object", None)
+    if isinstance(e, UnicodeDecodeError) and isinstance(obj, (bytes, bytearray)):
+        for enc in ("cp1251", "latin1"):
+            try:
+                return obj.decode(enc, "replace").strip()
+            except Exception:
+                pass
+    try:
+        return str(e)
+    except Exception:
+        return repr(e)
 
 
 def _bump() -> None:
@@ -664,7 +687,7 @@ def copy_all(target: str) -> dict:
         td, tconn = _connect_for(target)
     except Exception as e:
         return {"ok": False, "target": target,
-                "log": "\n".join(log) + f"\nПодключение к {target}: {e}"}
+                "log": "\n".join(log) + f"\nПодключение к {target}: {_safe_err(e)}"}
     try:
         tcur = _mk_cursor(td, tconn)
         for table, cols in _TABLES.items():
@@ -738,7 +761,8 @@ def test_connection(backend: str) -> dict:
         return {"ok": True, "backend": d,
                 "msg": f"{d}: подключение успешно ({p['host']}:{p['port']}/{p['db']})"}
     except Exception as e:
-        return {"ok": False, "backend": d, "msg": f"{d}: ошибка подключения: {e}"}
+        return {"ok": False, "backend": d,
+                "msg": f"{d}: ошибка подключения: {_safe_err(e)}"}
 
 
 def _rv(row, key):
@@ -779,7 +803,7 @@ def _backend_detail(dialect: str) -> dict:
     try:
         dd, conn = _connect_for(d)
     except Exception as e:
-        info["error"] = str(e)[:200]
+        info["error"] = _safe_err(e)[:200]
         return info
     try:
         c = _mk_cursor(dd, conn)
@@ -815,7 +839,7 @@ def _backend_detail(dialect: str) -> dict:
                 info["counts"][t] = None
         conn.close()
     except Exception as e:
-        info["error"] = str(e)[:200]
+        info["error"] = _safe_err(e)[:200]
         try:
             conn.close()
         except Exception:
@@ -850,7 +874,7 @@ def db_status() -> dict:
                 conn.close()
                 info["reachable"] = True
             except Exception as e:
-                info["error"] = str(e)[:200]
+                info["error"] = _safe_err(e)[:200]
         out["backends"][d] = info
     return out
 
