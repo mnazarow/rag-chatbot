@@ -242,6 +242,9 @@ def _ddl(d: str) -> list[str]:
                 size BIGINT, mtime BIGINT, n_chars INT, method VARCHAR(32),
                 sha256 VARCHAR(64), content LONGBLOB, content_oid BIGINT, txt LONGTEXT,
                 updated DOUBLE) CHARACTER SET utf8mb4""",
+            """CREATE TABLE IF NOT EXISTS ingest_logs(
+                id BIGINT AUTO_INCREMENT PRIMARY KEY, ts DOUBLE, day VARCHAR(16),
+                label VARCHAR(64), summary MEDIUMTEXT, log LONGTEXT) CHARACTER SET utf8mb4""",
         ]
     if d == "postgresql":
         return [
@@ -266,6 +269,9 @@ def _ddl(d: str) -> list[str]:
                 mtime BIGINT, n_chars INTEGER, method TEXT, sha256 TEXT,
                 content BYTEA, content_oid BIGINT, txt TEXT,
                 updated DOUBLE PRECISION)""",
+            """CREATE TABLE IF NOT EXISTS ingest_logs(
+                id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION, day TEXT,
+                label TEXT, summary TEXT, log TEXT)""",
         ]
     # sqlite (по умолчанию)
     return [
@@ -289,6 +295,9 @@ def _ddl(d: str) -> list[str]:
             rel_path TEXT PRIMARY KEY, fname TEXT, ext TEXT, size INTEGER,
             mtime INTEGER, n_chars INTEGER, method TEXT, sha256 TEXT,
             content BLOB, content_oid BIGINT, txt TEXT, updated REAL)""",
+        """CREATE TABLE IF NOT EXISTS ingest_logs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, day TEXT,
+            label TEXT, summary TEXT, log TEXT)""",
     ]
 
 
@@ -661,6 +670,15 @@ def kv_get(k: str) -> str | None:
     return r["v"] if r else None
 
 
+def kv_set(k: str, v: str) -> None:
+    with _cursor() as (d, conn, cur):
+        _kv_set(d, cur, k, v)
+
+
+def kv_del(k: str) -> int:
+    return _exec("DELETE FROM kv_store WHERE k=?", (k,))
+
+
 def _fix_seq(d: str, cur) -> None:
     """Выровнять автоинкремент приёмника после вставки явных id."""
     try:
@@ -860,6 +878,57 @@ def _backend_detail(dialect: str) -> dict:
         except Exception:
             pass
     return info
+
+
+def ingest_log_save(label: str, summary: str, log: str) -> int:
+    """Сохранить полный лог индексации в БД. Возвращает id записи."""
+    now = datetime.now()
+    try:
+        with _LOCK:
+            return _insert(
+                "INSERT INTO ingest_logs(ts,day,label,summary,log) VALUES(?,?,?,?,?)",
+                (now.timestamp(), now.strftime("%Y-%m-%d"), (label or "")[:64],
+                 (summary or "")[:8000], (log or "")[:5_000_000])) or 0
+    except Exception as e:
+        print(f"[db] ingest_log_save: {e}")
+        return 0
+
+
+def ingest_log_list(limit: int = 50) -> list[dict]:
+    """Список сохранённых логов (без полного текста)."""
+    try:
+        return _all("SELECT id, ts, day, label, summary FROM ingest_logs "
+                    "ORDER BY id DESC LIMIT ?", (int(limit),))
+    except Exception:
+        return []
+
+
+def ingest_log_get(log_id: int) -> dict | None:
+    try:
+        return _one("SELECT id, ts, day, label, summary, log FROM ingest_logs "
+                    "WHERE id=?", (int(log_id),))
+    except Exception:
+        return None
+
+
+def ingest_log_delete(log_id: int) -> int:
+    try:
+        with _LOCK:
+            return _exec("DELETE FROM ingest_logs WHERE id=?", (int(log_id),))
+    except Exception as e:
+        print(f"[db] ingest_log_delete: {e}")
+        return 0
+
+
+def ingest_log_clear() -> int:
+    try:
+        with _LOCK:
+            n = _one("SELECT COUNT(*) n FROM ingest_logs")["n"]
+            _exec("DELETE FROM ingest_logs")
+        return n
+    except Exception as e:
+        print(f"[db] ingest_log_clear: {e}")
+        return 0
 
 
 def system_stats() -> dict:

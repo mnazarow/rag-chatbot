@@ -650,6 +650,51 @@
       <div id="opssummary" class="note" style="margin-top:10px"></div>
       <pre id="joblog" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);
         border-radius:9px;padding:10px;font-size:12px;max-height:160px;overflow:auto;display:none;white-space:pre-wrap"></pre>
+
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <b style="font-size:13px">Сохранённые логи индексации</b>
+          <button class="act ghost" onclick="loadIngestLogs()">Обновить</button>
+          <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="clearIngestLogs()">🗑 Удалить все</button>
+          <span id="ilmsg" class="note"></span>
+        </div>
+        <div class="note" style="margin:4px 0 8px">Полный лог каждой переиндексации/парсинга сохраняется в БД — его можно открыть и удалить.</div>
+        <div id="illist"></div>
+        <pre id="illog" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);
+          border-radius:9px;padding:10px;font-size:12px;max-height:300px;overflow:auto;display:none;white-space:pre-wrap"></pre>
+      </div>
+    </div>
+
+    <!-- автокалибровка -->
+    <div class="box">
+      <h3>Автокалибровка параметров поиска</h3>
+      <div class="note" style="margin-bottom:10px">
+        Подберите <b>MIN_SCORE</b>, <b>TOP_K_RERANK</b> и <b>TOP_K_RETRIEVE</b> на эталонном
+        наборе «вопрос → ожидаемый результат». Для каждого вопроса задайте ожидаемые
+        <b>файлы-источники</b> (часть имени) и/или <b>ключевые слова ответа</b>. Вопрос без
+        ожиданий — <b>негативный</b>: правильно ответить «не знаю». Поиск+реранк по каждому
+        вопросу считается один раз, затем перебираются параметры.
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <b style="font-size:13px">Тестовый набор (JSON)</b>
+        <button class="act ghost" onclick="calibLoad()">Загрузить</button>
+        <button class="act ghost" onclick="calibSave()">💾 Сохранить</button>
+        <button class="act ghost" onclick="calibExample()">Вставить пример</button>
+        <span id="calibsetmsg" class="note"></span>
+      </div>
+      <textarea id="calibset" spellcheck="false" style="width:100%;min-height:150px;
+        font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--panel2);
+        border:1px solid var(--line);border-radius:9px;padding:10px;white-space:pre"></textarea>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <button class="act" onclick="calibRun()">▶️ Запустить калибровку</button>
+        <label class="note" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="calib_llm"> проверять и текст ответа (LLM, медленнее)
+        </label>
+        <span id="calibmsg" class="note"></span>
+      </div>
+      <div id="calibprog" class="note" style="margin-top:8px"></div>
+      <div id="calibres" style="margin-top:10px"></div>
     </div>
 
     <!-- токен -->
@@ -1619,7 +1664,121 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache();
+  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); calibLoad();
+}
+
+// ---- автокалибровка параметров ----
+function calibSetMsg(t,ok=true){ const e=$('#calibsetmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
+function calibMsg(t,ok=true){ const e=$('#calibmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
+async function calibLoad(){
+  const el=$('#calibset'); if(!el) return;
+  let r; try{ r=await adminGet('/api/admin/calib/testset'); }catch(e){ return; }
+  el.value=JSON.stringify((r&&r.items)||[],null,2);
+}
+async function calibExample(){
+  let r; try{ r=await adminGet('/api/admin/calib/example'); }catch(e){ return; }
+  $('#calibset').value=JSON.stringify((r&&r.items)||[],null,2);
+  calibSetMsg('пример вставлен — отредактируйте и сохраните');
+}
+function calibParse(){
+  try{ const v=JSON.parse($('#calibset').value||'[]'); if(!Array.isArray(v)) throw 0; return v; }
+  catch(e){ calibSetMsg('ошибка JSON — проверьте формат',false); return null; }
+}
+async function calibSave(){
+  const items=calibParse(); if(items===null) return;
+  const r=await adminPost('/api/admin/calib/testset',{items});
+  calibSetMsg(r.ok!==false?('сохранено: '+(r.count||0)+' вопрос(ов)'):(r.msg||'ошибка'),r.ok!==false);
+}
+let calibPoll=null;
+async function calibRun(){
+  const items=calibParse(); if(items===null) return;
+  await adminPost('/api/admin/calib/testset',{items});
+  const r=await adminPost('/api/admin/calib/run',{use_llm:$('#calib_llm').checked});
+  if(r.ok===false){ calibMsg(r.msg||'не удалось запустить',false); return; }
+  calibMsg('калибровка запущена…'); $('#calibres').innerHTML='';
+  clearInterval(calibPoll); calibPoll=setInterval(calibStatus,1500); calibStatus();
+}
+async function calibStatus(){
+  let s; try{ s=await adminGet('/api/admin/calib/status'); }catch(e){ return; }
+  const p=$('#calibprog');
+  if(s.running){ p.textContent=`${s.phase||'…'} — ${s.done||0}/${s.total||0}`; return; }
+  clearInterval(calibPoll); p.textContent='';
+  if(s.error){ calibMsg('ошибка: '+s.error,false); return; }
+  if(s.result){ calibMsg('готово'); calibRender(s.result); }
+}
+function pct(x){ return x==null?'—':(Math.round(x*1000)/10)+'%'; }
+function calibRender(r){
+  const b=r.best, c=r.current;
+  const rows=(r.combos||[]).map(x=>{
+    const isBest=(x.min_score===b.min_score&&x.k_rerank===b.k_rerank&&x.k_retrieve===b.k_retrieve);
+    return `<tr style="${isBest?'background:rgba(34,197,94,.12);font-weight:600':''}">
+      <td>${x.min_score}</td><td>${x.k_rerank}</td><td>${x.k_retrieve}</td>
+      <td>${pct(x.accuracy)}</td><td>${pct(x.pos_recall)}</td><td>${pct(x.neg_spec)}</td></tr>`;
+  }).join('');
+  let llm='';
+  if(r.llm){
+    const rec=r.llm.recommended, cur=r.llm.current;
+    llm=`<div class="note" style="margin-top:8px">LLM-проверка текста ответа: рекомендованные — <b>${pct(rec&&rec.acc)}</b> (${(rec&&rec.ok)||0}/${(rec&&rec.total)||0})`+
+        (cur?`, текущие — ${pct(cur.acc)} (${cur.ok}/${cur.total})`:'')+`</div>`;
+  }
+  $('#calibres').innerHTML=`
+    <div class="note">Вопросов: <b>${r.n_items}</b> (позитивных ${r.n_pos}, негативных ${r.n_neg}).
+      Точность = доля корректных (нашёл нужное / корректно промолчал); полнота — по позитивным, специфичность — по негативным.</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:8px 0">
+      <div class="card"><div class="k">Текущие</div>
+        <div>MIN_SCORE ${c.min_score} · RERANK ${c.k_rerank} · RETRIEVE ${c.k_retrieve}</div>
+        <div>Точность <b>${pct(c.accuracy)}</b></div></div>
+      <div class="card" style="border-color:#22c55e"><div class="k">Рекомендовано</div>
+        <div>MIN_SCORE ${b.min_score} · RERANK ${b.k_rerank} · RETRIEVE ${b.k_retrieve}</div>
+        <div>Точность <b>${pct(b.accuracy)}</b></div></div>
+      <div style="align-self:center">
+        <button class="act" onclick="calibApply(${b.min_score},${b.k_rerank},${b.k_retrieve})">Применить рекомендованные</button>
+      </div>
+    </div>
+    ${llm}
+    <div style="max-height:280px;overflow:auto;margin-top:6px"><table>
+      <thead><tr><th>MIN_SCORE</th><th>TOP_K_RERANK</th><th>TOP_K_RETRIEVE</th><th>Точность</th><th>Полнота</th><th>Специфичн.</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+}
+async function calibApply(ms,krr,krt){
+  const r=await adminPost('/api/admin/calib/apply',{min_score:ms,k_rerank:krr,k_retrieve:krt});
+  calibMsg(r.ok!==false?'параметры применены — обновите страницу настроек':(r.msg||'ошибка'),r.ok!==false);
+  if(r.ok!==false){ loadConfig(); }
+}
+
+// ---- сохранённые логи индексации ----
+function ilMsg(t,ok=true){ const e=$('#ilmsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+async function loadIngestLogs(){
+  const el=$('#illist'); if(!el) return;
+  let r; try{ r=await adminGet('/api/admin/ingest-logs'); }catch(e){ return; }
+  const logs=(r&&r.logs)||[];
+  if(!logs.length){ el.innerHTML='<span class="note">пока нет сохранённых логов</span>'; return; }
+  el.innerHTML='<div style="max-height:200px;overflow:auto"><table><thead><tr><th>Время</th><th>Тип</th><th>Сводка</th><th></th></tr></thead><tbody>'+
+    logs.map(l=>`<tr>
+      <td style="white-space:nowrap">${fmtTime(l.ts)}</td>
+      <td>${esc(l.label||'')}</td>
+      <td style="color:var(--muted)">${esc((l.summary||'').slice(0,120))}</td>
+      <td style="white-space:nowrap">
+        <button class="act ghost" style="padding:3px 8px" onclick="viewIngestLog(${l.id})">Показать</button>
+        <button class="act ghost" style="padding:3px 8px;border-color:#ef4444;color:#f87171" onclick="delIngestLog(${l.id})">Удалить</button>
+      </td></tr>`).join('')+'</tbody></table></div>';
+}
+async function viewIngestLog(id){
+  ilMsg('загрузка…'); let r; try{ r=await adminGet('/api/admin/ingest-log?id='+id); }catch(e){ ilMsg('ошибка',false); return; }
+  ilMsg('');
+  const pre=$('#illog'); pre.style.display='block';
+  pre.textContent=(r&&r.log)?r.log:'(лог пуст)';
+  pre.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+async function delIngestLog(id){
+  if(!confirm('Удалить этот лог?'))return;
+  const r=await adminPost('/api/admin/ingest-logs/delete',{id}); ilMsg(r.msg||'удалено',r.ok!==false);
+  $('#illog').style.display='none'; loadIngestLogs();
+}
+async function clearIngestLogs(){
+  if(!confirm('Удалить ВСЕ сохранённые логи индексации?'))return;
+  const r=await adminPost('/api/admin/ingest-logs/delete',{}); ilMsg(r.msg||'очищено',r.ok!==false);
+  $('#illog').style.display='none'; loadIngestLogs();
 }
 
 // ---- база данных и кэш ----

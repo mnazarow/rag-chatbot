@@ -45,6 +45,7 @@ import retriever
 import remote
 import media
 import telegram_bot
+import calibrate
 from ingest import chunk_text, SUPPORTED
 from retriever import search, infer_category
 
@@ -809,6 +810,72 @@ async def admin_upload(files: list[UploadFile] = File(...),
     catalog_added = admin_ops.catalog_add_paths(saved_paths)
     return {"ok": True, "saved": saved, "skipped": skipped, "dir": str(dest),
             "catalog_added": catalog_added}
+
+
+@app.get("/api/admin/ingest-logs")
+def admin_ingest_logs(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"logs": db.ingest_log_list()}
+
+
+@app.get("/api/admin/ingest-log")
+def admin_ingest_log(id: int, x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return db.ingest_log_get(id) or {"ok": False, "msg": "лог не найден"}
+
+
+@app.post("/api/admin/ingest-logs/delete")
+def admin_ingest_logs_delete(payload: dict = Body(default={}),
+                             x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    lid = payload.get("id")
+    if lid in (None, "", "all"):
+        n = db.ingest_log_clear()
+        return {"ok": True, "deleted": n, "msg": f"удалено логов: {n}"}
+    n = db.ingest_log_delete(int(lid))
+    return {"ok": True, "deleted": n, "msg": "лог удалён" if n else "лог не найден"}
+
+
+@app.get("/api/admin/calib/testset")
+def admin_calib_testset_get(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"items": calibrate.load_testset()}
+
+
+@app.post("/api/admin/calib/testset")
+def admin_calib_testset_set(payload: dict = Body(default={}),
+                            x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.save_testset(payload.get("items") or [])
+
+
+@app.get("/api/admin/calib/example")
+def admin_calib_example(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"items": calibrate.example_testset()}
+
+
+@app.post("/api/admin/calib/run")
+def admin_calib_run(payload: dict = Body(default={}),
+                    x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.start(use_llm=bool(payload.get("use_llm")),
+                           grid=payload.get("grid"))
+
+
+@app.get("/api/admin/calib/status")
+def admin_calib_status(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.status()
+
+
+@app.post("/api/admin/calib/apply")
+def admin_calib_apply(payload: dict = Body(default={}),
+                      x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.apply_params(payload.get("min_score"),
+                                  payload.get("k_rerank"),
+                                  payload.get("k_retrieve"))
 
 
 @app.post("/api/admin/reindex")

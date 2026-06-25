@@ -237,9 +237,20 @@ def _tail(path: str, n: int = 6000) -> str:
         return ""
 
 
-def _bg(job: dict, label: str, cmds: list, logfile: str, timeout: int = 24 * 3600) -> dict:
+def _read_full_log(path: str, cap: int = 5_000_000) -> str:
+    """Полный текст лог-файла (с ограничением размера)."""
+    try:
+        t = Path(path).read_text(errors="ignore")
+        return t[-cap:] if len(t) > cap else t
+    except Exception:
+        return ""
+
+
+def _bg(job: dict, label: str, cmds: list, logfile: str, timeout: int = 24 * 3600,
+        save_label: str | None = None) -> dict:
     """Запустить команды последовательно в фоне, вывод — в logfile (живой лог).
-    cmds: список команд (каждая — list аргументов)."""
+    cmds: список команд (каждая — list аргументов). save_label — если задан, по
+    завершении полный лог сохраняется в БД (таблица ingest_logs)."""
     if job["running"]:
         return {"ok": False, "msg": f"{label}: задача уже идёт"}
 
@@ -270,6 +281,13 @@ def _bg(job: dict, label: str, cmds: list, logfile: str, timeout: int = 24 * 360
             job["log"] = (_tail(logfile) + "\n" + str(e)).strip()
         job["running"] = False
         job["finished"] = time.time()
+        # сохраняем полный лог в БД (для просмотра/удаления в админке)
+        if save_label:
+            try:
+                db.ingest_log_save(save_label, job.get("summary") or "",
+                                   _read_full_log(logfile))
+            except Exception as e:
+                print(f"[bg] не удалось сохранить лог в БД: {e}")
 
     threading.Thread(target=run, daemon=True).start()
     return {"ok": True, "msg": f"{label}: запущено"}
@@ -943,6 +961,11 @@ def ingest_web(urls: list) -> dict:
             _web_job["log"] = (_tail(logfile) + "\n" + str(e)).strip()
         _web_job["running"] = False
         _web_job["finished"] = time.time()
+        try:
+            db.ingest_log_save("Парсинг сайтов", _web_job.get("summary") or "",
+                               _read_full_log(logfile))
+        except Exception as e:
+            print(f"[web] не удалось сохранить лог в БД: {e}")
 
     threading.Thread(target=run, daemon=True).start()
     return {"ok": True, "msg": f"парсинг {len(urls)} сайт(ов) запущен; затем — индексация"}
@@ -1236,7 +1259,8 @@ def pull_model(name: str) -> dict:
 def reindex(reset: bool = False) -> dict:
     # python -u — небуферизованный вывод, чтобы лог индексации шёл вживую
     cmd = [sys.executable, "-u", "ingest.py"] + (["--reset"] if reset else [])
-    r = _bg(_job, "Индексация", [cmd], "/tmp/rag_index.log")
+    r = _bg(_job, "Индексация", [cmd], "/tmp/rag_index.log",
+            save_label="Переиндексация с нуля" if reset else "Индексация")
     if r.get("ok"):
         r["msg"] = "индексация запущена"
     return r
