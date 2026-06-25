@@ -9,6 +9,7 @@
 subprocess) — без импорта тяжёлых ML-библиотек.
 """
 from __future__ import annotations
+import hashlib
 import os
 import subprocess
 import sys
@@ -643,6 +644,7 @@ def ingest_web(urls: list) -> dict:
             from bs4 import BeautifulSoup
             import html as _html
             webdir.mkdir(parents=True, exist_ok=True)
+            web_paths = []
             with open(logfile, "w", buffering=1, errors="ignore") as fp:
                 for u in urls:
                     try:
@@ -655,13 +657,20 @@ def ingest_web(urls: list) -> dict:
                         title = (soup.title.string if soup.title and soup.title.string else u)
                         doc = ("<html><body><!-- source: %s -->\n<h1>%s</h1>\n<pre>%s</pre></body></html>"
                                % (_html.escape(u), _html.escape(title.strip()), _html.escape(text)))
-                        (webdir / (_slug(u) + ".html")).write_text(doc, encoding="utf-8")
+                        out = webdir / (_slug(u) + ".html")
+                        out.write_text(doc, encoding="utf-8")
+                        web_paths.append(out)
                         ok += 1
                         fp.write(f"OK  {u}  ({len(text)} симв.)\n")
                     except Exception as e:
                         err += 1
                         fp.write(f"ERR {u}: {e}\n")
                     fp.flush()
+                # активен каталог PostgreSQL — кладём спарсенные страницы и в него,
+                # чтобы индексация из БД их увидела (без папки)
+                added = catalog_add_paths(web_paths)
+                if added:
+                    fp.write(f"В PostgreSQL добавлено страниц: {added}\n")
                 fp.write(f"Скачано: {ok}, ошибок: {err}. Запускаю индексацию...\n")
                 fp.flush()
                 rc = subprocess.Popen([sys.executable, "-u", "ingest.py"], cwd=ROOT,
@@ -1949,6 +1958,7 @@ def save_uploaded_folder(items: list) -> dict:
     docs_res = docs.resolve()
     saved = skipped = 0
     bad = []
+    saved_paths = []
     for rel, data in items:
         clean = [seg for seg in str(rel).replace("\\", "/").split("/")
                  if seg not in ("", ".", "..")]
@@ -1968,10 +1978,13 @@ def save_uploaded_folder(items: list) -> dict:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
             saved += 1
+            saved_paths.append(target)
         except Exception as e:
             bad.append(f"{'/'.join(clean)} ({e})")
+    # если активен каталог PostgreSQL — кладём загруженные файлы и в него
+    catalog_added = catalog_add_paths(saved_paths)
     return {"ok": True, "saved": saved, "skipped": skipped,
-            "errors": bad[:50], "dir": str(docs)}
+            "errors": bad[:50], "dir": str(docs), "catalog_added": catalog_added}
 
 
 def backup_create(scope: str) -> dict:
@@ -2144,8 +2157,59 @@ def cache_clear() -> dict:
 # ----- Каталог документов в PostgreSQL -----
 
 _CAT_JOB: dict = {"running": False, "ok": None, "processed": 0, "total": 0,
-                  "errors": 0, "log": "", "started": None, "finished": None}
-_CAT_TEXT_CAP = 500_000   # макс. символов текста на файл в каталоге
+                  "errors": 0, "stored": 0, "skipped": 0, "log": "",
+                  "started": None, "finished": None}
+_CAT_TEXT_CAP = 500_000              # макс. символов текста на файл (для предпросмотра)
+_CAT_FILE_MAX = 100 * 1024 ** 3      # до 100 ГБ: файлы крупнее — только метаданные
+_CAT_LO_MIN = 64 * 1024 * 1024       # PostgreSQL: файлы от этого размера — Large Object
+_CAT_FLUSH_FILES = 100               # размер пакета записи (по числу небольших файлов)
+_CAT_FLUSH_BYTES = 16 * 1024 * 1024  # либо по суммарному объёму содержимого в пакете
+
+
+def _sha256_file(p) -> str:
+    """SHA-256 файла потоково (без загрузки целиком в память)."""
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _catalog_prepare(rel, p, sz, mt, method, txt, ex):
+    """Подготовить запись каталога для одного файла с учётом размера и бэкенда.
+
+    Возвращает (status, row|None):
+      - 'meta'    : файл слишком большой (> _CAT_FILE_MAX) — только метаданные (row для пакета)
+      - 'stored'  : крупный файл записан потоково как Large Object (PostgreSQL)
+      - 'batched' : небольшой файл — row для пакетной bytea-вставки
+      - 'skipped' : содержимое не изменилось (по SHA-256)
+      - 'error'   : запись Large Object не удалась
+    """
+    fname = p.name
+    ext = p.suffix.lower().lstrip(".")
+    pg = (db._dialect() == "postgresql")
+    if sz > _CAT_FILE_MAX:
+        return ("meta", (rel, fname, ext, sz, mt, len(txt or ""), method, "", None,
+                         txt or ""))
+    if pg and sz >= _CAT_LO_MIN:
+        try:
+            sha = _sha256_file(p)
+        except Exception:
+            sha = ""
+        if ex and ex.get("has_content") and sha and ex.get("sha256") == sha:
+            return ("skipped", None)
+        ok = db.catalog_store_large_pg(rel, fname, ext, sz, mt, method, str(p), sha,
+                                       txt or "")
+        return ("stored" if ok else "error", None)
+    try:
+        content = p.read_bytes()
+        sha = hashlib.sha256(content).hexdigest()
+    except Exception:
+        content, sha = None, ""
+    if ex and ex.get("has_content") and sha and ex.get("sha256") == sha:
+        return ("skipped", None)
+    return ("batched", (rel, fname, ext, sz, mt, len(txt or ""), method, sha, content,
+                        txt or ""))
 
 
 def _catalog_pg_active() -> bool:
@@ -2158,7 +2222,8 @@ def catalog_status() -> dict:
     active_pg = db._dialect() == "postgresql"
     src = settings.get("CATALOG_SOURCE") or "filesystem"
     meta = db.catalog_meta() if active_pg else {"count": 0, "total_size": 0,
-                                                "updated": None, "by_ext": {}}
+                                                "files_stored": 0, "updated": None,
+                                                "by_ext": {}}
     job = dict(_CAT_JOB)
     if job["started"] and job["running"]:
         job["elapsed"] = round(time.time() - job["started"], 1)
@@ -2168,9 +2233,49 @@ def catalog_status() -> dict:
             "can_use_pg": active_pg and meta.get("count", 0) > 0}
 
 
+def _qdrant_text_by_source(cap_per_file: int) -> dict:
+    """Один проход scroll по коллекции Qdrant: собирает уже извлечённый текст по
+    каждому файлу (source). Это быстро — не нужно заново парсить/OCR/транскрибировать.
+    Возвращает {source: text}. Текст на файл ограничен cap_per_file символов."""
+    base = settings.get("QDRANT_URL")
+    coll = settings.get("QDRANT_COLLECTION")
+    acc: dict = {}        # source -> [running_len, [parts]]
+    next_off = None
+    for _ in range(200000):  # страховка от бесконечного цикла
+        body = {"limit": 512, "with_payload": ["source", "text"],
+                "with_vector": False}
+        if next_off is not None:
+            body["offset"] = next_off
+        try:
+            r = httpx.post(f"{base}/collections/{coll}/points/scroll",
+                           json=body, timeout=60)
+        except Exception:
+            break
+        if r.status_code != 200:
+            break
+        res = r.json().get("result", {}) or {}
+        for p in res.get("points", []):
+            pl = p.get("payload") or {}
+            src = pl.get("source")
+            tx = (pl.get("text") or "").strip()
+            if not src or not tx:
+                continue
+            cur = acc.setdefault(src, [0, []])
+            if cur[0] >= cap_per_file:
+                continue
+            cur[1].append(tx)
+            cur[0] += len(tx) + 2
+        next_off = res.get("next_page_offset")
+        if next_off is None:
+            break
+    return {s: "\n\n".join(v[1])[:cap_per_file] for s, v in acc.items()}
+
+
 def catalog_load() -> dict:
-    """Загрузить каталог документов (метаданные + извлечённый текст) из DOCS_DIR в
-    таблицу doc_catalog активной PostgreSQL. Фоновая задача с прогрессом."""
+    """Загрузить каталог документов в таблицу doc_catalog активной PostgreSQL — быстро.
+
+    Текст берётся из уже построенного индекса Qdrant (без повторного парсинга/OCR/
+    транскрибации), запись идёт пакетами в одном соединении. Фоновая задача."""
     if db._dialect() != "postgresql":
         return {"ok": False, "msg": "Активная БД — не PostgreSQL. Сначала мигрируйте "
                                     "на PostgreSQL в блоке «База данных и кэш»."}
@@ -2184,48 +2289,78 @@ def catalog_load() -> dict:
         return {"ok": False, "msg": f"папка документов не найдена: {docs}"}
 
     def run():
-        import loaders
         _CAT_JOB.update(running=True, ok=None, processed=0, total=0, errors=0,
-                        log="сканирование папки…", started=time.time(), finished=None)
+                        stored=0, skipped=0, log="чтение индекса и каталога…",
+                        started=time.time(), finished=None)
         try:
+            # текст для предпросмотра — из готового индекса (быстро, без повторного парсинга)
+            text_map = _qdrant_text_by_source(_CAT_TEXT_CAP)
+            # что уже лежит в БД — для пропуска неизменённых файлов (по размеру/дате/sha256)
+            existing = db.catalog_existing()
+            _CAT_JOB["log"] = "сканирование папки…"
             paths = sorted(fsutil.iter_doc_files(docs, _SUPPORTED))
             _CAT_JOB["total"] = len(paths)
+
+            batch = []
+            batch_bytes = 0
+
+            def _flush():
+                nonlocal batch, batch_bytes
+                if not batch:
+                    return
+                try:
+                    db.catalog_store_many(batch)
+                    _CAT_JOB["stored"] += len(batch)
+                except Exception as e:
+                    _CAT_JOB["errors"] += len(batch)
+                    print(f"[catalog] пакетная запись: {e}")
+                batch = []
+                batch_bytes = 0
+
             for i, p in enumerate(paths, 1):
+                _CAT_JOB["processed"] = i
                 rel = str(p.relative_to(docs))
                 ext = p.suffix.lower().lstrip(".")
                 try:
-                    sz = p.stat().st_size
-                    mt = int(p.stat().st_mtime)
+                    stt = p.stat()
+                    sz, mt = stt.st_size, int(stt.st_mtime)
                 except Exception:
                     sz, mt = 0, 0
-                parts, total = [], 0
-                try:
-                    for chunk in loaders.load_file(p):
-                        tx = (chunk.get("text") or "").strip()
-                        if not tx:
-                            continue
-                        parts.append(tx)
-                        total += len(tx) + 2
-                        if total >= _CAT_TEXT_CAP:
-                            break
-                except Exception as e:
+                ex = existing.get(rel)
+                # быстрый пропуск: файл уже сохранён и не менялся (размер+дата)
+                if ex and ex.get("has_content") and ex.get("size") == sz \
+                        and ex.get("mtime") == mt:
+                    _CAT_JOB["skipped"] += 1
+                    continue
+                txt = text_map.get(rel, "")
+                status, row = _catalog_prepare(rel, p, sz, mt,
+                                               _file_method(p.suffix.lower()), txt, ex)
+                if status == "skipped":
+                    _CAT_JOB["skipped"] += 1
+                    continue
+                if status == "stored":
+                    _CAT_JOB["stored"] += 1
+                    continue
+                if status == "error":
                     _CAT_JOB["errors"] += 1
-                    print(f"[catalog] {rel}: {e}")
-                txt = "\n\n".join(parts)[:_CAT_TEXT_CAP]
-                try:
-                    db.catalog_upsert(rel, ext, sz, mt, len(txt),
-                                      _file_method(p.suffix.lower()), txt)
-                except Exception as e:
-                    _CAT_JOB["errors"] += 1
-                    print(f"[catalog] upsert {rel}: {e}")
-                _CAT_JOB["processed"] = i
-                if i % 25 == 0 or i == len(paths):
-                    _CAT_JOB["log"] = (f"загружено {i} из {len(paths)} "
-                                       f"(ошибок: {_CAT_JOB['errors']})")
+                    continue
+                # 'batched' | 'meta' — кладём в пакет bytea
+                batch.append(row)
+                batch_bytes += len(row[8]) if row[8] else 0
+                if len(batch) >= _CAT_FLUSH_FILES or batch_bytes >= _CAT_FLUSH_BYTES:
+                    _flush()
+                if i % 50 == 0 or i == len(paths):
+                    _CAT_JOB["log"] = (
+                        f"обработано {i} из {len(paths)} · сохранено "
+                        f"{_CAT_JOB['stored']}, без изменений {_CAT_JOB['skipped']}, "
+                        f"ошибок {_CAT_JOB['errors']}")
+            _flush()
             _CAT_JOB["ok"] = True
-            _CAT_JOB["log"] = (f"готово: загружено {_CAT_JOB['processed']} файлов, "
-                               f"ошибок {_CAT_JOB['errors']}. Теперь доступна кнопка "
-                               "«Перейти на работу с каталогом в PostgreSQL».")
+            _CAT_JOB["log"] = (
+                f"готово: всего {len(paths)} файлов, сохранено/обновлено "
+                f"{_CAT_JOB['stored']}, пропущено без изменений {_CAT_JOB['skipped']}, "
+                f"ошибок {_CAT_JOB['errors']}. Теперь доступна кнопка «Перейти на "
+                "работу с каталогом в PostgreSQL».")
         except Exception as e:
             _CAT_JOB["ok"] = False
             _CAT_JOB["log"] = f"ОШИБКА: {e}"
@@ -2234,6 +2369,70 @@ def catalog_load() -> dict:
 
     threading.Thread(target=run, daemon=True).start()
     return {"ok": True, "msg": "загрузка каталога в PostgreSQL запущена"}
+
+
+def catalog_clear_files() -> dict:
+    """Удалить из PostgreSQL только содержимое файлов (метаданные/текст остаются)."""
+    if db._dialect() != "postgresql":
+        return {"ok": False, "msg": "Активная БД — не PostgreSQL"}
+    if _CAT_JOB["running"]:
+        return {"ok": False, "msg": "идёт загрузка каталога — дождитесь завершения"}
+    n = db.catalog_clear_files()
+    return {"ok": True, "cleared": n,
+            "msg": f"очищено файлов: {n} (метаданные и текст сохранены)"}
+
+
+def catalog_add_paths(paths) -> int:
+    """Если активен каталог PostgreSQL — добавить указанные файлы (целиком, с SHA-256)
+    в doc_catalog. Используется при загрузке файлов/папок и парсинге сайтов, чтобы новые
+    документы попадали в PostgreSQL и учитывались при индексации из БД (без папки).
+    paths — пути внутри DOCS_DIR. Возвращает число добавленных записей."""
+    if not _catalog_pg_active():
+        return 0
+    docs = Path(settings.get("DOCS_DIR")).expanduser()
+    rows: list = []
+    nbytes = 0
+    added = 0
+
+    def _flush():
+        nonlocal rows, nbytes, added
+        if not rows:
+            return
+        try:
+            db.catalog_store_many(rows)
+            added += len(rows)
+        except Exception as e:
+            print(f"[catalog] добавление файлов: {e}")
+        rows = []
+        nbytes = 0
+
+    for raw in paths:
+        p = Path(raw)
+        try:
+            rel = str(p.relative_to(docs))
+        except Exception:
+            rel = p.name
+        try:
+            sz = p.stat().st_size
+            mt = int(p.stat().st_mtime)
+        except Exception:
+            continue
+        status, row = _catalog_prepare(rel, p, sz, mt, _file_method(p.suffix.lower()),
+                                       "", None)
+        if status == "stored":
+            added += 1
+            continue
+        if status == "error":
+            continue
+        # 'batched' | 'meta'
+        rows.append(row)
+        nbytes += len(row[8]) if row[8] else 0
+        if len(rows) >= _CAT_FLUSH_FILES or nbytes >= _CAT_FLUSH_BYTES:
+            _flush()
+    _flush()
+    if added:
+        print(f"[catalog] в PostgreSQL добавлено/обновлено файлов: {added}")
+    return added
 
 
 def catalog_use(source: str) -> dict:

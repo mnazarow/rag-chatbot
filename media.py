@@ -73,6 +73,61 @@ def _cache_path(source: str, tag: str, ext: str) -> Path:
     return PREVIEW_DIR / f"{h}{ext}"
 
 
+def _pg_dialect_active() -> bool:
+    try:
+        import db
+        return db._dialect() == "postgresql"
+    except Exception:
+        return False
+
+
+def materialize(source: str) -> Path | None:
+    """Локальный путь к ИСХОДНОМУ файлу: сначала с диска (DOCS_DIR), а если файла нет
+    (работа без папки) — выгружаем содержимое из PostgreSQL (doc_catalog) в кэш и
+    возвращаем путь к нему. Нужен реальный файл для ffmpeg/Pillow/ezdxf."""
+    p = resolve(source)
+    if p is not None:
+        return p
+    if not _pg_dialect_active():
+        return None
+    try:
+        import db
+        info = db.catalog_file_info(source)
+    except Exception:
+        info = {"has": False}
+    if not info.get("has"):
+        return None
+    ext = Path(source).suffix.lower() or ".bin"
+    tag = "orig-" + (info.get("sha") or str(info.get("size") or 0))[:16]
+    out = _cache_path(source, tag, ext)
+    size = info.get("size") or 0
+    if out.exists() and (size == 0 or out.stat().st_size == size):
+        return out   # уже в кэше
+    try:
+        if db.catalog_export_to(source, out):   # потоково, в т.ч. Large Object
+            return out
+    except Exception:
+        pass
+    try:
+        out.unlink()
+    except Exception:
+        pass
+    return None
+
+
+def available(source: str) -> bool:
+    """Доступен ли исходник для выдачи — на диске или в PostgreSQL."""
+    if resolve(source) is not None:
+        return True
+    if _pg_dialect_active():
+        try:
+            import db
+            return db.catalog_has_content(source)
+        except Exception:
+            return False
+    return False
+
+
 def _save_image_thumb(img, out: Path, maxdim: int = 900) -> Path | None:
     try:
         if img.mode not in ("RGB", "L"):
@@ -176,7 +231,7 @@ def _thumb_video_frame(src: Path, out: Path, t: float = 1.0) -> Path | None:
 
 def thumbnail(source: str, t: float | None = None) -> Path | None:
     """Путь к превью (создаёт и кеширует при первом обращении). None — нельзя."""
-    src = resolve(source)
+    src = materialize(source)
     if src is None:
         return None
     k = kind_of(source)
@@ -208,7 +263,7 @@ def clip(source: str, start: float, end: float) -> Path | None:
     """Вырезать фрагмент видео [start, end] (перекодировка для точности)."""
     if kind_of(source) != "video" or not shutil.which("ffmpeg"):
         return None
-    src = resolve(source)
+    src = materialize(source)
     if src is None:
         return None
     try:
@@ -237,7 +292,7 @@ def cite(source: str, page=None, t_start=None, t_end=None,
          score=None, category=None) -> dict:
     """Обогатить ссылку-источник типом артефакта и URL для выдачи в чате."""
     k = kind_of(source)
-    exists = resolve(source) is not None
+    exists = available(source)
     item = {"source": source, "page": page, "kind": k, "exists": exists,
             "score": score, "category": category}
     if not exists:

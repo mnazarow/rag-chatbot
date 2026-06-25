@@ -22,7 +22,7 @@ _COLLECTION = settings.get("QDRANT_COLLECTION")
 
 @lru_cache(maxsize=1)
 def _embedder() -> SentenceTransformer:
-    return SentenceTransformer(settings.get("EMBED_MODEL"), device=settings.get("DEVICE"))
+    return SentenceTransformer(settings.get("EMBED_MODEL"), device=settings.device())
 
 
 @lru_cache(maxsize=1)

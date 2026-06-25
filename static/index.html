@@ -1651,27 +1651,36 @@ async function loadCatalogStatus(){
   let html='<b style="font-size:13px">Каталог данных в PostgreSQL</b>';
   html+='<div class="note" style="margin:4px 0 8px">Текущий источник каталога: <b style="color:#60a5fa">'+
     (src==='postgresql'?'PostgreSQL (doc_catalog)':'папка документов (файловая система)')+'</b>. '+
-    'В PostgreSQL: файлов '+(pg.count||0)+', объём '+gb(pg.total_size||0)+
+    'В PostgreSQL: записей '+(pg.count||0)+', из них с файлами '+(pg.files_stored||0)+
+    ', объём документов '+gb(pg.total_size||0)+
     (pg.updated?', обновлён '+fmtTime(pg.updated):'')+'.</div>';
   if(job.running){
     const pct=job.total?Math.round(job.processed/job.total*100):0;
     html+='<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'+
       '<progress value="'+(job.processed||0)+'" max="'+(job.total||1)+'" style="width:260px"></progress>'+
-      '<span class="note">загрузка: '+(job.processed||0)+' / '+(job.total||0)+' ('+pct+'%), ошибок '+(job.errors||0)+'</span></div>';
+      '<span class="note">обработано '+(job.processed||0)+' / '+(job.total||0)+' ('+pct+'%) · сохранено '+(job.stored||0)+', без изменений '+(job.skipped||0)+', ошибок '+(job.errors||0)+'</span></div>';
   }
   html+='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">'+
     '<button class="act" '+(job.running?'disabled':'')+' onclick="catalogLoad()">⬆️ Загрузить каталог данных в PostgreSQL</button>'+
     '<button class="act" '+(r.can_use_pg&&src!=='postgresql'?'':'disabled')+' onclick="catalogUse(\'postgresql\')">➡️ Перейти на работу с каталогом данных в PostgreSQL</button>'+
     '<button class="act ghost" '+(src==='postgresql'?'':'disabled')+' onclick="catalogUse(\'filesystem\')">↩︎ Вернуться на работу с каталогом данных</button>'+
+    '<button class="act ghost" '+((job.running||!(pg.files_stored>0))?'disabled':'')+' style="border-color:#ef4444;color:#f87171" onclick="catalogClearFiles()">🧹 Очистить каталог данных в PostgreSQL (только файлы)</button>'+
     '<span id="catmsg" class="note"></span></div>';
-  html+='<div class="note" style="margin-top:6px">Загрузка переносит список документов из <code>DOCS_DIR</code> и их извлечённый текст в таблицу <code>doc_catalog</code>. После переключения «Каталог документов» (раздел «Система») и просмотр текста файлов читаются из PostgreSQL. Поиск/ответы по-прежнему используют Qdrant.</div>';
+  html+='<div class="note" style="margin-top:6px">Загрузка переносит документы <b>целиком</b> (содержимое файла + имя + расширение) в таблицу <code>doc_catalog</code> с контрольной суммой SHA-256. Повторная загрузка пропускает неизменённые файлы (по размеру/дате и SHA-256). «Очистить (только файлы)» удаляет из БД содержимое файлов, оставляя метаданные и текст.</div>'+
+    '<div class="note" style="margin-top:6px;border-left:3px solid #60a5fa;padding-left:8px"><b>Работа без папки с файлами:</b> 1) скопируйте файлы в папку; 2) «Загрузить каталог данных в PostgreSQL»; 3) «Перейти на работу с каталогом данных в PostgreSQL»; 4) «Переиндексировать» (раздел «Состояние и операции») — индекс построится <b>из PostgreSQL</b>. После этого папку можно удалить: поиск, ответы, каталог, предпросмотр и медиа (изображения, PDF, чертежи, кадры/фрагменты видео, скачивание файлов) работают из PostgreSQL.</div>';
   el.innerHTML=html;
 }
 async function catalogLoad(){
-  if(!confirm('Загрузить каталог документов (метаданные и текст) в PostgreSQL? Это может занять время на большом каталоге.'))return;
+  if(!confirm('Загрузить документы целиком (содержимое файлов + контрольные суммы) в PostgreSQL? Неизменённые файлы будут пропущены. На большом каталоге первая загрузка может занять время.'))return;
   const r=await adminPost('/api/admin/catalog/load');
   const m=$('#catmsg'); if(m){ m.textContent=r.msg||(r.ok?'запущено':'ошибка'); m.className=r.ok!==false?'saved':'note'; }
   catPoll();
+}
+async function catalogClearFiles(){
+  if(!confirm('Удалить из PostgreSQL содержимое файлов? Метаданные и текст для предпросмотра останутся; при следующей загрузке файлы сохранятся заново.'))return;
+  const r=await adminPost('/api/admin/catalog/clear-files');
+  const m=$('#catmsg'); if(m){ m.textContent=r.msg||(r.ok?'очищено':'ошибка'); m.className=r.ok!==false?'saved':'note'; }
+  loadCatalogStatus();
 }
 async function catalogUse(source){
   const r=await adminPost('/api/admin/catalog/use',{source});

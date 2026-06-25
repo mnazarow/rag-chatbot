@@ -238,8 +238,9 @@ def _ddl(d: str) -> list[str]:
             """CREATE TABLE IF NOT EXISTS kv_store(
                 k VARCHAR(190) PRIMARY KEY, v LONGTEXT) CHARACTER SET utf8mb4""",
             """CREATE TABLE IF NOT EXISTS doc_catalog(
-                rel_path VARCHAR(700) PRIMARY KEY, ext VARCHAR(32), size BIGINT,
-                mtime BIGINT, n_chars INT, method VARCHAR(32), txt LONGTEXT,
+                rel_path VARCHAR(700) PRIMARY KEY, fname VARCHAR(512), ext VARCHAR(32),
+                size BIGINT, mtime BIGINT, n_chars INT, method VARCHAR(32),
+                sha256 VARCHAR(64), content LONGBLOB, content_oid BIGINT, txt LONGTEXT,
                 updated DOUBLE) CHARACTER SET utf8mb4""",
         ]
     if d == "postgresql":
@@ -261,8 +262,10 @@ def _ddl(d: str) -> list[str]:
                 latency_ms INTEGER, answer_chars INTEGER, answered INTEGER, sources TEXT)""",
             """CREATE TABLE IF NOT EXISTS kv_store(k TEXT PRIMARY KEY, v TEXT)""",
             """CREATE TABLE IF NOT EXISTS doc_catalog(
-                rel_path TEXT PRIMARY KEY, ext TEXT, size BIGINT, mtime BIGINT,
-                n_chars INTEGER, method TEXT, txt TEXT, updated DOUBLE PRECISION)""",
+                rel_path TEXT PRIMARY KEY, fname TEXT, ext TEXT, size BIGINT,
+                mtime BIGINT, n_chars INTEGER, method TEXT, sha256 TEXT,
+                content BYTEA, content_oid BIGINT, txt TEXT,
+                updated DOUBLE PRECISION)""",
         ]
     # sqlite (по умолчанию)
     return [
@@ -283,8 +286,9 @@ def _ddl(d: str) -> list[str]:
             latency_ms INTEGER, answer_chars INTEGER, answered INTEGER, sources TEXT)""",
         """CREATE TABLE IF NOT EXISTS kv_store(k TEXT PRIMARY KEY, v TEXT)""",
         """CREATE TABLE IF NOT EXISTS doc_catalog(
-            rel_path TEXT PRIMARY KEY, ext TEXT, size INTEGER, mtime INTEGER,
-            n_chars INTEGER, method TEXT, txt TEXT, updated REAL)""",
+            rel_path TEXT PRIMARY KEY, fname TEXT, ext TEXT, size INTEGER,
+            mtime INTEGER, n_chars INTEGER, method TEXT, sha256 TEXT,
+            content BLOB, content_oid BIGINT, txt TEXT, updated REAL)""",
     ]
 
 
@@ -312,6 +316,17 @@ def init(dialect: str | None = None) -> None:
                     cur.execute(f"ALTER TABLE requests ADD COLUMN {col}")
                 except Exception:
                     pass
+        # миграции колонок doc_catalog (хранение файлов целиком) — все диалекты
+        _blob = {"mysql": "LONGBLOB", "postgresql": "BYTEA", "sqlite": "BLOB"}[dd]
+        _txt = {"mysql": "VARCHAR(512)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        _sha = {"mysql": "VARCHAR(64)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        for _c, _t in (("fname", _txt), ("sha256", _sha), ("content", _blob),
+                       ("content_oid", "BIGINT")):
+            try:
+                cur.execute(f"ALTER TABLE doc_catalog ADD COLUMN {_c} {_t}")
+            except Exception:
+                pass
+        if dd == "sqlite":
             conn.commit()
     finally:
         try:
@@ -880,45 +895,248 @@ def db_status() -> dict:
 
 
 # ===================== Каталог документов в БД (doc_catalog) =====================
+# Хранит документы ЦЕЛИКОМ: метаданные (имя, расширение, размер, дата, способ),
+# контрольную сумму sha256 (для пропуска повторной загрузки одинаковых файлов),
+# само содержимое файла (content) и извлечённый текст (txt, для предпросмотра).
 
-def catalog_upsert(rel_path: str, ext: str, size: int, mtime: int,
-                   n_chars: int, method: str, txt: str) -> None:
-    """Вставить/обновить одну запись каталога в активной БД."""
+# полный набор колонок для записи (порядок важен)
+_CAT_COLS = "rel_path,fname,ext,size,mtime,n_chars,method,sha256,content,txt,updated"
+
+
+def catalog_existing() -> dict:
+    """Карта rel_path -> {sha256, size, mtime, has_content} для инкрементальной
+    загрузки (без выборки самих файлов)."""
+    try:
+        rows = _all("SELECT rel_path, sha256, size, mtime, "
+                    "(content IS NOT NULL OR content_oid IS NOT NULL) AS has_content "
+                    "FROM doc_catalog")
+    except Exception:
+        return {}
+    out = {}
+    for r in rows:
+        out[r["rel_path"]] = {"sha256": r.get("sha256"), "size": r.get("size"),
+                              "mtime": r.get("mtime"),
+                              "has_content": bool(r.get("has_content"))}
+    return out
+
+
+def catalog_store_many(rows: list) -> int:
+    """Пакетная вставка/обновление записей каталога вместе с содержимым файлов.
+
+    rows: список кортежей (rel_path, fname, ext, size, mtime, n_chars, method,
+    sha256, content_bytes|None, txt). Одно соединение на пакет; для PostgreSQL —
+    execute_values, для MySQL/SQLite — executemany. content передаётся как bytes
+    (psycopg2/pymysql адаптируют в bytea/BLOB; для sqlite оборачиваем в Binary)."""
+    if not rows:
+        return 0
     now = datetime.now().timestamp()
-    params = (rel_path, ext, int(size or 0), int(mtime or 0), int(n_chars or 0),
-              method or "", txt or "", now)
+    # content_oid=NULL: при сохранении небольшого файла в bytea сбрасываем ссылку на
+    # возможный прежний Large Object (для крупных файлов используется отдельный путь).
+    upd_pg = ("fname=excluded.fname,ext=excluded.ext,size=excluded.size,"
+              "mtime=excluded.mtime,n_chars=excluded.n_chars,method=excluded.method,"
+              "sha256=excluded.sha256,content=excluded.content,content_oid=NULL,"
+              "txt=excluded.txt,updated=excluded.updated")
+    upd_my = ("fname=VALUES(fname),ext=VALUES(ext),size=VALUES(size),"
+              "mtime=VALUES(mtime),n_chars=VALUES(n_chars),method=VALUES(method),"
+              "sha256=VALUES(sha256),content=VALUES(content),content_oid=NULL,"
+              "txt=VALUES(txt),updated=VALUES(updated)")
     with _LOCK, _cursor() as (d, conn, cur):
-        if d == "mysql":
-            cur.execute(
-                "INSERT INTO doc_catalog(rel_path,ext,size,mtime,n_chars,method,txt,updated)"
-                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
-                "ext=VALUES(ext),size=VALUES(size),mtime=VALUES(mtime),"
-                "n_chars=VALUES(n_chars),method=VALUES(method),txt=VALUES(txt),"
-                "updated=VALUES(updated)", params)
-        elif d == "postgresql":
-            cur.execute(
-                "INSERT INTO doc_catalog(rel_path,ext,size,mtime,n_chars,method,txt,updated)"
-                " VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(rel_path) DO UPDATE SET "
-                "ext=excluded.ext,size=excluded.size,mtime=excluded.mtime,"
-                "n_chars=excluded.n_chars,method=excluded.method,txt=excluded.txt,"
-                "updated=excluded.updated", params)
+        if d == "postgresql":
+            from psycopg2 import Binary
+            from psycopg2.extras import execute_values
+            data = [(r[0], r[1] or "", r[2] or "", int(r[3] or 0), int(r[4] or 0),
+                     int(r[5] or 0), r[6] or "", r[7] or "",
+                     (Binary(r[8]) if r[8] is not None else None), r[9] or "", now)
+                    for r in rows]
+            execute_values(
+                cur, f"INSERT INTO doc_catalog({_CAT_COLS}) VALUES %s "
+                f"ON CONFLICT(rel_path) DO UPDATE SET {upd_pg}", data, page_size=50)
+        elif d == "mysql":
+            data = [(r[0], r[1] or "", r[2] or "", int(r[3] or 0), int(r[4] or 0),
+                     int(r[5] or 0), r[6] or "", r[7] or "", r[8], r[9] or "", now)
+                    for r in rows]
+            cur.executemany(
+                f"INSERT INTO doc_catalog({_CAT_COLS}) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                f"ON DUPLICATE KEY UPDATE {upd_my}", data)
         else:
-            cur.execute(
-                "INSERT INTO doc_catalog(rel_path,ext,size,mtime,n_chars,method,txt,updated)"
-                " VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(rel_path) DO UPDATE SET "
-                "ext=excluded.ext,size=excluded.size,mtime=excluded.mtime,"
-                "n_chars=excluded.n_chars,method=excluded.method,txt=excluded.txt,"
-                "updated=excluded.updated", params)
+            data = [(r[0], r[1] or "", r[2] or "", int(r[3] or 0), int(r[4] or 0),
+                     int(r[5] or 0), r[6] or "", r[7] or "",
+                     (sqlite3.Binary(r[8]) if r[8] is not None else None),
+                     r[9] or "", now) for r in rows]
+            cur.executemany(
+                f"INSERT INTO doc_catalog({_CAT_COLS}) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+                f"ON CONFLICT(rel_path) DO UPDATE SET {upd_pg}", data)
         if d == "sqlite":
             conn.commit()
+    return len(rows)
 
 
 def catalog_clear() -> int:
+    """Полностью очистить каталог (метаданные, текст и файлы)."""
     try:
         with _LOCK:
             return _exec("DELETE FROM doc_catalog")
     except Exception as e:
         print(f"[db] catalog_clear: {e}")
+        return 0
+
+
+def _connect_pg_tx():
+    """Отдельное соединение PostgreSQL в транзакции (autocommit=False) — нужно для
+    операций с Large Object (lobject)."""
+    import psycopg2
+    p = _params_for("postgresql")
+    return psycopg2.connect(host=p["host"], port=p["port"], user=p["user"],
+                            password=p["password"], dbname=p["db"],
+                            connect_timeout=5, client_encoding="UTF8")
+
+
+def catalog_store_large_pg(rel_path, fname, ext, size, mtime, method, src_path,
+                           sha256, txt="") -> bool:
+    """Сохранить КРУПНЫЙ файл в PostgreSQL как Large Object (потоково, без загрузки в
+    память; обходит лимит bytea в 1 ГБ). Содержимое читается из src_path по кускам."""
+    conn = _connect_pg_tx()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT content_oid FROM doc_catalog WHERE rel_path=%s", (rel_path,))
+        row = cur.fetchone()
+        if row and row[0]:
+            try:
+                conn.lobject(oid=int(row[0]), mode="n").unlink()
+            except Exception:
+                pass
+        lo = conn.lobject(0, "wb")
+        with open(src_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+                lo.write(chunk)
+        oid = lo.oid
+        lo.close()
+        now = datetime.now().timestamp()
+        cur.execute(
+            "INSERT INTO doc_catalog(rel_path,fname,ext,size,mtime,n_chars,method,"
+            "sha256,content,content_oid,txt,updated) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s) "
+            "ON CONFLICT(rel_path) DO UPDATE SET fname=excluded.fname,ext=excluded.ext,"
+            "size=excluded.size,mtime=excluded.mtime,n_chars=excluded.n_chars,"
+            "method=excluded.method,sha256=excluded.sha256,content=NULL,"
+            "content_oid=excluded.content_oid,txt=excluded.txt,updated=excluded.updated",
+            (rel_path, fname or "", ext or "", int(size or 0), int(mtime or 0),
+             len(txt or ""), method or "", sha256 or "", oid, txt or "", now))
+        conn.commit()
+        return True
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[db] catalog_store_large_pg {rel_path}: {e}")
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def catalog_export_to(rel_path: str, dst_path) -> bool:
+    """Выгрузить содержимое файла из каталога в dst_path потоково (Large Object или
+    bytea/BLOB). Работает без загрузки гигабайтных файлов в память."""
+    d = _dialect()
+    if d == "postgresql":
+        conn = _connect_pg_tx()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT content_oid, content FROM doc_catalog "
+                        "WHERE rel_path=%s", (rel_path,))
+            row = cur.fetchone()
+            if not row:
+                return False
+            oid, content = row[0], row[1]
+            if oid:
+                lo = conn.lobject(oid=int(oid), mode="rb")
+                with open(dst_path, "wb") as f:
+                    while True:
+                        chunk = lo.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk if isinstance(chunk, (bytes, bytearray))
+                                else bytes(chunk))
+                lo.close()
+                conn.commit()
+                return True
+            if content is not None:
+                b = content.tobytes() if isinstance(content, memoryview) else bytes(content)
+                Path(dst_path).write_bytes(b)
+                conn.commit()
+                return True
+            return False
+        except Exception as e:
+            print(f"[db] catalog_export_to {rel_path}: {e}")
+            return False
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    # MySQL/SQLite — содержимое в bytea/BLOB
+    c = catalog_get_content(rel_path)
+    if c is None:
+        return False
+    try:
+        Path(dst_path).write_bytes(c)
+        return True
+    except Exception:
+        return False
+
+
+def catalog_file_info(rel_path: str) -> dict:
+    """Дёшево: есть ли содержимое, его sha256 и размер (без выборки самого файла)."""
+    try:
+        r = _one("SELECT sha256, size, "
+                 "(content IS NOT NULL OR content_oid IS NOT NULL) AS has "
+                 "FROM doc_catalog WHERE rel_path=?", (rel_path,))
+    except Exception:
+        r = None
+    if not r:
+        return {"has": False, "sha": "", "size": 0}
+    return {"has": bool(r.get("has")), "sha": r.get("sha256") or "",
+            "size": int(r.get("size") or 0)}
+
+
+def catalog_clear_files() -> int:
+    """Удалить ТОЛЬКО содержимое файлов (bytea и Large Object) и контрольные суммы,
+    оставив метаданные и текст. Освобождает место; повторная загрузка снова сохранит."""
+    d = _dialect()
+    try:
+        if d == "postgresql":
+            conn = _connect_pg_tx()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT content_oid FROM doc_catalog "
+                            "WHERE content_oid IS NOT NULL")
+                for (oid,) in cur.fetchall():
+                    try:
+                        conn.lobject(oid=int(oid), mode="n").unlink()
+                    except Exception:
+                        pass
+                cur.execute("UPDATE doc_catalog SET content=NULL, content_oid=NULL, "
+                            "sha256=NULL WHERE content IS NOT NULL "
+                            "OR content_oid IS NOT NULL")
+                n = cur.rowcount
+                conn.commit()
+                return n
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        with _LOCK:
+            return _exec("UPDATE doc_catalog SET content=NULL, sha256=NULL "
+                         "WHERE content IS NOT NULL")
+    except Exception as e:
+        print(f"[db] catalog_clear_files: {e}")
         return 0
 
 
@@ -931,14 +1149,17 @@ def catalog_count() -> int:
 
 def catalog_meta() -> dict:
     try:
-        m = _one("SELECT COUNT(*) n, COALESCE(SUM(size),0) sz, MAX(updated) up "
-                 "FROM doc_catalog")
+        m = _one("SELECT COUNT(*) n, COALESCE(SUM(size),0) sz, MAX(updated) up, "
+                 "SUM(CASE WHEN content IS NOT NULL OR content_oid IS NOT NULL "
+                 "THEN 1 ELSE 0 END) fs FROM doc_catalog")
         by = _all("SELECT ext, COUNT(*) n FROM doc_catalog GROUP BY ext ORDER BY n DESC")
         return {"count": m["n"], "total_size": int(_f(m["sz"])),
+                "files_stored": m.get("fs", 0) or 0,
                 "updated": _fn(m["up"]),
                 "by_ext": {r["ext"]: r["n"] for r in by}}
     except Exception:
-        return {"count": 0, "total_size": 0, "updated": None, "by_ext": {}}
+        return {"count": 0, "total_size": 0, "files_stored": 0,
+                "updated": None, "by_ext": {}}
 
 
 def catalog_rows() -> list[dict]:
@@ -948,6 +1169,58 @@ def catalog_rows() -> list[dict]:
                     "FROM doc_catalog")
     except Exception:
         return []
+
+
+def catalog_index_list() -> list[dict]:
+    """Список файлов каталога с содержимым (для индексации напрямую из БД, без папки)."""
+    try:
+        return _all("SELECT rel_path, fname, ext, sha256 FROM doc_catalog "
+                    "WHERE content IS NOT NULL OR content_oid IS NOT NULL "
+                    "ORDER BY rel_path")
+    except Exception as e:
+        print(f"[db] catalog_index_list: {e}")
+        return []
+
+
+def catalog_has_content(rel_path: str) -> bool:
+    """Есть ли в каталоге сохранённое содержимое файла (без выборки самого блоба)."""
+    try:
+        r = _one("SELECT 1 AS x FROM doc_catalog WHERE rel_path=? "
+                 "AND (content IS NOT NULL OR content_oid IS NOT NULL)", (rel_path,))
+        return bool(r)
+    except Exception:
+        return False
+
+
+def catalog_get_content(rel_path: str):
+    """Содержимое файла (bytes) из каталога или None."""
+    try:
+        r = _one("SELECT content FROM doc_catalog WHERE rel_path=?", (rel_path,))
+    except Exception as e:
+        print(f"[db] catalog_get_content: {e}")
+        return None
+    if not r:
+        return None
+    c = r.get("content")
+    if c is None:
+        return None
+    if isinstance(c, memoryview):       # psycopg2 отдаёт bytea как memoryview
+        return c.tobytes()
+    if isinstance(c, bytearray):
+        return bytes(c)
+    return c
+
+
+def catalog_update_text(rel_path: str, txt: str, n_chars: int | None = None) -> None:
+    """Записать извлечённый текст (предпросмотр) в запись каталога — при индексации
+    напрямую из БД, чтобы предпросмотр работал без папки с файлами."""
+    try:
+        with _LOCK:
+            _exec("UPDATE doc_catalog SET txt=?, n_chars=? WHERE rel_path=?",
+                  (txt or "",
+                   int(n_chars if n_chars is not None else len(txt or "")), rel_path))
+    except Exception as e:
+        print(f"[db] catalog_update_text: {e}")
 
 
 def catalog_text(rel_path: str, max_chars: int = 20000) -> dict | None:

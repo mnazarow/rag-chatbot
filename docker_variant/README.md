@@ -33,6 +33,21 @@ start.cmd -DocsDir "C:\db" -AdminToken "ваш-пароль"
 > Если это самая первая установка Docker Desktop, Windows может потребовать
 > **перезагрузку** (WSL2/Hyper-V). После неё снова запустите `start.cmd` — он продолжит.
 
+### GPU NVIDIA (ускорение индексации/поиска)
+По умолчанию контейнер считает эмбеддинги/реранк на CPU. Если на хосте есть GPU NVIDIA,
+запустите с override-файлом — соберётся CUDA-сборка torch, выставится `DEVICE=cuda` и
+GPU пробросится в контейнер:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+Требуется драйвер NVIDIA на хосте и проброс GPU в Docker: **Linux** — NVIDIA Container
+Toolkit (`nvidia-ctk runtime configure --runtime=docker`, перезапуск Docker); **Windows** —
+Docker Desktop с поддержкой GPU (WSL2 + драйвер NVIDIA). Проверка проброса:
+`docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi`.
+Генерация (LLM) и так использует GPU через Ollama на хосте; здесь GPU ускоряет именно
+индексацию и поиск. Если GPU не пробросился, приложение само откатится на CPU с
+предупреждением в логе (не упадёт).
+
 ### Linux и macOS
 ```bash
 chmod +x start.sh        # один раз

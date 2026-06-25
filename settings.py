@@ -336,6 +336,37 @@ def active_model() -> str:
     return _state.get("LLM_MODEL")
 
 
+def device() -> str:
+    """Фактическое устройство для эмбеддингов/реранка с проверкой доступности.
+
+    Если задан cuda/mps, но он недоступен (нет проброса GPU в контейнер или
+    установлена CPU-сборка torch) — откатываемся на cpu с предупреждением, чтобы
+    не падать. Так на GPU-хосте достаточно поставить DEVICE=cuda и CUDA-сборку torch.
+    """
+    d = (get("DEVICE") or "cpu").lower()
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+    if d == "cuda":
+        try:
+            if torch.cuda.is_available():
+                return "cuda"
+        except Exception:
+            pass
+        print("  ! DEVICE=cuda, но CUDA недоступна — использую cpu (нет проброса GPU "
+              "в контейнер или установлена CPU-сборка torch)")
+        return "cpu"
+    if d == "mps":
+        try:
+            if torch.backends.mps.is_available():
+                return "mps"
+        except Exception:
+            pass
+        return "cpu"
+    return "cpu"
+
+
 def all_settings() -> dict:
     return dict(_state)
 

@@ -13,7 +13,9 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import signal
+import tempfile
 import time
 import uuid
 import warnings
@@ -34,6 +36,7 @@ from tqdm import tqdm
 
 import config
 import settings
+import db
 import metadata as meta
 import enrich
 import fsutil
@@ -136,11 +139,15 @@ def main():
     ap.add_argument("--reset", action="store_true", help="пересоздать коллекцию")
     args = ap.parse_args()
 
-    if not DOCS_DIR.exists():
+    # Источник документов: папка (по умолчанию) или PostgreSQL (файлы, ранее
+    # загруженные в doc_catalog). PG-источник позволяет индексировать без папки.
+    from_pg = (settings.get("CATALOG_SOURCE") == "postgresql"
+               and db._dialect() == "postgresql")
+    if not from_pg and not DOCS_DIR.exists():
         raise SystemExit(f"FATAL: DOCS_DIR не найдена: {DOCS_DIR} (укажите в админке)")
 
     embed_model = settings.get("EMBED_MODEL")
-    device = settings.get("DEVICE")
+    device = settings.device()
     chunk_size = settings.get("CHUNK_SIZE")
     chunk_overlap = settings.get("CHUNK_OVERLAP")
 
@@ -168,11 +175,18 @@ def main():
         _skipped_dirs.append(path)
         print(f"  ! пропущен недоступный путь: {path} ({e})")
 
-    files = list(fsutil.iter_doc_files(DOCS_DIR, SUPPORTED, onerror=_walk_err))
-    print(f"Найдено файлов: {len(files)}")
-    if _skipped_dirs:
-        print(f"Пропущено недоступных папок: {len(_skipped_dirs)} "
-              f"(см. строки выше — проверьте носитель/доступ к этим путям)")
+    if from_pg:
+        work = db.catalog_index_list()   # [{rel_path, fname, ext, sha256}]
+        print(f"Источник: PostgreSQL (doc_catalog). Файлов с содержимым: {len(work)}")
+        if not work:
+            print("В PostgreSQL нет файлов с содержимым — сначала «Загрузить каталог "
+                  "данных в PostgreSQL».")
+    else:
+        work = list(fsutil.iter_doc_files(DOCS_DIR, SUPPORTED, onerror=_walk_err))
+        print(f"Найдено файлов: {len(work)}")
+        if _skipped_dirs:
+            print(f"Пропущено недоступных папок: {len(_skipped_dirs)} "
+                  f"(см. строки выше — проверьте носитель/доступ к этим путям)")
 
     # время обработки по файлам: сохраняем прошлые значения (для пропущенных
     # неизменённых файлов), при --reset считаем заново
@@ -196,14 +210,35 @@ def main():
     run_proc_ms = 0
     n_new = n_chunks = n_skip = n_timeout = 0
     errors = []  # (файл, причина)
-    for path in tqdm(files, desc="Индексация"):
-        source = str(path.relative_to(DOCS_DIR))
+    tmpdir = tempfile.mkdtemp(prefix="rag_pg_") if from_pg else None
+    for item in tqdm(work, desc="Индексация"):
+        tmp_path = None
+        source = ""
         t_file = time.time()
         try:
-            fhash = file_hash(path)
-            if not args.reset and already_indexed(client, source, fhash):
-                continue
-            delete_old_versions(client, source)  # файл изменился — чистим старое
+            if from_pg:
+                # документ берётся из PostgreSQL: пишем содержимое во временный файл
+                # (с исходным именем — чтобы загрузчик выбрал парсер по расширению)
+                source = item["rel_path"]
+                fhash = item.get("sha256") or ""
+                if not args.reset and fhash and already_indexed(client, source, fhash):
+                    continue
+                base = Path(item.get("fname") or Path(source).name).name or "file"
+                tmp_path = Path(tmpdir) / base
+                # потоковая выгрузка содержимого (bytea или Large Object) во временный файл
+                if not db.catalog_export_to(source, tmp_path):
+                    n_skip += 1
+                    continue
+                path = tmp_path
+                meta_path = Path(source)   # метаданные — по исходному пути (с папками)
+            else:
+                path = item
+                source = str(path.relative_to(DOCS_DIR))
+                fhash = file_hash(path)
+                if not args.reset and already_indexed(client, source, fhash):
+                    continue
+                meta_path = path
+            delete_old_versions(client, source)  # файл новый/изменился — чистим старое
 
             if use_alarm:
                 signal.alarm(file_timeout)
@@ -220,7 +255,7 @@ def main():
                 n_skip += 1  # пустой/нечитаемый файл — пропускаем, не ошибка
                 continue
 
-            md = meta.extract(path)  # rule-based метаданные (категория, дата, заголовок)
+            md = meta.extract(meta_path)  # rule-based метаданные (категория, дата, заголовок)
             if settings.get("LLM_METADATA"):
                 try:
                     e = enrich.extract_structured(points[0]["chunk"])
@@ -269,6 +304,14 @@ def main():
             run_proc_ms += proc_ms
             file_times[source] = {"ms": proc_ms, "chunks": len(points),
                                   "ts": time.time()}
+            # индексация из БД: сохраняем извлечённый текст обратно в каталог, чтобы
+            # предпросмотр работал без папки с файлами
+            if from_pg:
+                try:
+                    full = "\n\n".join(p["chunk"] for p in points)[:500_000]
+                    db.catalog_update_text(source, full)
+                except Exception:
+                    pass
         except _Timeout:
             if use_alarm:
                 signal.alarm(0)
@@ -287,6 +330,14 @@ def main():
             errors.append((source, str(e)[:200]))
             print(f"  ! ошибка обработки {source}: {e}")
             continue
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+    if tmpdir:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     print(f"Готово. Обновлено файлов: {n_new}, чанков добавлено: {n_chunks}, "
           f"пропущено пустых: {n_skip}, по таймауту: {n_timeout}, ошибок: {len(errors)}")
@@ -297,7 +348,10 @@ def main():
         if len(errors) > 50:
             print(f"  … и ещё {len(errors) - 50}")
     # время обработки: чистим записи об удалённых файлах и сохраняем сводку
-    cur_sources = {str(p.relative_to(DOCS_DIR)) for p in files}
+    if from_pg:
+        cur_sources = {it["rel_path"] for it in work}
+    else:
+        cur_sources = {str(p.relative_to(DOCS_DIR)) for p in work}
     file_times = {k: v for k, v in file_times.items() if k in cur_sources}
     run_end = time.time()
     stats_out = {

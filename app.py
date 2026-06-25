@@ -433,16 +433,16 @@ def admin_file_text(source: str, x_admin_token: str | None = Header(None)):
 @app.get("/api/media/info")
 def media_info(source: str):
     return {"source": source, "kind": media.kind_of(source),
-            "exists": media.resolve(source) is not None,
+            "exists": media.available(source),
             "has_preview": media.has_preview(source)}
 
 
 @app.get("/api/media/file")
 def media_file(source: str):
-    p = media.resolve(source)
+    p = media.materialize(source)   # с диска или из PostgreSQL (без папки)
     if p is None:
         raise HTTPException(status_code=404, detail="файл не найден")
-    return FileResponse(str(p), filename=p.name)
+    return FileResponse(str(p), filename=Path(source).name)
 
 
 @app.get("/api/media/thumb")
@@ -637,6 +637,12 @@ def admin_catalog_use(payload: dict = Body(...), x_admin_token: str | None = Hea
     return admin_ops.catalog_use(payload.get("source", ""))
 
 
+@app.post("/api/admin/catalog/clear-files")
+def admin_catalog_clear_files(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.catalog_clear_files()
+
+
 @app.post("/api/admin/check-data")
 def admin_check_data(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
@@ -698,7 +704,7 @@ async def admin_upload(files: list[UploadFile] = File(...),
     _check_admin(x_admin_token)
     dest = Path(settings.get("DOCS_DIR")).expanduser() / "uploads"
     dest.mkdir(parents=True, exist_ok=True)
-    saved, skipped = [], []
+    saved, skipped, saved_paths = [], [], []
     for f in files:
         name = os.path.basename(f.filename or "")
         if not name:
@@ -710,9 +716,13 @@ async def admin_upload(files: list[UploadFile] = File(...),
         try:
             (dest / name).write_bytes(await f.read())
             saved.append(name)
+            saved_paths.append(dest / name)
         except Exception as e:
             skipped.append(f"{name} ({e})")
-    return {"ok": True, "saved": saved, "skipped": skipped, "dir": str(dest)}
+    # если активен каталог PostgreSQL — добавляем загруженные файлы и в него
+    catalog_added = admin_ops.catalog_add_paths(saved_paths)
+    return {"ok": True, "saved": saved, "skipped": skipped, "dir": str(dest),
+            "catalog_added": catalog_added}
 
 
 @app.post("/api/admin/reindex")

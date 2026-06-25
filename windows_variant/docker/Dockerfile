@@ -60,10 +60,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
-# CPU-сборка PyTorch (без CUDA — компактнее и работает в контейнере на Windows)
+# PyTorch: по умолчанию CPU-сборка (компактно, работает везде). Для GPU передайте
+# build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 (см.
+# docker_variant/docker-compose.gpu.yml) — поставится CUDA-сборка torch.
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir --upgrade pip wheel \
     && pip install --no-cache-dir torch==2.5.1 \
-        --index-url https://download.pytorch.org/whl/cpu
+        --index-url ${TORCH_INDEX_URL}
 
 # Python-зависимости приложения (Docker-вариант: faster-whisper вместо mlx)
 COPY windows_variant/docker/requirements-docker.txt /app/requirements-docker.txt

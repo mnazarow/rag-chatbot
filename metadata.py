@@ -51,8 +51,11 @@ def _date(path: Path) -> str:
         m = pat.search(name)
         if m:
             return fmt(m)
-    # из времени модификации файла
-    return time.strftime("%Y-%m", time.localtime(path.stat().st_mtime))
+    # из времени модификации файла (если файла нет на диске — текущий месяц)
+    try:
+        return time.strftime("%Y-%m", time.localtime(path.stat().st_mtime))
+    except Exception:
+        return time.strftime("%Y-%m")
 
 
 def extract(path: Path) -> dict:
