@@ -622,8 +622,108 @@ def delete_web(url: str) -> dict:
     return {"ok": True, "msg": "сайт удалён из базы знаний"}
 
 
+# расширения, по которым не ходим при обходе сайта (это файлы, а не страницы)
+_WEB_SKIP_EXT = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico",
+                 ".zip", ".rar", ".7z", ".gz", ".tar", ".mp4", ".mov", ".avi", ".webm",
+                 ".mp3", ".wav", ".m4a", ".doc", ".docx", ".xls", ".xlsx", ".ppt",
+                 ".pptx", ".exe", ".dmg", ".css", ".js"}
+
+
+def _web_extract(html: str) -> str:
+    """Извлечь основной текст страницы. trafilatura (если установлена) даёт чистый
+    контент с таблицами; иначе — BeautifulSoup с предпочтением <main>/<article>."""
+    try:
+        import trafilatura
+        txt = trafilatura.extract(html, include_tables=True, include_comments=False,
+                                  favor_recall=True)
+        if txt and len(txt.strip()) > 40:
+            return txt.strip()
+    except Exception:
+        pass
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        for t in soup(["script", "style", "noscript", "header", "footer", "nav",
+                       "aside", "form"]):
+            t.decompose()
+        main = soup.find("main") or soup.find("article") or soup.body or soup
+        lines = [ln.strip() for ln in main.get_text(separator="\n").splitlines()]
+        return "\n".join(ln for ln in lines if ln)
+    except Exception:
+        return ""
+
+
+def _web_title(html: str, url: str) -> str:
+    try:
+        from bs4 import BeautifulSoup
+        s = BeautifulSoup(html, "html.parser")
+        if s.title and s.title.string:
+            return s.title.string.strip()
+    except Exception:
+        pass
+    return url
+
+
+def _web_links(html: str, base: str, seed_netloc: str, same_domain: bool) -> list:
+    """Ссылки на страницы для дальнейшего обхода (http/https, без файлов/якорей)."""
+    from urllib.parse import urljoin, urlparse
+    out = []
+    try:
+        from bs4 import BeautifulSoup
+        s = BeautifulSoup(html, "html.parser")
+        for a in s.find_all("a", href=True):
+            href = a["href"].strip()
+            if not href or href.startswith(("mailto:", "tel:", "javascript:", "#")):
+                continue
+            pr = urlparse(urljoin(base, href))
+            if pr.scheme not in ("http", "https"):
+                continue
+            if os.path.splitext(pr.path)[1].lower() in _WEB_SKIP_EXT:
+                continue
+            if same_domain and pr.netloc.replace("www.", "") != \
+                    seed_netloc.replace("www.", ""):
+                continue
+            out.append(pr._replace(fragment="").geturl())
+    except Exception:
+        pass
+    return out
+
+
+def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, log) -> list:
+    """Обойти сайт из стартовой страницы (BFS) до depth/max_pages. Возвращает список
+    (url, title, text). log(msg) — журналирование в лог парсинга."""
+    from urllib.parse import urlparse
+    seed_netloc = urlparse(seed).netloc
+    seen, queue, pages = set(), [(seed, 0)], []
+    while queue and len(pages) < max_pages:
+        url, d = queue.pop(0)
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            r = httpx.get(url, timeout=30, follow_redirects=True,
+                          headers={"User-Agent": "Mozilla/5.0 (RAGBot)"})
+            ctype = r.headers.get("content-type", "")
+            if ctype and "html" not in ctype.lower():
+                continue
+            html = r.text
+        except Exception as e:
+            log(f"ERR {url}: {e}")
+            continue
+        text = _web_extract(html)
+        if text:
+            pages.append((url, _web_title(html, url), text))
+            log(f"OK  {url}  ({len(text)} симв.)")
+        if d < depth and len(pages) < max_pages:
+            for link in _web_links(html, url, seed_netloc, same_domain):
+                if link not in seen:
+                    queue.append((link, d + 1))
+    return pages
+
+
 def ingest_web(urls: list) -> dict:
-    """Скачать до 20 сайтов, извлечь текст в DOCS_DIR/web и переиндексировать."""
+    """Скачать до 50 сайтов (с обходом ссылок), извлечь текст в DOCS_DIR/web и
+    переиндексировать. Глубина/лимит/домен — настройки WEB_CRAWL_DEPTH/MAX_PAGES/SAME_DOMAIN."""
     import re
     urls = [u.strip() for u in (urls or []) if u.strip().startswith(("http://", "https://"))][:50]
     if not urls:
@@ -641,27 +741,44 @@ def ingest_web(urls: list) -> dict:
         ok = err = 0
         rc = -1
         try:
-            from bs4 import BeautifulSoup
             import html as _html
             webdir.mkdir(parents=True, exist_ok=True)
             web_paths = []
+            depth = max(0, int(settings.get("WEB_CRAWL_DEPTH") or 0))
+            max_pages = max(1, int(settings.get("WEB_MAX_PAGES") or 1))
+            same_domain = bool(settings.get("WEB_SAME_DOMAIN"))
             with open(logfile, "w", buffering=1, errors="ignore") as fp:
+                def _log(m):
+                    fp.write(m + "\n")
+                    fp.flush()
+
+                fp.write(f"Парсинг: глубина {depth}, до {max_pages} стр./сайт, "
+                         f"{'тот же домен' if same_domain else 'любой домен'}\n")
                 for u in urls:
                     try:
-                        r = httpx.get(u, timeout=30, follow_redirects=True,
-                                      headers={"User-Agent": "Mozilla/5.0 (RAGBot)"})
-                        soup = BeautifulSoup(r.text, "html.parser")
-                        for t in soup(["script", "style", "noscript", "header", "footer", "nav"]):
-                            t.decompose()
-                        text = soup.get_text(separator="\n")
-                        title = (soup.title.string if soup.title and soup.title.string else u)
-                        doc = ("<html><body><!-- source: %s -->\n<h1>%s</h1>\n<pre>%s</pre></body></html>"
-                               % (_html.escape(u), _html.escape(title.strip()), _html.escape(text)))
+                        pages = _web_crawl(u, depth, max_pages, same_domain, _log)
+                        if not pages:
+                            err += 1
+                            fp.write(f"ERR {u}: текст не извлечён (возможно, сайт "
+                                     "рендерится через JavaScript)\n")
+                            fp.flush()
+                            continue
+                        parts, total = [], 0
+                        for (pu, pt, ptext) in pages:
+                            parts.append(
+                                "<h2>%s</h2>\n<p><small>%s</small></p>\n<pre>%s</pre>"
+                                % (_html.escape(pt or pu), _html.escape(pu),
+                                   _html.escape(ptext)))
+                            total += len(ptext)
+                        doc = ("<html><body><!-- source: %s -->\n<h1>%s</h1>\n%s</body></html>"
+                               % (_html.escape(u), _html.escape(pages[0][1] or u),
+                                  "\n".join(parts)))
                         out = webdir / (_slug(u) + ".html")
                         out.write_text(doc, encoding="utf-8")
                         web_paths.append(out)
                         ok += 1
-                        fp.write(f"OK  {u}  ({len(text)} симв.)\n")
+                        fp.write(f"ИТОГО {u}: страниц {len(pages)}, текста {total} симв. "
+                                 f"-> {out.name}\n")
                     except Exception as e:
                         err += 1
                         fp.write(f"ERR {u}: {e}\n")

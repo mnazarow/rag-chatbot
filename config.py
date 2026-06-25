@@ -76,6 +76,13 @@ TELEGRAM_AUTO_APPROVE = _bool("TELEGRAM_AUTO_APPROVE", False)
 # (tg://proxy-ссылки) — для клиентов Telegram и НЕ работают с Bot API; нужен SOCKS5/HTTP.
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")
 
+# --- Парсинг сайтов в базу знаний ---
+# Глубина обхода ссылок (0 = только указанная страница), лимит страниц на сайт,
+# ходить ли только по тому же домену.
+WEB_CRAWL_DEPTH = _int("WEB_CRAWL_DEPTH", 1)
+WEB_MAX_PAGES = _int("WEB_MAX_PAGES", 20)
+WEB_SAME_DOMAIN = _bool("WEB_SAME_DOMAIN", True)
+
 # --- База данных приложения (журнал/история/настройки) ---
 # sqlite (по умолчанию, без внешних сервисов) | mysql | postgresql
 DB_BACKEND = os.getenv("DB_BACKEND", "sqlite")
