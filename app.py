@@ -46,6 +46,7 @@ import remote
 import media
 import telegram_bot
 import calibrate
+import kag
 from ingest import chunk_text, SUPPORTED
 from retriever import search, infer_category
 
@@ -112,6 +113,50 @@ async def chat(req: ChatRequest):
 
     # Движок ответов: LightRAG целиком, либо граф только для сводных вопросов (hybrid)
     engine = settings.get("ENGINE")
+
+    # KAG — знание-усиленная генерация (декомпозиция → мультихоп → знания графа → ответ)
+    if engine == "kag" and req.filters is None:
+        try:
+            ktrace = []
+            kres = await kag.answer(req.question, history=req.history, trace=ktrace)
+            ktext = kres["text"]
+            khits = kres.get("hits", [])
+            ksources = [media.cite(h["source"], page=h.get("page"),
+                                   t_start=h.get("t_start"), t_end=h.get("t_end"),
+                                   score=round(h.get("score", 0.0), 3),
+                                   category=h.get("doc_category")) for h in khits]
+
+            async def kstream():
+                for s in ktrace:
+                    yield _stg(s["key"], "done", s.get("info"), s.get("ms", 0))
+                yield _stg("engine", "done", {
+                    "engine": "KAG (знание-усиленная генерация)",
+                    "hops": len(kres.get("sub", [])), "graph": kres.get("graph"),
+                    "model": settings.active_model()})
+                for i in range(0, len(ktext), 40):
+                    yield json.dumps({"type": "answer", "text": ktext[i:i + 40]},
+                                     ensure_ascii=False) + "\n"
+                yield json.dumps({"type": "sources", "items": ksources},
+                                 ensure_ascii=False) + "\n"
+                lat = int((time.time() - t0) * 1000)
+                top = round(khits[0].get("score", 0.0), 3) if khits else 0.0
+                if req.debug:
+                    yield json.dumps({"type": "debug", "info": {
+                        "engine": "KAG", "sub_questions": kres.get("sub", []),
+                        "graph_used": kres.get("graph"),
+                        "mode": settings.current_mode(), "model": settings.active_model(),
+                        "backend": settings.get("LLM_BACKEND"),
+                        "timings": {"retrieve_ms": 0, "gen_ms": lat, "total_ms": lat},
+                        "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
+                rid = db.log_request(req.question, "kag", len(khits), top, lat,
+                                     len(ktext), kres.get("answered", True), ksources,
+                                     retrieve_ms=0, gen_ms=lat, session_id=req.session_id)
+                yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
+
+            return StreamingResponse(kstream(), media_type="application/x-ndjson")
+        except Exception as e:
+            print(f"KAG недоступен, фолбэк на вектор: {e}")
+
     use_lightrag_all = engine == "lightrag"
     use_graph_global = (settings.get("GRAPH_RAG") and req.filters is None
                         and graph_rag.is_global(req.question))

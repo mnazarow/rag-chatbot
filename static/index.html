@@ -1674,6 +1674,51 @@ const GROUP_HELP={
       с нуля; индексация очень долгая → выключите Whisper/CAD/RAW на первый проход; «не знаю», хотя данные
       есть → уменьшите чанк/порог или воспользуйтесь автокалибровкой.
     </div></details>`,
+  'KAG (знание-усиленная генерация)': `<details class="note" style="margin:2px 0 12px" open>
+    <summary style="cursor:pointer"><b>ℹ️ Что такое KAG и как настраивать</b></summary>
+    <div style="margin-top:8px;line-height:1.6">
+      <b>KAG (Knowledge Augmented Generation)</b> — «знание-усиленная генерация». Включается выбором
+      движка <b>KAG</b> в блоке «Движок ответов» выше. Конвейер: <b>1)</b> сложный вопрос
+      раскладывается LLM на под-вопросы (логические шаги); <b>2)</b> по каждому идёт обычный поиск
+      (вектор + реранк); <b>3)</b> найденные фрагменты объединяются и переоцениваются под исходный
+      вопрос (<i>взаимное индексирование</i>); <b>4)</b> опционально добавляется выжимка из графа
+      знаний (LightRAG); <b>5)</b> финальный ответ генерируется по собранному знанию со ссылками.<br><br>
+      <b>Когда полезно:</b> составные и многошаговые вопросы («сравни A и B», «что нужно для X и
+      сколько стоит»), вопросы про связи и причины. На простых точечных вопросах обычный
+      <b>векторный</b> движок быстрее и достаточно точен.<br><br>
+      <b>Как настраивать:</b><br>
+      • <b>Декомпозиция</b> + <b>Макс. под-вопросов</b> — глубина разбора. 3 — баланс; 2 — быстрее;
+      4–5 — для аналитики. Каждый шаг = доп. поиск (и один вызов LLM на саму декомпозицию).<br>
+      • <b>Фрагментов на под-вопрос</b> (3–5) и <b>Итоговых фрагментов</b> (6–10) — объём контекста.
+      Не превышайте контекст модели (см. VLLM_MAX_LEN) с учётом размера чанка.<br>
+      • <b>Взаимное индексирование</b> — оставьте включённым: убирает дубли и нерелевантное.<br>
+      • <b>Знания графа</b> — включайте, только если граф LightRAG построен; «Режим графа»: local для
+      точечных, global/mix — для обзорных.<br>
+      • <b>Температура</b> 0.0–0.2 для строгих фактологических ответов.<br><br>
+      <b>Стоимость:</b> KAG делает несколько вызовов поиска и LLM — он точнее, но медленнее и
+      дороже обычного движка. Параметры порога/выборки самого поиска можно подобрать в разделе
+      «🎛 Автокалибровка».
+    </div></details>`,
+  'OCR (распознавание текста)': `<details class="note" style="margin:2px 0 12px" open>
+    <summary style="cursor:pointer"><b>ℹ️ Расширенные настройки OCR и рекомендации</b></summary>
+    <div style="margin-top:8px;line-height:1.6">
+      Эти параметры влияют на распознавание текста картинок, RAW-фото и «картиночных» страниц PDF
+      (включается флагами «OCR …» в группе «Документы и индексация»). Используется tesseract.
+      Все параметры применяются при <b>переиндексации</b>.<br><br>
+      • <b>Языки</b> — указывайте только нужные (напр. «rus» или «rus+eng»). Лишние языки замедляют
+      и иногда ухудшают распознавание. Требуются языковые пакеты tesseract.<br>
+      • <b>Масштаб рендера PDF</b> — 2.5 ≈ 180 DPI. Поднимайте (3.0–3.5) для мелкого шрифта и плохих
+      сканов, снижайте для ускорения на чистых страницах.<br>
+      • <b>Порог символов</b> — сколько текста на странице PDF считать «достаточным»; ниже — страница
+      идёт в OCR. 25 по умолчанию; увеличьте, если важны подписи-картинки.<br>
+      • <b>PSM</b> (сегментация): 3 — авто; 6 — единый блок (таблицы/прайсы одной колонкой);
+      11 — разрозненный текст (чертежи, этикетки). <b>OEM</b>: 3 — авто, 1 — только LSTM.<br>
+      • <b>Макс. сторона</b> — даунскейл крупных изображений (3500 px) для скорости.<br>
+      • <b>Предобработка</b> — ч/б + автоконтраст; помогает на шумных/фотографированных документах.<br><br>
+      <b>Подбор:</b> меняйте параметры и переиндексируйте небольшую папку-образец, сверяя качество в
+      «Каталоге данных» (просмотр распознанного текста). Для типографских PDF хватает значений по
+      умолчанию; для сканов и фото — повысьте масштаб и включите предобработку.
+    </div></details>`,
   'vLLM (GPU)': `<details class="note" style="margin:2px 0 12px" open>
     <summary style="cursor:pointer"><b>ℹ️ Описание и рекомендации по моделям vLLM</b></summary>
     <div style="margin-top:8px;line-height:1.6">
@@ -2247,6 +2292,7 @@ function renderEngine(v){
   const cards=[
     {key:'vector',label:'Векторный (первый вариант)',desc:'Поиск + реранк по документам. Быстрый, со ссылками на источники.'},
     {key:'lightrag',label:'LightRAG (граф)',desc:'Все вопросы идут в граф знаний. Лучше для сводных, дороже.'},
+    {key:'kag',label:'KAG (знание-усиленная)',desc:'Декомпозиция вопроса → мультихоп-поиск → опц. знания графа → ответ. Точнее на сложных вопросах, медленнее. Настройки — в группе «KAG».'},
   ];
   root.innerHTML=cards.map(c=>`<div class="card mode ${c.key===cur?'active':''}" onclick="setEngine('${c.key}')">
     <div class="k">${c.label}</div>
@@ -2257,7 +2303,7 @@ async function setEngine(key){
     headers:{'Content-Type':'application/json','X-Admin-Token':($('#cfg_token')?$('#cfg_token').value:'')},
     body:JSON.stringify({ENGINE:key})});
   const j=await r.json().catch(()=>({}));
-  if(r.ok){ opsMsg('✓ Движок: '+(key==='lightrag'?'LightRAG':'векторный')); loadConfig(); }
+  if(r.ok){ opsMsg('✓ Движок: '+({lightrag:'LightRAG',kag:'KAG'}[key]||'векторный')); loadConfig(); }
   else { opsMsg('✗ '+(j.detail||'ошибка'),false); }
 }
 function engMsg(t,ok=true){ $('#engmsg').textContent=t; $('#engmsg').className=ok?'saved':'note'; }
@@ -2994,6 +3040,10 @@ const STAGE_META={
   context:{icon:'📋',label:'Сборка контекста'},
   generate:{icon:'🧠',label:'Генерация (LLM)'},
   engine:{icon:'🧩',label:'Движок'},
+  kag_decompose:{icon:'🪓',label:'KAG: декомпозиция вопроса'},
+  kag_retrieve:{icon:'🔗',label:'KAG: мультихоп-поиск'},
+  kag_graph:{icon:'🕸',label:'KAG: знания графа'},
+  kag_generate:{icon:'🧠',label:'KAG: генерация'},
 };
 function stageParams(key,info){
   info=info||{}; const p=[];
@@ -3008,7 +3058,11 @@ function stageParams(key,info){
   else if(key==='fb_deep'){ p.push('найдено '+nz(info.found)); if(info.files&&info.files.length)p.push('файлы: '+info.files.map(f=>esc(short(f))).join('; ')); }
   else if(key==='context'){ p.push('фрагментов '+nz(info.chunks)); if(info.chars!=null)p.push(info.chars+' симв.'); }
   else if(key==='generate'){ if(info.model)p.push(esc(info.model)); if(info.backend)p.push(esc(info.backend)); if(info.temperature!=null)p.push('t='+info.temperature); if(info.chars!=null)p.push(info.chars+' симв.'); }
-  else if(key==='engine'){ if(info.engine)p.push(esc(info.engine)); if(info.model)p.push(esc(info.model)); if(info.mode)p.push('режим '+esc(info.mode)); }
+  else if(key==='engine'){ if(info.engine)p.push(esc(info.engine)); if(info.model)p.push(esc(info.model)); if(info.mode)p.push('режим '+esc(info.mode)); if(info.hops!=null)p.push('шагов '+nz(info.hops)); if(info.graph)p.push('+граф'); }
+  else if(key==='kag_decompose'){ p.push('под-вопросов '+nz(info.hops)); if(info.sub&&info.sub.length)p.push(info.sub.slice(0,4).map(s=>esc(short(s))).join(' | ')); }
+  else if(key==='kag_retrieve'){ p.push('шагов '+nz(info.hops)); p.push('фрагментов '+nz(info.chunks)); }
+  else if(key==='kag_graph'){ p.push((info.chars?('+'+info.chars+' симв. знаний'):'граф не дал знаний')); }
+  else if(key==='kag_generate'){ if(info.model)p.push(esc(info.model)); }
   else if(key==='cache'||key==='answer_cache'){ p.push(info.hit?'попадание':'мимо'); }
   return p.join(' · ');
 }

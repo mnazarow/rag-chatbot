@@ -72,6 +72,26 @@ FILE_PARSE_TIMEOUT = _int("FILE_PARSE_TIMEOUT", 0)  # лимит времени 
 # При заданном FILE_PARSE_TIMEOUT принудительно 1 (таймаут работает только однопоточно).
 INGEST_WORKERS = _int("INGEST_WORKERS", 0)
 
+# --- Расширенные параметры OCR (tesseract) ---
+# Языки распознавания (через '+', напр. "rus+eng"). Пусто = автоопределение по
+# установленным языковым пакетам tesseract (rus+eng, если есть).
+OCR_LANGS = os.getenv("OCR_LANGS", "")
+# Масштаб рендера страниц PDF в картинку перед OCR: 2.5 ≈ 180 DPI. Больше — точнее
+# на мелком шрифте, но медленнее и больше памяти.
+OCR_SCALE = _float("OCR_SCALE", 2.5)
+# Максимальная сторона изображения (пиксели): крупнее — даунскейл (ускоряет OCR).
+OCR_MAX_DIM = _int("OCR_MAX_DIM", 3500)
+# Сколько символов на странице PDF считать «достаточным» текстовым слоем; ниже —
+# страница считается «картиночной» и прогоняется через OCR.
+OCR_MIN_CHARS = _int("OCR_MIN_CHARS", 25)
+# Tesseract PSM (page segmentation mode): 3 — авто; 4 — колонками; 6 — единый блок;
+# 11 — разрозненный текст. OEM: 1 — нейросеть LSTM; 3 — авто (LSTM+legacy).
+OCR_PSM = _int("OCR_PSM", 3)
+OCR_OEM = _int("OCR_OEM", 3)
+# Предобработка изображения перед OCR (оттенки серого + автоконтраст; для сканов
+# с шумом/неравномерным фоном повышает качество).
+OCR_PREPROCESS = _bool("OCR_PREPROCESS", False)
+
 # Телеграм-бот: токен от @BotFather (пусто = бот выключен) и авто-подтверждение
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_AUTO_APPROVE = _bool("TELEGRAM_AUTO_APPROVE", False)
@@ -123,6 +143,21 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 # экономит время/нагрузку, но один и тот же вопрос будет получать один ответ до
 # переиндексации/смены модели. Требует REDIS_ENABLED.
 ANSWER_CACHE = _bool("ANSWER_CACHE", False)
+
+# --- KAG (Knowledge Augmented Generation) ---
+# Движок ответов «знание-усиленной генерации»: сложный вопрос раскладывается на
+# под-вопросы (логические шаги), по каждому идёт поиск, результаты объединяются и
+# (опц.) дополняются знаниями из графа; финальный ответ генерируется по собранному
+# знанию со ссылками. Включается выбором ENGINE=kag.
+KAG_DECOMPOSE = _bool("KAG_DECOMPOSE", True)        # раскладывать вопрос на под-вопросы
+KAG_MAX_HOPS = _int("KAG_MAX_HOPS", 3)              # макс. число под-вопросов/шагов
+KAG_CHUNKS_PER_HOP = _int("KAG_CHUNKS_PER_HOP", 4)  # фрагментов на под-вопрос
+KAG_CONTEXT_CHUNKS = _int("KAG_CONTEXT_CHUNKS", 8)  # итоговых фрагментов в контексте
+KAG_GRAPH = _bool("KAG_GRAPH", False)              # дополнять знаниями из графа (LightRAG)
+KAG_GRAPH_MODE = os.getenv("KAG_GRAPH_MODE", "local")   # режим извлечения знаний из графа
+KAG_MUTUAL_INDEX = _bool("KAG_MUTUAL_INDEX", True)  # взаимное индексирование текст⇄знания
+KAG_REQUIRE_CITATIONS = _bool("KAG_REQUIRE_CITATIONS", True)  # требовать ссылки на источники
+KAG_TEMPERATURE = _float("KAG_TEMPERATURE", 0.1)    # температура финальной генерации
 
 # Доступ
 API_HOST = os.getenv("API_HOST", "0.0.0.0")

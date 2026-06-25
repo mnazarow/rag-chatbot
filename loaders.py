@@ -126,7 +126,11 @@ def _ocr_pdf_page(page, i):
     try:
         import fitz  # pymupdf
         from PIL import Image
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5))  # ~180 DPI для читабельности
+        try:
+            scale = float(_ocr_setting("OCR_SCALE", 2.5))
+        except Exception:
+            scale = 2.5
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))  # масштаб из настроек
         img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
         for part in _ocr_image(img):
             if part.get("text", "").strip():
@@ -140,12 +144,16 @@ def _load_pdf(path: Path):
     doc = fitz.open(path)
     # OCR страниц без текстового слоя (сканы/дизайн-страницы) — по флагу OCR_IMAGES
     ocr_on = _enabled("OCR_IMAGES")
+    try:
+        min_chars = int(_ocr_setting("OCR_MIN_CHARS", 25))
+    except Exception:
+        min_chars = 25
     for i, page in enumerate(doc, 1):
         txt = page.get_text("text")
         if txt.strip():
             yield {"text": txt, "page": i}
         # мало или нет текста — вероятно, страница нарисована картинкой: распознаём
-        if ocr_on and len(txt.strip()) < 25 and _ocr_available():
+        if ocr_on and len(txt.strip()) < min_chars and _ocr_available():
             yield from _ocr_pdf_page(page, i)
 
 
@@ -390,7 +398,19 @@ def _ocr_available() -> bool:
     return _OCR_OK
 
 
+def _ocr_setting(key, default):
+    try:
+        v = settings.get(key)
+        return default if v in (None, "") else v
+    except Exception:
+        return default
+
+
 def _ocr_lang():
+    """Языки OCR: явная настройка OCR_LANGS, иначе автоопределение."""
+    explicit = _ocr_setting("OCR_LANGS", "")
+    if explicit:
+        return str(explicit)
     import pytesseract
     try:
         langs = pytesseract.get_languages(config="")
@@ -401,22 +421,44 @@ def _ocr_lang():
     return "eng"
 
 
+def _ocr_config():
+    """Строка конфигурации tesseract из настроек OEM/PSM."""
+    try:
+        oem = int(_ocr_setting("OCR_OEM", 3))
+        psm = int(_ocr_setting("OCR_PSM", 3))
+        return f"--oem {oem} --psm {psm}"
+    except Exception:
+        return ""
+
+
 def _ocr_image(img):
     """PIL.Image → OCR → текстовый (searchable) PDF → извлечённый текст.
-    Общий помощник для растровых изображений и RAW-фото."""
+    Общий помощник для растровых изображений и RAW-фото. Параметры распознавания
+    (язык, OEM/PSM, макс. размер, предобработка) берутся из настроек OCR."""
     import io
     import pytesseract
     import fitz  # pymupdf
 
     # уменьшаем огромные снимки — ускоряет OCR без потери читаемости текста
-    maxdim = 3500
-    if max(img.size) > maxdim:
+    try:
+        maxdim = int(_ocr_setting("OCR_MAX_DIM", 3500))
+    except Exception:
+        maxdim = 3500
+    if maxdim > 0 and max(img.size) > maxdim:
         k = maxdim / max(img.size)
-        img = img.resize((int(img.size[0] * k), int(img.size[1] * k)))
+        img = img.resize((max(1, int(img.size[0] * k)), max(1, int(img.size[1] * k))))
+    # предобработка: оттенки серого + автоконтраст (помогает на шумных сканах)
+    if _ocr_setting("OCR_PREPROCESS", False):
+        try:
+            from PIL import ImageOps
+            img = ImageOps.autocontrast(img.convert("L"))
+        except Exception:
+            pass
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
 
-    pdf_bytes = pytesseract.image_to_pdf_or_hocr(img, lang=_ocr_lang(), extension="pdf")
+    pdf_bytes = pytesseract.image_to_pdf_or_hocr(
+        img, lang=_ocr_lang(), extension="pdf", config=_ocr_config())
     doc = fitz.open(stream=io.BytesIO(pdf_bytes).getvalue(), filetype="pdf")
     for i, page in enumerate(doc, 1):
         txt = page.get_text("text")
