@@ -337,12 +337,19 @@ python query_lightrag.py "вопрос" --mode mix
 | `EMBED_MODEL`     | Модель эмбеддингов                            | `BAAI/bge-m3`                      |
 | `RERANK_MODEL`    | Модель реранка                                | `BAAI/bge-reranker-v2-m3`          |
 | `DEVICE`          | `mps` / `cuda` / `cpu`                        | `mps`                              |
+| `EMBED_BATCH`     | Размер пачки эмбеддера при индексации          | `32`                               |
+| `ENGINE`          | Движок ответов: `vector` / `lightrag` / `kag` | `vector`                           |
 | `QDRANT_URL`      | Адрес Qdrant                                  | `http://localhost:6333`            |
 | `QDRANT_COLLECTION`| Коллекция                                    | `company_kb`                       |
 | `WHISPER_BACKEND` | `mlx` (Apple) / `faster` (GPU)               | `mlx`                              |
 | `OCR_IMAGES` / `OCR_RAW` | OCR картинок / RAW-фото при индексации | `1` (вкл)                          |
+| `OCR_LANGS`       | Языки OCR через `+` (пусто = авто)            | пусто                              |
+| `OCR_SCALE` / `OCR_MIN_CHARS` | Масштаб рендера PDF / порог символов для OCR | `2.5` / `25`              |
+| `OCR_PSM` / `OCR_OEM` / `OCR_MAX_DIM` / `OCR_PREPROCESS` | Сегментация / движок / макс. сторона / предобработка OCR | `3` / `3` / `3500` / `0` |
 | `PARSE_CAD` / `TRANSCRIBE_AV` | Чтение CAD / транскрибация медиа  | `1` (вкл)                          |
+| `INGEST_WORKERS`  | Потоков извлечения при индексации (0 = авто)  | `0`                                |
 | `FILE_PARSE_TIMEOUT` | Лимит времени на файл при индексации, с   | `0` (без лимита)                   |
+| `KAG_*`           | Параметры движка KAG (декомпозиция, шаги, контекст, граф, температура) | см. админку |
 | `TELEGRAM_BOT_TOKEN` | Токен Телеграм-бота (@BotFather; пусто = выкл) | пусто                          |
 | `TELEGRAM_AUTO_APPROVE` | Авто-подтверждение пользователей бота      | `0` (ручное)                       |
 | `TELEGRAM_PROXY`  | SOCKS5/HTTP-прокси для бота (не MTProto)      | пусто                              |
