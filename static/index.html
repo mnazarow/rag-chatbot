@@ -838,10 +838,16 @@
     <!-- сайты в базе знаний -->
     <div class="box">
       <h3>Сайты в базе знаний</h3>
-      <textarea id="weburls" placeholder="по одному URL в строке, до 50 (https://...)"
-                style="width:100%;min-height:110px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:13px monospace"></textarea>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="weburl" placeholder="https://example.com — добавляйте по одному"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();webAdd();}"
+               style="flex:1;min-width:240px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:13px monospace">
+        <button class="act ghost" onclick="webAdd()">➕ Добавить</button>
+      </div>
+      <div id="webqueue" style="margin-top:8px"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
         <button class="act" onclick="ingestWeb()">🌐 Спарсить и добавить в базу</button>
+        <button class="act ghost" onclick="webClearQueue()">Очистить очередь</button>
         <button class="act ghost" onclick="loadWebUrls()">Обновить список</button>
         <span id="webmsg"></span>
       </div>
@@ -3372,10 +3378,29 @@ function rhPoll(){ clearTimeout(window.__rhT); window.__rhT=setTimeout(rhLoad,30
 
 // ---- сайты в базе знаний ----
 function webMsg(t,ok=true){ $('#webmsg').textContent=t; $('#webmsg').className=ok?'saved':'note'; }
+let webQueue=[];
+function webRenderQueue(){
+  const el=$('#webqueue'); if(!el) return;
+  if(!webQueue.length){ el.innerHTML='<span class="note">очередь пуста — добавляйте адреса по одному (Enter или «➕ Добавить»)</span>'; return; }
+  el.innerHTML='<div style="display:flex;flex-wrap:wrap;gap:6px">'+webQueue.map((u,i)=>
+    `<span style="display:inline-flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;max-width:100%">
+      <span style="word-break:break-all">${esc(u)}</span>
+      <a title="убрать" style="cursor:pointer;color:#f87171;font-weight:700;text-decoration:none" onclick="webRemove(${i})">×</a></span>`).join('')
+    +`</div><div class="note" style="margin-top:4px">В очереди: ${webQueue.length} / 50</div>`;
+}
+function webAdd(){
+  const inp=$('#weburl'); let u=(inp&&inp.value||'').trim(); if(!u) return;
+  if(!/^https?:\/\//i.test(u)) u='https://'+u;
+  if(webQueue.includes(u)){ webMsg('адрес уже в очереди',false); return; }
+  if(webQueue.length>=50){ webMsg('максимум 50 адресов',false); return; }
+  webQueue.push(u); if(inp){ inp.value=''; inp.focus(); } webRenderQueue(); webMsg('');
+}
+function webRemove(i){ webQueue.splice(i,1); webRenderQueue(); }
+function webClearQueue(){ if(!webQueue.length||confirm('Очистить очередь адресов?')){ webQueue=[]; webRenderQueue(); } }
 async function loadWebUrls(){
   let r; try{ r=await (await fetch('/api/admin/web-urls?t='+Date.now(),
     {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
-  if(r.urls && $('#weburls')) $('#weburls').value=r.urls.join('\n');
+  webQueue=(r.urls||[]).slice(); webRenderQueue();
   // список сайтов с кнопками удаления
   const lst=$('#weblist');
   if(lst){
@@ -3391,7 +3416,8 @@ async function loadWebUrls(){
   if(log){ if(r.log){ log.style.display='block'; log.textContent=r.log; } else log.style.display='none'; }
 }
 async function ingestWeb(){
-  const urls=$('#weburls').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  webAdd();                       // подхватить адрес, оставшийся в поле ввода
+  const urls=webQueue.slice();
   if(!urls.length){ webMsg('добавьте хотя бы один URL',false); return; }
   if(urls.length>50){ webMsg('максимум 50 адресов',false); return; }
   webMsg('парсинг…'); const r=await adminPost('/api/admin/ingest-web',{urls});
