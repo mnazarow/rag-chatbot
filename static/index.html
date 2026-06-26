@@ -644,6 +644,43 @@
     <h1>Администратор</h1>
     <div class="sub">Все настройки системы и операции обслуживания</div>
 
+    <!-- токен -->
+    <div class="box">
+      <div class="field" style="margin:0"><label>Токен администратора (для применения изменений)</label>
+        <input type="password" id="cfg_token" placeholder="введите токен, если задан на сервере">
+        <div class="note" id="tokennote"></div></div>
+    </div>
+
+    <!-- операции -->
+    <div class="box">
+      <h3>Состояние и операции</h3>
+      <div class="cards" id="opsstatus" style="margin-bottom:14px"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="reindex(false)">🔄 Переиндексировать</button>
+        <button class="act ghost" onclick="reindex(true)">♻️ Переиндексировать с нуля</button>
+        <button class="act ghost" onclick="applyLLM()">🧠 Применить модель LLM (рестарт vLLM)</button>
+        <button class="act ghost" onclick="restartSvc()">⏻ Перезапустить сервис</button>
+        <button class="act ghost" onclick="loadOps()">Обновить статус</button>
+        <span id="opsmsg"></span>
+      </div>
+      <div id="opssummary" class="note" style="margin-top:10px"></div>
+      <pre id="joblog" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);
+        border-radius:9px;padding:10px;font-size:12px;max-height:160px;overflow:auto;display:none;white-space:pre-wrap"></pre>
+
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <b style="font-size:13px">Сохранённые логи индексации и калибровки</b>
+          <button class="act ghost" onclick="loadIngestLogs()">Обновить</button>
+          <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="clearIngestLogs()">🗑 Удалить все</button>
+          <span id="ilmsg" class="note"></span>
+        </div>
+        <div class="note" style="margin:4px 0 8px">Полный лог каждой переиндексации, парсинга сайтов и автокалибровки сохраняется в БД — его можно открыть и удалить.</div>
+        <div id="illist"></div>
+        <pre id="illog" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);
+          border-radius:9px;padding:10px;font-size:12px;max-height:300px;overflow:auto;display:none;white-space:pre-wrap"></pre>
+      </div>
+    </div>
+
     <!-- установка компонентов -->
     <div class="box">
       <h3>Установка компонентов</h3>
@@ -775,43 +812,6 @@
         <span id="ftmsg"></span>
       </div>
       <div class="note">Дообучение строит LoRA-адаптер из ваших документов на выбранной базовой fp16-модели (долго, грузит GPU). После применения переключите «Дообученная».</div>
-    </div>
-
-    <!-- операции -->
-    <div class="box">
-      <h3>Состояние и операции</h3>
-      <div class="cards" id="opsstatus" style="margin-bottom:14px"></div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-        <button class="act" onclick="reindex(false)">🔄 Переиндексировать</button>
-        <button class="act ghost" onclick="reindex(true)">♻️ Переиндексировать с нуля</button>
-        <button class="act ghost" onclick="applyLLM()">🧠 Применить модель LLM (рестарт vLLM)</button>
-        <button class="act ghost" onclick="restartSvc()">⏻ Перезапустить сервис</button>
-        <button class="act ghost" onclick="loadOps()">Обновить статус</button>
-        <span id="opsmsg"></span>
-      </div>
-      <div id="opssummary" class="note" style="margin-top:10px"></div>
-      <pre id="joblog" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);
-        border-radius:9px;padding:10px;font-size:12px;max-height:160px;overflow:auto;display:none;white-space:pre-wrap"></pre>
-
-      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <b style="font-size:13px">Сохранённые логи индексации и калибровки</b>
-          <button class="act ghost" onclick="loadIngestLogs()">Обновить</button>
-          <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="clearIngestLogs()">🗑 Удалить все</button>
-          <span id="ilmsg" class="note"></span>
-        </div>
-        <div class="note" style="margin:4px 0 8px">Полный лог каждой переиндексации, парсинга сайтов и автокалибровки сохраняется в БД — его можно открыть и удалить.</div>
-        <div id="illist"></div>
-        <pre id="illog" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);
-          border-radius:9px;padding:10px;font-size:12px;max-height:300px;overflow:auto;display:none;white-space:pre-wrap"></pre>
-      </div>
-    </div>
-
-    <!-- токен -->
-    <div class="box">
-      <div class="field" style="margin:0"><label>Токен администратора (для применения изменений)</label>
-        <input type="password" id="cfg_token" placeholder="введите токен, если задан на сервере">
-        <div class="note" id="tokennote"></div></div>
     </div>
 
     <!-- авто-сгенерированные поля по группам -->
