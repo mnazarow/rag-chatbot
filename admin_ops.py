@@ -2026,6 +2026,7 @@ def component_analytics() -> dict:
         ],
         "benchmark": [{"component": r["component"], "ms": r["ms"]} for r in _bench_job.get("results", [])],
         "ingest": _ingest_summary(),
+        "ingest_breakdown": _ingest_breakdown(),
     }
 
     return {"qdrant": qd, "graph": graph, "finetune": ft,
@@ -2043,6 +2044,40 @@ def _ingest_stats() -> dict:
         except Exception:
             pass
     return {}
+
+
+def _ingest_breakdown() -> dict:
+    """Разбивка времени индексации (парсинг vs эмбеддинг) из ingest_stats.json:
+    суммарно, по типам файлов и по категориям чанков. Старые записи без раздельных
+    таймингов учитываются в «парсинге» (поле ms)."""
+    files = (_ingest_stats().get("files") or {})
+    total_parse = total_embed = total_chunks = 0
+    by_ftype: dict = {}
+    by_cat: dict = {}
+    for v in files.values():
+        if not isinstance(v, dict):
+            continue
+        p = v.get("parse_ms")
+        e = v.get("embed_ms")
+        if p is None and e is None:        # старый формат — только суммарный ms
+            p, e = v.get("ms", 0), 0
+        p = int(p or 0)
+        e = int(e or 0)
+        ch = int(v.get("chunks", 0) or 0)
+        ft = (v.get("ftype") or "—")
+        cat = (v.get("category") or "—")
+        total_parse += p
+        total_embed += e
+        total_chunks += ch
+        a = by_ftype.setdefault(ft, {"parse_ms": 0, "embed_ms": 0, "chunks": 0, "files": 0})
+        a["parse_ms"] += p; a["embed_ms"] += e; a["chunks"] += ch; a["files"] += 1
+        b = by_cat.setdefault(cat, {"parse_ms": 0, "embed_ms": 0, "chunks": 0, "files": 0})
+        b["parse_ms"] += p; b["embed_ms"] += e; b["chunks"] += ch; b["files"] += 1
+    return {
+        "overall": {"parse_ms": total_parse, "embed_ms": total_embed,
+                    "chunks": total_chunks, "files": len(files)},
+        "by_ftype": by_ftype, "by_category": by_cat,
+    }
 
 
 def _ingest_summary() -> dict:

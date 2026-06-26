@@ -280,7 +280,10 @@ def main():
         run_embed_ms += embed_ms
         proc_ms = parse_ms + embed_ms
         run_proc_ms += proc_ms
-        file_times[source] = {"ms": proc_ms, "chunks": len(points), "ts": time.time()}
+        file_times[source] = {"ms": proc_ms, "parse_ms": parse_ms, "embed_ms": embed_ms,
+                              "chunks": len(points), "ftype": ftype,
+                              "category": md.get("doc_category") or "document",
+                              "ts": time.time()}
         print(f"    · {source}: парсинг {parse_ms} мс · эмбеддинг+Qdrant {embed_ms} мс "
               f"· чанков {len(points)}", flush=True)
         if from_pg:

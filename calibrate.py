@@ -383,14 +383,13 @@ def available_modes() -> list:
 
 def _norm_modes(modes) -> list:
     valid = list(getattr(settings, "MODES", {}).keys())
-    if not modes:
+    if modes is None:   # не задано вовсе — режим по умолчанию (текущий)
         try:
             cur = settings.current_mode()
         except Exception:
             cur = None
         return [cur] if cur in valid else (valid[:1] or ["basic"])
-    out = [m for m in modes if m in valid]
-    return out or (valid[:1] or ["basic"])
+    return [m for m in modes if m in valid]   # явный список (может быть пустым)
 
 
 def _agg(combos, field):
@@ -473,7 +472,119 @@ def _calibrate_mode(items, g, pool, n_pos, n_neg, mode, use_llm) -> tuple:
     return variant, section
 
 
-def _run(use_llm: bool, grid: dict | None, modes) -> None:
+_ENGINES = {
+    "vector": {"label": "Векторный", "desc": "Поиск + реранк по документам."},
+    "lightrag": {"label": "LightRAG (граф)", "desc": "Ответ из графа знаний (нужен граф)."},
+    "kag": {"label": "KAG", "desc": "Декомпозиция → мультихоп → знания графа → ответ."},
+}
+
+
+def available_engines() -> list:
+    return [{"key": k, "label": v["label"], "desc": v["desc"]} for k, v in _ENGINES.items()]
+
+
+def _norm_engines(engines) -> list:
+    return [e for e in (engines or []) if e in _ENGINES]
+
+
+def _engine_answer(engine, q):
+    """Прогнать вопрос через движок end-to-end. Возврат (hits, text, answered)."""
+    if engine == "vector":
+        hits = retriever.search(q) or []
+        return hits, "", bool(hits)
+    if engine == "kag":
+        import asyncio
+        import kag
+        res = asyncio.run(kag.answer(q))
+        return res.get("hits", []), res.get("text", "") or "", bool(res.get("answered", True))
+    if engine == "lightrag":
+        import asyncio
+        import graph_rag
+        text = asyncio.run(graph_rag.answer(q)) or ""
+        ans = bool(text.strip()) and "нет точного ответа" not in text.lower()
+        return [], text, ans
+    return [], "", False
+
+
+def _eval_engine(items, engine) -> dict:
+    """End-to-end оценка движка на тестовом наборе (на ТЕКУЩИХ настройках)."""
+    label = _ENGINES.get(engine, {}).get("label", engine)
+    lv = _job["live"]
+    lv.update(stage="llm", q_done=0, mode_label=label, last_q="")
+    _job.update(phase=f"[Движок: {label}] оценка", total=len(items), done=0)
+    correct = pos = pos_ok = neg = neg_ok = 0
+    rows = []
+    for it in items:
+        q = it["q"]
+        neg_q = _is_negative(it)
+        srcs = [s.lower() for s in (it.get("sources") or [])]
+        ans = [s.lower() for s in (it.get("answer") or [])]
+        lv["last_q"] = q[:80]
+        try:
+            hits, text, answered = _engine_answer(engine, q)
+        except Exception as e:
+            hits, text, answered = [], "", False
+            rows.append({"q": q, "ok": False, "err": str(e)[:120]})
+            _job["done"] += 1
+            lv["q_done"] = _job["done"]
+            if neg_q:
+                neg += 1
+            else:
+                pos += 1
+            continue
+        tl = (text or "").lower()
+        cov = False
+        for h in hits:
+            hs = (h.get("source") or "").lower()
+            ht = (h.get("text") or "").lower()
+            if srcs and any(s in hs for s in srcs):
+                cov = True
+            if ans and any(a in ht for a in ans):
+                cov = True
+        if ans and any(a in tl for a in ans):
+            cov = True
+        if srcs and any(s in tl for s in srcs):
+            cov = True
+        if neg_q:
+            neg += 1
+            ok = (not answered)
+            neg_ok += ok
+        else:
+            pos += 1
+            ok = cov
+            pos_ok += ok
+        correct += ok
+        rows.append({"q": q, "ok": bool(ok), "neg": neg_q})
+        _job["done"] += 1
+        lv["q_done"] = _job["done"]
+    n = len(items) or 1
+    return {"engine": engine, "label": label,
+            "accuracy": round(correct / n, 4),
+            "pos_recall": round(pos_ok / pos, 4) if pos else None,
+            "neg_spec": round(neg_ok / neg, 4) if neg else None,
+            "rows": rows}
+
+
+def _report_engines(evals) -> str:
+    if not evals:
+        return ""
+    L = ["", "#" * 78, "ОЦЕНКА ДВИЖКОВ (end-to-end на текущих настройках)", "#" * 78, ""]
+    L.append("Прогон каждого вопроса через движок целиком и проверка попадания (ожидаемый")
+    L.append("источник/слово найдены) или корректного «не знаю» на негативных вопросах.")
+    L.append("Параметры KAG/графа настраиваются вручную в их группах настроек.")
+    L.append("")
+    for e in evals:
+        L.append(f"— {e['label']}: точность {e['accuracy'] * 100:.1f}%  "
+                 f"полнота {_p(e['pos_recall'])}  специфичность {_p(e['neg_spec'])}")
+        for r in e.get("rows", []):
+            mk = "OK " if r.get("ok") else "нет"
+            extra = f"  ({r['err']})" if r.get("err") else ""
+            L.append(f"    [{mk}] {r['q']}{extra}")
+        L.append("")
+    return "\n".join(L)
+
+
+def _run(use_llm: bool, grid: dict | None, modes, engines=None) -> None:
     try:
         items = load_testset()
         if not items:
@@ -483,6 +594,9 @@ def _run(use_llm: bool, grid: dict | None, modes) -> None:
         n_pos = sum(0 if _is_negative(i) else 1 for i in items)
         n_neg = len(items) - n_pos
         modes = _norm_modes(modes)
+        engines = _norm_engines(engines)
+        if not modes and not engines:
+            raise RuntimeError("не выбрано ни одного режима или движка")
         n_combos = len(g["min_score"]) * len(g["k_rerank"]) * len(g["k_retrieve"])
         _job["live"].update(q_total=len(items), combos_total=n_combos,
                             mode_total=len(modes), mode_idx=0)
@@ -496,14 +610,26 @@ def _run(use_llm: bool, grid: dict | None, modes) -> None:
             variants.append(v)
             sections.append(sec)
 
+        # end-to-end оценка движков (vector/lightrag/kag) на текущих настройках
+        engine_evals = []
+        for engine in engines:
+            try:
+                engine_evals.append(_eval_engine(items, engine))
+            except Exception as e:
+                print(f"[calib] движок {engine} не оценён: {e}")
+
         report = (_report_header(items, g, n_pos, n_neg, mode_labels) + "\n"
-                  + "\n".join(sections) + "\n" + "=" * 78 + "\nКонец отчёта.")
+                  + "\n".join(sections) + "\n" + _report_engines(engine_evals)
+                  + "\n" + "=" * 78 + "\nКонец отчёта.")
         log_id = None
         try:
             parts = "; ".join(f"{v['label']}: {v['best']['accuracy'] * 100:.0f}% "
                               f"({v['best']['min_score']}/{v['best']['k_rerank']}/"
                               f"{v['best']['k_retrieve']})" for v in variants)
-            summary = f"режимов: {len(variants)} — {parts} (вопросов: {len(items)})"
+            ep = "; ".join(f"{e['label']}: {e['accuracy'] * 100:.0f}%" for e in engine_evals)
+            summary = (f"режимов: {len(variants)} — {parts}"
+                       + (f" | движки — {ep}" if ep else "")
+                       + f" (вопросов: {len(items)})")
             log_id = db.ingest_log_save("Автокалибровка", summary, report)
         except Exception as e:
             print(f"[calib] не удалось сохранить лог в БД: {e}")
@@ -513,6 +639,7 @@ def _run(use_llm: bool, grid: dict | None, modes) -> None:
             "n_items": len(items), "n_pos": n_pos, "n_neg": n_neg,
             "grid": g, "report": report, "log_id": log_id,
             "multi": len(variants) > 1, "variants": variants,
+            "engine_evals": engine_evals,
         }
     except Exception as e:
         _job["error"] = str(e)
@@ -524,7 +651,8 @@ def _run(use_llm: bool, grid: dict | None, modes) -> None:
             _job["live"]["stage"] = "done" if not _job.get("error") else "error"
 
 
-def start(use_llm: bool = False, grid: dict | None = None, modes=None) -> dict:
+def start(use_llm: bool = False, grid: dict | None = None, modes=None,
+          engines=None) -> dict:
     with _lock:
         if _job["running"]:
             return {"ok": False, "msg": "калибровка уже выполняется"}
@@ -536,7 +664,8 @@ def start(use_llm: bool = False, grid: dict | None = None, modes=None) -> dict:
                           "combos_done": 0, "combos_total": 0, "best_acc": 0.0,
                           "best_params": None, "history": [], "mode": "",
                           "mode_label": "", "mode_idx": 0, "mode_total": 0})
-    threading.Thread(target=_run, args=(bool(use_llm), grid, modes), daemon=True).start()
+    threading.Thread(target=_run, args=(bool(use_llm), grid, modes, engines),
+                     daemon=True).start()
     return {"ok": True, "msg": "калибровка запущена"}
 
 

@@ -904,7 +904,9 @@ def admin_calib_example(x_admin_token: str | None = Header(None)):
 def admin_calib_modes(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return {"modes": calibrate.available_modes(),
-            "current": settings.current_mode()}
+            "current": settings.current_mode(),
+            "engines": calibrate.available_engines(),
+            "current_engine": settings.get("ENGINE")}
 
 
 @app.post("/api/admin/calib/run")
@@ -913,7 +915,8 @@ def admin_calib_run(payload: dict = Body(default={}),
     _check_admin(x_admin_token)
     return calibrate.start(use_llm=bool(payload.get("use_llm")),
                            grid=payload.get("grid"),
-                           modes=payload.get("modes"))
+                           modes=payload.get("modes"),
+                           engines=payload.get("engines"))
 
 
 @app.get("/api/admin/calib/status")
