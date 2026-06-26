@@ -245,6 +245,10 @@ def _ddl(d: str) -> list[str]:
             """CREATE TABLE IF NOT EXISTS ingest_logs(
                 id BIGINT AUTO_INCREMENT PRIMARY KEY, ts DOUBLE, day VARCHAR(16),
                 label VARCHAR(64), summary MEDIUMTEXT, log LONGTEXT) CHARACTER SET utf8mb4""",
+            """CREATE TABLE IF NOT EXISTS calib_sets(
+                id BIGINT AUTO_INCREMENT PRIMARY KEY, ts DOUBLE, name VARCHAR(255),
+                kind VARCHAR(16), n_pairs INT, prompt MEDIUMTEXT, pairs LONGTEXT,
+                params MEDIUMTEXT) CHARACTER SET utf8mb4""",
         ]
     if d == "postgresql":
         return [
@@ -272,6 +276,9 @@ def _ddl(d: str) -> list[str]:
             """CREATE TABLE IF NOT EXISTS ingest_logs(
                 id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION, day TEXT,
                 label TEXT, summary TEXT, log TEXT)""",
+            """CREATE TABLE IF NOT EXISTS calib_sets(
+                id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION, name TEXT,
+                kind TEXT, n_pairs INTEGER, prompt TEXT, pairs TEXT, params TEXT)""",
         ]
     # sqlite (по умолчанию)
     return [
@@ -298,6 +305,9 @@ def _ddl(d: str) -> list[str]:
         """CREATE TABLE IF NOT EXISTS ingest_logs(
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, day TEXT,
             label TEXT, summary TEXT, log TEXT)""",
+        """CREATE TABLE IF NOT EXISTS calib_sets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, name TEXT,
+            kind TEXT, n_pairs INTEGER, prompt TEXT, pairs TEXT, params TEXT)""",
     ]
 
 
@@ -335,6 +345,12 @@ def init(dialect: str | None = None) -> None:
                 cur.execute(f"ALTER TABLE doc_catalog ADD COLUMN {_c} {_t}")
             except Exception:
                 pass
+        # миграция: колонка kind для наборов автокалибровки (старые базы)
+        _kind_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        try:
+            cur.execute(f"ALTER TABLE calib_sets ADD COLUMN kind {_kind_t}")
+        except Exception:
+            pass
         if dd == "sqlite":
             conn.commit()
     finally:
@@ -928,6 +944,45 @@ def ingest_log_clear() -> int:
         return n
     except Exception as e:
         print(f"[db] ingest_log_clear: {e}")
+        return 0
+
+
+# ----- сохранённые наборы автокалибровки (промпт + пары + параметры) -----
+def calib_set_save(name: str, prompt: str, pairs: str, params: str,
+                   n_pairs: int = 0, kind: str = "auto") -> int:
+    with _LOCK:
+        return _insert(
+            "INSERT INTO calib_sets(ts,name,kind,n_pairs,prompt,pairs,params) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (datetime.now().timestamp(), (name or "набор")[:240], (kind or "auto")[:16],
+             int(n_pairs), prompt or "", pairs or "[]", params or "{}"))
+
+
+def calib_set_list(kind: str = "auto") -> list[dict]:
+    try:
+        return _all("SELECT id, ts, name, n_pairs, params FROM calib_sets "
+                    "WHERE kind=? OR (kind IS NULL AND ?='auto') "
+                    "ORDER BY id DESC LIMIT 200", (kind, kind))
+    except Exception as e:
+        print(f"[db] calib_set_list: {e}")
+        return []
+
+
+def calib_set_get(set_id: int) -> dict | None:
+    try:
+        return _one("SELECT id, ts, name, kind, n_pairs, prompt, pairs, params "
+                    "FROM calib_sets WHERE id=?", (int(set_id),))
+    except Exception as e:
+        print(f"[db] calib_set_get: {e}")
+        return None
+
+
+def calib_set_delete(set_id: int) -> int:
+    try:
+        with _LOCK:
+            return _exec("DELETE FROM calib_sets WHERE id=?", (int(set_id),))
+    except Exception as e:
+        print(f"[db] calib_set_delete: {e}")
         return 0
 
 

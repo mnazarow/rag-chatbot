@@ -558,6 +558,20 @@
           font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--panel2);
           border:1px solid var(--line);border-radius:9px;padding:10px;white-space:pre"></textarea>
       </details>
+
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <b style="font-size:13px">Сохранённые наборы вопросов (вопросы + найденные параметры)</b>
+          <input type="text" id="msetname" placeholder="имя набора" style="width:200px">
+          <button class="act" onclick="msetSave()">💾 Сохранить набор</button>
+          <button class="act ghost" onclick="msetsLoad()">Обновить список</button>
+          <span id="msetmsg" class="note"></span>
+        </div>
+        <div class="clb-help">Сохраняет текущий набор вопросов конструктора и параметры последней
+          калибровки (лучшие MIN_SCORE/TOP_K по режимам). Набор можно загрузить обратно в конструктор
+          или удалить.</div>
+        <div id="msetlist" style="margin-top:8px"></div>
+      </div>
     </div>
 
     <div class="box">
@@ -568,6 +582,21 @@
         сравнивается с эталоном по <b>смысловой близости</b> (эмбеддинг-косинус). «Отклонение» =
         (1 − близость)·100%; зачёт — если отклонение ≤ заданного порога. Это оценка <b>качества
         ответа целиком</b> (дополняет калибровку порога/выборки выше).</div>
+      <details style="margin:8px 0">
+        <summary class="note" style="cursor:pointer">✏️ Промпт генерации (LLM) — посмотреть и отредактировать</summary>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">
+          <button class="act ghost" onclick="autoPromptLoad()">Загрузить</button>
+          <button class="act ghost" onclick="autoPromptSave()">💾 Сохранить промпт</button>
+          <button class="act ghost" onclick="autoPromptDefault()">Вернуть по умолчанию</button>
+          <span id="autopromptmsg" class="note"></span>
+        </div>
+        <div class="clb-help">Промпт подаётся LLM вместе с фрагментом документа; модель должна вернуть
+          JSON <code>{"q":"…","a":"…"}</code>. Сохранённый промпт используется при генерации и
+          включается в сохранённый набор.</div>
+        <textarea id="autoprompt" spellcheck="false" style="width:100%;min-height:120px;margin-top:6px;
+          font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--panel2);
+          border:1px solid var(--line);border-radius:9px;padding:10px"></textarea>
+      </details>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:10px 0">
         <label class="note">Пар: <input type="number" id="auto_n" value="50" min="1" max="200" style="width:70px"></label>
         <button class="act" onclick="autoGen()">🧪 Сгенерировать из папки test</button>
@@ -576,14 +605,40 @@
       <div id="autoprog" class="note"></div>
       <div id="autopairs" style="margin-top:8px"></div>
 
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <b style="font-size:13px">Сохранённые наборы (промпт + пары + параметры)</b>
+          <input type="text" id="autosetname" placeholder="имя набора" style="width:200px">
+          <button class="act" onclick="autoSetSave()">💾 Сохранить набор</button>
+          <button class="act ghost" onclick="autoSetsLoad()">Обновить список</button>
+          <span id="autosetmsg" class="note"></span>
+        </div>
+        <div class="clb-help">Сохраняет текущий промпт, сгенерированные пары и параметры последнего
+          прогона (движок, допуск, точность, MIN_SCORE/TOP_K). Набор можно загрузить обратно или удалить.</div>
+        <div id="autosetlist" style="margin-top:8px"></div>
+      </div>
+
       <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">
         <label class="note">Допустимое отклонение ответа: <input type="number" id="auto_dev" value="30" min="0" max="100" step="5" style="width:70px"> %</label>
         <label class="note">Движок: <select id="auto_engine"><option value="">текущий</option><option value="vector">Векторный</option><option value="lightrag">LightRAG</option><option value="kag">KAG</option></select></label>
         <button class="act" onclick="autoRun()">▶ Прогнать оценку</button>
+        <button class="act ghost" id="autostop" style="display:none;border-color:#ef4444;color:#f87171" onclick="autoCancel()">⏹ Остановить</button>
         <span id="autorunmsg" class="note"></span>
       </div>
       <div class="clb-help">Меньше отклонение — строже зачёт (ответ должен быть ближе к эталону).
         Рекомендация: 20–35%. Прогон вызывает LLM на каждый вопрос — это занимает время.</div>
+      <div id="autoprog2" class="note" style="margin-top:6px"></div>
+      <div id="autolivewrap" style="display:none;margin-top:8px">
+        <div class="note">График сходимости: сходство ответа с эталоном по вопросам (и накопленная доля зачётов)</div>
+        <canvas id="auto_conv" height="150"></canvas>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+          <b style="font-size:13px">Подробный лог оценки</b>
+          <button class="act ghost" onclick="autoSaveLog()">💾 Сохранить лог в БД</button>
+          <span id="autologmsg" class="note"></span>
+        </div>
+        <pre id="autolive" style="margin-top:6px;background:var(--panel2);border:1px solid var(--line);
+          border-radius:9px;padding:10px;font-size:12px;max-height:220px;overflow:auto;white-space:pre-wrap"></pre>
+      </div>
       <div id="autores" style="margin-top:10px"></div>
     </div>
 
@@ -621,6 +676,7 @@
 
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:12px">
         <button class="act" onclick="calibRun()">▶️ Запустить калибровку</button>
+        <button class="act ghost" id="calibstop" style="display:none;border-color:#ef4444;color:#f87171" onclick="calibCancel()">⏹ Остановить</button>
         <label class="note" style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="calib_llm"> проверять и текст ответа (LLM)
         </label>
@@ -669,6 +725,13 @@
           <canvas id="calib_live_prog" height="150"></canvas>
           <div class="clb-help">Доля выполненного на текущем этапе (вопросы или комбинации).</div></div>
       </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">
+        <b style="font-size:13px">Подробный лог</b>
+        <button class="act ghost" onclick="calibSaveLog()">💾 Сохранить лог в БД</button>
+        <span id="caliblogmsg" class="note"></span>
+      </div>
+      <pre id="caliblive" style="margin-top:6px;background:var(--panel2);border:1px solid var(--line);
+        border-radius:9px;padding:10px;font-size:12px;max-height:220px;overflow:auto;white-space:pre-wrap"></pre>
     </div>
 
     <div id="calibres"></div>
@@ -2049,13 +2112,90 @@ async function loadConfig(){
 function calibSetMsg(t,ok=true){ const e=$('#calibsetmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 function calibMsg(t,ok=true){ const e=$('#calibmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 let calibCurMode='', calibCurEngine='';
-async function loadCalib(){ await calibLoad(); await calibLoadModes(); calibScheme(null); $('#calivecards').innerHTML=''; autoLoad(); }
+async function loadCalib(){ await calibLoad(); await calibLoadModes(); calibScheme(null); $('#calivecards').innerHTML=''; autoLoad(); msetsLoad(); }
+// ---- сохранённые наборы вопросов (ручной конструктор) ----
+function msetMsg(t,ok=true){ const e=$('#msetmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
+async function msetsLoad(){
+  const el=$('#msetlist'); if(!el) return;
+  let r; try{ r=await adminGet('/api/admin/calib/sets'); }catch(e){ return; }
+  const sets=(r&&r.sets)||[];
+  if(!sets.length){ el.innerHTML='<span class="note">сохранённых наборов вопросов нет</span>'; return; }
+  el.innerHTML='<div style="max-height:220px;overflow:auto"><table><thead><tr><th>Имя</th><th>Дата</th><th>Вопросов</th><th>Найденные параметры</th><th></th></tr></thead><tbody>'+
+    sets.map(s=>`<tr>
+      <td><b>${esc(s.name||'')}</b></td>
+      <td style="white-space:nowrap">${fmtTime(s.ts)}</td>
+      <td>${nz(s.n_pairs)}</td>
+      <td class="note">${s.has_params?('точн. '+pct(s.best_accuracy)+' · '+esc(s.best_params||'')):'без калибровки'}</td>
+      <td style="white-space:nowrap">
+        <button class="act ghost" style="padding:3px 8px" onclick="msetLoad(${s.id})">Загрузить</button>
+        <button class="act ghost" style="padding:3px 8px;border-color:#ef4444;color:#f87171" onclick="msetDelete(${s.id})">Удалить</button>
+      </td></tr>`).join('')+'</tbody></table></div>';
+}
+async function msetSave(){
+  const items=calibClean(); calibSyncToJson();
+  if(!items.length){ msetMsg('добавьте хотя бы один вопрос',false); return; }
+  await adminPost('/api/admin/calib/testset',{items});
+  const name=($('#msetname').value||'').trim()||('набор '+new Date().toLocaleString('ru-RU'));
+  const r=await adminPost('/api/admin/calib/sets/save',{name});
+  msetMsg(r.msg||(r.ok?'сохранено':'ошибка'),r.ok!==false); if(r.ok!==false){ $('#msetname').value=''; msetsLoad(); }
+}
+async function msetLoad(id){
+  const r=await adminPost('/api/admin/calib/sets/load',{id});
+  msetMsg(r.msg||'загружено',r.ok!==false);
+  if(r.ok!==false){ calibLoad(); }
+}
+async function msetDelete(id){
+  if(!confirm('Удалить сохранённый набор вопросов №'+id+'?'))return;
+  const r=await adminPost('/api/admin/calib/sets/delete',{id});
+  msetMsg(r.msg||'удалено',r.ok!==false); msetsLoad();
+}
 // ---- альтернативный набор из папки test ----
 let autoPoll=null;
 function autoMsg(id,t,ok=true){ const e=$('#'+id); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 async function autoLoad(){
   let r; try{ r=await adminGet('/api/admin/calib/auto/testset'); }catch(e){ return; }
   autoRenderPairs((r&&r.items)||[]);
+  autoPromptLoad(); autoSetsLoad();
+}
+async function autoPromptLoad(){
+  let r; try{ r=await adminGet('/api/admin/calib/auto/prompt'); }catch(e){ return; }
+  const el=$('#autoprompt'); if(el) el.value=(r&&r.prompt)||''; if(el) el._default=(r&&r.default)||'';
+}
+async function autoPromptSave(){
+  const r=await adminPost('/api/admin/calib/auto/prompt',{prompt:$('#autoprompt').value});
+  autoMsg('autopromptmsg',r&&r.prompt?'промпт сохранён':'ошибка',!!(r&&r.prompt));
+}
+function autoPromptDefault(){ const el=$('#autoprompt'); if(el&&el._default){ el.value=el._default; autoMsg('autopromptmsg','подставлен промпт по умолчанию — нажмите «Сохранить»'); } }
+async function autoSetsLoad(){
+  const el=$('#autosetlist'); if(!el) return;
+  let r; try{ r=await adminGet('/api/admin/calib/auto/sets'); }catch(e){ return; }
+  const sets=(r&&r.sets)||[];
+  if(!sets.length){ el.innerHTML='<span class="note">сохранённых наборов нет</span>'; return; }
+  el.innerHTML='<div style="max-height:220px;overflow:auto"><table><thead><tr><th>Имя</th><th>Дата</th><th>Пар</th><th>Параметры</th><th></th></tr></thead><tbody>'+
+    sets.map(s=>`<tr>
+      <td><b>${esc(s.name||'')}</b></td>
+      <td style="white-space:nowrap">${fmtTime(s.ts)}</td>
+      <td>${nz(s.n_pairs)}</td>
+      <td class="note">${s.accuracy!=null?('точн. '+pct(s.accuracy)+' · '+esc(s.engine||'')+' · откл.≤'+nz(s.deviation)+'%'):'без прогона'}</td>
+      <td style="white-space:nowrap">
+        <button class="act ghost" style="padding:3px 8px" onclick="autoSetLoad(${s.id})">Загрузить</button>
+        <button class="act ghost" style="padding:3px 8px;border-color:#ef4444;color:#f87171" onclick="autoSetDelete(${s.id})">Удалить</button>
+      </td></tr>`).join('')+'</tbody></table></div>';
+}
+async function autoSetSave(){
+  const name=($('#autosetname').value||'').trim()||('набор '+new Date().toLocaleString('ru-RU'));
+  const r=await adminPost('/api/admin/calib/auto/sets/save',{name});
+  autoMsg('autosetmsg',r.msg||(r.ok?'сохранено':'ошибка'),r.ok!==false); if(r.ok!==false){ $('#autosetname').value=''; autoSetsLoad(); }
+}
+async function autoSetLoad(id){
+  const r=await adminPost('/api/admin/calib/auto/sets/load',{id});
+  autoMsg('autosetmsg',r.msg||'загружено',r.ok!==false);
+  if(r.ok!==false){ autoPromptLoad(); autoLoad(); }
+}
+async function autoSetDelete(id){
+  if(!confirm('Удалить сохранённый набор №'+id+'?'))return;
+  const r=await adminPost('/api/admin/calib/auto/sets/delete',{id});
+  autoMsg('autosetmsg',r.msg||'удалено',r.ok!==false); autoSetsLoad();
 }
 function autoRenderPairs(items){
   const el=$('#autopairs'); if(!el) return;
@@ -2069,7 +2209,8 @@ function autoRenderPairs(items){
 }
 async function autoGen(){
   const n=+($('#auto_n').value||50);
-  const r=await adminPost('/api/admin/calib/auto/generate',{n});
+  const prompt=($('#autoprompt')&&$('#autoprompt').value)||'';
+  const r=await adminPost('/api/admin/calib/auto/generate',{n,prompt});
   if(r.ok===false){ autoMsg('autogenmsg',r.msg||'не удалось',false); return; }
   autoMsg('autogenmsg','генерация запущена…'); autoPollStart();
 }
@@ -2077,18 +2218,36 @@ async function autoRun(){
   const deviation=+($('#auto_dev').value||30), engine=$('#auto_engine').value||null;
   const r=await adminPost('/api/admin/calib/auto/run',{deviation,engine});
   if(r.ok===false){ autoMsg('autorunmsg',r.msg||'не удалось',false); return; }
-  autoMsg('autorunmsg','оценка запущена…'); $('#autores').innerHTML=''; autoPollStart();
+  autoMsg('autorunmsg','оценка запущена…'); $('#autores').innerHTML='';
+  $('#autolive').textContent=''; $('#autolivewrap').style.display='none'; autoPollStart();
 }
 function autoPollStart(){ clearInterval(autoPoll); autoPoll=setInterval(autoStatus,1500); autoStatus(); }
 async function autoStatus(){
   let s; try{ s=await adminGet('/api/admin/calib/auto/status'); }catch(e){ return; }
-  const p=$('#autoprog');
-  if(s.running){ if(p)p.textContent=`${s.phase||'…'} — ${s.done||0}/${s.total||0}`; return; }
-  clearInterval(autoPoll); if(p)p.textContent='';
+  const p=$('#autoprog'), p2=$('#autoprog2');
+  const pts=s.points||[];
+  if(pts.length){ $('#autolivewrap').style.display='block'; autoConvChart(pts); }
+  liveLog('autolive', s.log);
+  const stop=$('#autostop'); if(stop) stop.style.display=s.running?'inline-block':'none';
+  if(s.running){ const t=`${s.phase||'…'} — ${s.done||0}/${s.total||0}`; if(p)p.textContent=t; if(p2)p2.textContent=t; return; }
+  clearInterval(autoPoll); if(p)p.textContent=''; if(p2)p2.textContent='';
+  if(s.cancelled){ autoMsg('autogenmsg','остановлено'); autoMsg('autorunmsg','остановлено'); return; }
   if(s.error){ autoMsg('autogenmsg','ошибка: '+s.error,false); autoMsg('autorunmsg','ошибка: '+s.error,false); return; }
   const r=s.result;
   if(r&&r.kind==='generate'){ autoMsg('autogenmsg','готово: '+r.count+' пар'); autoRenderPairs(r.items||[]); }
   else if(r&&r.kind==='eval'){ autoMsg('autorunmsg','готово'); autoRenderEval(r); }
+}
+async function autoCancel(){ const r=await adminPost('/api/admin/calib/auto/cancel'); autoMsg('autorunmsg',r.msg||'остановка…'); }
+async function autoSaveLog(){ const r=await adminPost('/api/admin/calib/save-log',{which:'auto'});
+  const e=$('#autologmsg'); if(e){ e.textContent=r.msg||(r.ok?'сохранено':'ошибка'); e.className=r.ok!==false?'saved':'note'; }
+  if(r.ok!==false&&r.id){ e.innerHTML=esc(r.msg)+' <a style="cursor:pointer;color:#f87171" onclick="delIngestLog('+r.id+')">удалить</a>'; loadIngestLogs&&loadIngestLogs(); } }
+function autoConvChart(pts){
+  mkChart('auto_conv',{type:'line',data:{labels:pts.map(p=>p.i),datasets:[
+    {label:'Сходство ответа, %',data:pts.map(p=>p.sim),borderColor:C.palette[1],backgroundColor:'rgba(34,197,94,.12)',fill:true,tension:.2,pointRadius:2},
+    {label:'Доля зачётов, %',data:pts.map(p=>p.rate),borderColor:C.palette[0],fill:false,tension:.2,pointRadius:0,borderDash:[5,4]},
+    {label:'Порог зачёта (сходство), %',data:pts.map(p=>100-(p.thr||0)),borderColor:C.palette[4],fill:false,pointRadius:0,borderDash:[2,3]}]},
+    options:{animation:false,scales:{x:{ticks:{color:C.txt},grid:{color:C.grid},title:{display:true,text:'вопрос №',color:C.txt}},
+      y:{ticks:{color:C.txt},grid:{color:C.grid},suggestedMin:0,suggestedMax:100}},plugins:{legend:{display:true,labels:{color:C.txt}}}}});
 }
 function autoRenderEval(r){
   const rows=(r.rows||[]).map((x,i)=>`<tr style="${x.ok?'':'background:rgba(239,68,68,.10)'}">
@@ -2323,11 +2482,21 @@ async function calibStatus(){
   const lv=s.live||{};
   calibScheme(s.running?(lv.stage||'load'):(s.error?null:(s.result?'done':null)));
   calibLiveUpdate(s);
+  liveLog('caliblive', s.log);
+  const stop=$('#calibstop'); if(stop) stop.style.display=s.running?'inline-block':'none';
   if(s.running){ calibMsg(`${s.phase||'…'} — ${s.done||0}/${s.total||0}`); return; }
   clearInterval(calibPoll);
+  if(s.cancelled){ calibMsg('остановлено'); return; }
   if(s.error){ calibMsg('ошибка: '+s.error,false); return; }
   if(s.result){ calibMsg('готово'); calibRender(s.result); }
 }
+function liveLog(id,text){ const pre=$('#'+id); if(!pre) return;
+  const atBottom=(pre.scrollHeight-pre.scrollTop-pre.clientHeight)<30;
+  if(pre.textContent!==(text||'')){ pre.textContent=text||''; if(atBottom) pre.scrollTop=pre.scrollHeight; } }
+async function calibCancel(){ const r=await adminPost('/api/admin/calib/cancel'); calibMsg(r.msg||'остановка…'); }
+async function calibSaveLog(){ const r=await adminPost('/api/admin/calib/save-log',{which:'calib'});
+  const e=$('#caliblogmsg'); if(e){ e.textContent=r.msg||(r.ok?'сохранено':'ошибка'); e.className=r.ok!==false?'saved':'note'; }
+  if(r.ok!==false&&r.id){ e.innerHTML=esc(r.msg)+' <a style="cursor:pointer;color:#f87171" onclick="delIngestLog('+r.id+')">удалить</a>'; loadIngestLogs&&loadIngestLogs(); } }
 function pct(x){ return x==null?'—':(Math.round(x*1000)/10)+'%'; }
 function calibLiveUpdate(s){
   const lv=s.live||{};

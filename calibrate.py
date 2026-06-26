@@ -44,8 +44,24 @@ DEFAULT_GRID = {
 # Состояние фонового задания
 _job: dict = {"running": False, "phase": "", "done": 0, "total": 0,
               "result": None, "error": None, "started": 0.0, "finished": 0.0,
-              "live": None}
+              "live": None, "log": [], "cancel": False}
 _lock = threading.Lock()
+
+
+class _Cancelled(Exception):
+    """Кооперативная отмена фоновой операции пользователем."""
+
+
+def _logline(job: dict, line: str) -> None:
+    lg = job.setdefault("log", [])
+    lg.append(line)
+    if len(lg) > 4000:
+        del lg[:len(lg) - 4000]
+
+
+def _check_cancel(job: dict) -> None:
+    if job.get("cancel"):
+        raise _Cancelled()
 
 
 # ----------------------------- тестовый набор -----------------------------
@@ -412,20 +428,25 @@ def _calibrate_mode(items, g, pool, n_pos, n_neg, mode, use_llm) -> tuple:
     n_combos = lv["combos_total"]
 
     _job.update(phase=f"[{label}] Поиск и реранк", total=len(items), done=0)
+    _logline(_job, f"[{label}] поиск+реранк по {len(items)} вопросам "
+                   f"(фильтр: {_mode_filter_desc(flags)})")
     all_cands = []
     for it in items:
+        _check_cancel(_job)
         lv["last_q"] = it["q"][:80]
         all_cands.append(_candidates(it["q"], pool, flags))
         _job["done"] += 1
         lv["q_done"] = _job["done"]
 
     _job.update(phase=f"[{label}] Перебор сетки", total=n_combos, done=0)
+    _logline(_job, f"[{label}] перебор сетки: {n_combos} комбинаций")
     lv["stage"] = "grid"
     combos = []
     best_acc = -1.0
     for ms in g["min_score"]:
         for krr in g["k_rerank"]:
             for krt in g["k_retrieve"]:
+                _check_cancel(_job)
                 r = _evaluate_combo(items, all_cands, ms, krr, krt)
                 combos.append(r)
                 _job["done"] += 1
@@ -434,6 +455,8 @@ def _calibrate_mode(items, g, pool, n_pos, n_neg, mode, use_llm) -> tuple:
                     best_acc = r["accuracy"]
                     lv["best_acc"] = best_acc
                     lv["best_params"] = {"min_score": ms, "k_rerank": krr, "k_retrieve": krt}
+                    _logline(_job, f"[{label}] новый лучший: точность "
+                                   f"{best_acc * 100:.1f}% при {ms}/{krr}/{krt}")
                 if (_job["done"] % max(1, n_combos // 60) == 0 or _job["done"] == n_combos):
                     lv["history"].append({"n": _job["done"], "acc": round(best_acc, 4)})
 
@@ -460,6 +483,9 @@ def _calibrate_mode(items, g, pool, n_pos, n_neg, mode, use_llm) -> tuple:
             llm["current"] = _answer_accuracy(
                 items, all_cands, cur["min_score"], cur["k_rerank"], cur["k_retrieve"])
 
+    _logline(_job, f"[{label}] итог: лучшее {best['accuracy'] * 100:.1f}% при "
+                   f"{best['min_score']}/{best['k_rerank']}/{best['k_retrieve']} "
+                   f"(текущие: {cur_eval['accuracy'] * 100:.1f}%)")
     section = _report_variant(label, flags, items, all_cands, combos, best,
                               cur_eval, llm, n_pos, n_neg)
     variant = {
@@ -513,9 +539,11 @@ def _eval_engine(items, engine) -> dict:
     lv = _job["live"]
     lv.update(stage="llm", q_done=0, mode_label=label, last_q="")
     _job.update(phase=f"[Движок: {label}] оценка", total=len(items), done=0)
+    _logline(_job, f"[Движок: {label}] оценка end-to-end по {len(items)} вопросам")
     correct = pos = pos_ok = neg = neg_ok = 0
     rows = []
     for it in items:
+        _check_cancel(_job)
         q = it["q"]
         neg_q = _is_negative(it)
         srcs = [s.lower() for s in (it.get("sources") or [])]
@@ -642,12 +670,32 @@ def _run(use_llm: bool, grid: dict | None, modes, engines=None) -> None:
             "multi": len(variants) > 1, "variants": variants,
             "engine_evals": engine_evals,
         }
+        # компактный снимок найденных параметров — для сохранения вместе с набором вопросов
+        try:
+            db.kv_set("calib_last_params", json.dumps({
+                "n_items": len(items),
+                "best": [{"mode": v["mode"], "label": v["label"],
+                          "accuracy": v["best"]["accuracy"],
+                          "min_score": v["best"]["min_score"],
+                          "k_rerank": v["best"]["k_rerank"],
+                          "k_retrieve": v["best"]["k_retrieve"]} for v in variants],
+                "engines": [{"engine": e["engine"], "label": e["label"],
+                             "accuracy": e["accuracy"]} for e in engine_evals],
+                "ts": time.time()}, ensure_ascii=False))
+        except Exception:
+            pass
+    except _Cancelled:
+        _job["error"] = None
+        _job["cancelled"] = True
+        _logline(_job, "⏹ остановлено пользователем")
     except Exception as e:
         _job["error"] = str(e)
+        _logline(_job, f"ОШИБКА: {e}")
     finally:
         _job["running"] = False
         _job["finished"] = time.time()
-        _job["phase"] = "Готово" if not _job.get("error") else "Ошибка"
+        _job["phase"] = ("Остановлено" if _job.get("cancelled")
+                         else ("Готово" if not _job.get("error") else "Ошибка"))
         if isinstance(_job.get("live"), dict):
             _job["live"]["stage"] = "done" if not _job.get("error") else "error"
 
@@ -661,19 +709,32 @@ def start(use_llm: bool = False, grid: dict | None = None, modes=None,
             return {"ok": False, "msg": "тестовый набор пуст — добавьте вопросы"}
         _job.update(running=True, phase="Запуск", done=0, total=0,
                     result=None, error=None, started=time.time(), finished=0.0,
+                    cancel=False, cancelled=False, log=[],
                     live={"stage": "load", "q_done": 0, "q_total": 0, "last_q": "",
                           "combos_done": 0, "combos_total": 0, "best_acc": 0.0,
                           "best_params": None, "history": [], "mode": "",
                           "mode_label": "", "mode_idx": 0, "mode_total": 0})
+        _logline(_job, "▶ запуск калибровки")
     threading.Thread(target=_run, args=(bool(use_llm), grid, modes, engines),
                      daemon=True).start()
     return {"ok": True, "msg": "калибровка запущена"}
 
 
+def cancel() -> dict:
+    if _job.get("running"):
+        _job["cancel"] = True
+        return {"ok": True, "msg": "остановка калибровки…"}
+    return {"ok": False, "msg": "калибровка не выполняется"}
+
+
 def status() -> dict:
-    return {k: _job.get(k) for k in
-            ("running", "phase", "done", "total", "result", "error", "started",
-             "finished", "live")}
+    out = {k: _job.get(k) for k in
+           ("running", "phase", "done", "total", "result", "error", "started",
+            "finished", "live", "cancelled")}
+    lg = _job.get("log") or []
+    out["log"] = "\n".join(lg[-400:])
+    out["log_lines"] = len(lg)
+    return out
 
 
 def apply_params(min_score=None, k_rerank=None, k_retrieve=None, mode=None) -> dict:
@@ -708,9 +769,17 @@ def apply_params(min_score=None, k_rerank=None, k_retrieve=None, mode=None) -> d
 # Альтернативный набор: авто Q&A из папки test + оценка по сходству ответа с эталоном
 # ===================================================================================
 _AUTO_KV = "calib_testset_auto"
+_AUTO_PROMPT_KV = "calib_auto_prompt"
+_AUTO_RESULT_KV = "calib_auto_lastresult"
 _auto: dict = {"running": False, "phase": "", "done": 0, "total": 0,
-               "result": None, "error": None, "started": 0.0, "finished": 0.0}
+               "result": None, "error": None, "started": 0.0, "finished": 0.0,
+               "log": [], "points": [], "cancel": False, "cancelled": False}
 _auto_lock = threading.Lock()
+
+DEFAULT_GEN_PROMPT = (
+    "На основе ТОЛЬКО приведённого фрагмента придумай один осмысленный вопрос и краткий "
+    "точный ответ строго по фрагменту (1–3 предложения, без воды). Ответь СТРОГО одним "
+    "JSON-объектом: {\"q\": \"вопрос\", \"a\": \"ответ\"} — без пояснений.")
 
 
 def auto_load() -> list:
@@ -729,11 +798,167 @@ def auto_save(items: list) -> None:
         print(f"[calib-auto] не удалось сохранить набор: {e}")
 
 
+def auto_prompt_get() -> str:
+    try:
+        p = db.kv_get(_AUTO_PROMPT_KV)
+        return p if p else DEFAULT_GEN_PROMPT
+    except Exception:
+        return DEFAULT_GEN_PROMPT
+
+
+def auto_prompt_set(text: str) -> None:
+    try:
+        db.kv_set(_AUTO_PROMPT_KV, (text or "").strip() or DEFAULT_GEN_PROMPT)
+    except Exception as e:
+        print(f"[calib-auto] промпт не сохранён: {e}")
+
+
+def _auto_last_result() -> dict:
+    try:
+        raw = db.kv_get(_AUTO_RESULT_KV)
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+# ----- именованные наборы (промпт + пары + параметры) -----
+def set_save(name: str) -> dict:
+    items = auto_load()
+    if not items:
+        return {"ok": False, "msg": "набор пуст — сначала сгенерируйте пары"}
+    params = _auto_last_result()
+    sid = db.calib_set_save(name or "набор", auto_prompt_get(),
+                            json.dumps(items, ensure_ascii=False),
+                            json.dumps(params, ensure_ascii=False), len(items),
+                            kind="auto")
+    return {"ok": True, "id": sid, "msg": f"набор сохранён (№{sid})"}
+
+
+def set_list() -> list:
+    out = []
+    for r in db.calib_set_list("auto"):
+        params = {}
+        try:
+            params = json.loads(r.get("params") or "{}")
+        except Exception:
+            params = {}
+        out.append({"id": r.get("id"), "ts": r.get("ts"), "name": r.get("name"),
+                    "n_pairs": r.get("n_pairs"),
+                    "accuracy": params.get("accuracy"),
+                    "engine": params.get("engine"),
+                    "deviation": params.get("deviation")})
+    return out
+
+
+def set_get(set_id: int) -> dict | None:
+    r = db.calib_set_get(set_id)
+    if not r:
+        return None
+    def _j(s, d):
+        try:
+            return json.loads(s) if s else d
+        except Exception:
+            return d
+    return {"id": r.get("id"), "ts": r.get("ts"), "name": r.get("name"),
+            "n_pairs": r.get("n_pairs"), "prompt": r.get("prompt") or "",
+            "pairs": _j(r.get("pairs"), []), "params": _j(r.get("params"), {})}
+
+
+def set_load(set_id: int) -> dict:
+    s = set_get(set_id)
+    if not s:
+        return {"ok": False, "msg": "набор не найден"}
+    auto_save(s["pairs"])
+    auto_prompt_set(s["prompt"] or DEFAULT_GEN_PROMPT)
+    try:
+        db.kv_set(_AUTO_RESULT_KV, json.dumps(s.get("params") or {}, ensure_ascii=False))
+    except Exception:
+        pass
+    return {"ok": True, "name": s["name"], "n_pairs": s["n_pairs"],
+            "prompt": s["prompt"], "params": s["params"],
+            "msg": f"загружен набор «{s['name']}» ({s['n_pairs']} пар)"}
+
+
+def set_delete(set_id: int) -> dict:
+    n = db.calib_set_delete(set_id)
+    return {"ok": True, "deleted": n, "msg": "набор удалён" if n else "набор не найден"}
+
+
+# ----- именованные наборы РУЧНОГО конструктора (вопросы + найденные параметры) -----
+def _calib_last_params() -> dict:
+    try:
+        raw = db.kv_get("calib_last_params")
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def mset_save(name: str) -> dict:
+    items = load_testset()
+    if not items:
+        return {"ok": False, "msg": "тестовый набор пуст — добавьте вопросы"}
+    params = _calib_last_params()
+    sid = db.calib_set_save(name or "набор вопросов", "",
+                            json.dumps(items, ensure_ascii=False),
+                            json.dumps(params, ensure_ascii=False), len(items),
+                            kind="manual")
+    return {"ok": True, "id": sid, "msg": f"набор вопросов сохранён (№{sid})"}
+
+
+def mset_list() -> list:
+    out = []
+    for r in db.calib_set_list("manual"):
+        params = {}
+        try:
+            params = json.loads(r.get("params") or "{}")
+        except Exception:
+            params = {}
+        best = params.get("best") or []
+        top = best[0] if best else None
+        out.append({"id": r.get("id"), "ts": r.get("ts"), "name": r.get("name"),
+                    "n_pairs": r.get("n_pairs"),
+                    "has_params": bool(best),
+                    "best_accuracy": top.get("accuracy") if top else None,
+                    "best_params": (f"{top['min_score']}/{top['k_rerank']}/{top['k_retrieve']}"
+                                    if top else None)})
+    return out
+
+
+def mset_load(set_id: int) -> dict:
+    s = set_get(set_id)
+    if not s:
+        return {"ok": False, "msg": "набор не найден"}
+    save_testset(s["pairs"])
+    try:
+        db.kv_set("calib_last_params", json.dumps(s.get("params") or {}, ensure_ascii=False))
+    except Exception:
+        pass
+    return {"ok": True, "name": s["name"], "n_pairs": s["n_pairs"],
+            "params": s["params"], "msg": f"загружен набор «{s['name']}» ({s['n_pairs']} вопр.)"}
+
+
+def mset_delete(set_id: int) -> dict:
+    n = db.calib_set_delete(set_id)
+    return {"ok": True, "deleted": n, "msg": "набор удалён" if n else "набор не найден"}
+
+
 def auto_status() -> dict:
     out = {k: _auto.get(k) for k in
-           ("running", "phase", "done", "total", "result", "error", "started", "finished")}
+           ("running", "phase", "done", "total", "result", "error", "started",
+            "finished", "cancelled")}
     out["count"] = len(auto_load())
+    lg = _auto.get("log") or []
+    out["log"] = "\n".join(lg[-400:])
+    out["log_lines"] = len(lg)
+    out["points"] = list(_auto.get("points") or [])
     return out
+
+
+def auto_cancel() -> dict:
+    if _auto.get("running"):
+        _auto["cancel"] = True
+        return {"ok": True, "msg": "остановка…"}
+    return {"ok": False, "msg": "операция не выполняется"}
 
 
 def _passages(folder: str, max_passages: int = 400) -> list:
@@ -776,12 +1001,10 @@ def _passages(folder: str, max_passages: int = 400) -> list:
     return out
 
 
-def _gen_pair(passage: dict) -> dict | None:
+def _gen_pair(passage: dict, prompt: str = "") -> dict | None:
     import llm_backend
     import re
-    sys_p = ("На основе ТОЛЬКО приведённого фрагмента придумай один осмысленный вопрос и "
-             "краткий точный ответ строго по фрагменту (1–3 предложения, без воды). Ответь "
-             "СТРОГО одним JSON-объектом: {\"q\": \"вопрос\", \"a\": \"ответ\"} — без пояснений.")
+    sys_p = (prompt or "").strip() or DEFAULT_GEN_PROMPT
     try:
         out = llm_backend.chat([{"role": "system", "content": sys_p},
                                 {"role": "user", "content": passage["text"][:2500]}], 0.2)
@@ -801,7 +1024,7 @@ def _gen_pair(passage: dict) -> dict | None:
     return {"q": q, "a": a, "source": passage.get("source", "")}
 
 
-def _auto_gen_run(n: int, folder: str) -> None:
+def _auto_gen_run(n: int, folder: str, prompt: str) -> None:
     try:
         ps = _passages(folder)
         if not ps:
@@ -809,24 +1032,33 @@ def _auto_gen_run(n: int, folder: str) -> None:
         import random
         random.shuffle(ps)
         _auto.update(phase=f"Генерация пар из «{folder}»", total=n, done=0)
+        _logline(_auto, f"▶ генерация {n} пар из папки «{folder}»")
         items = []
         for p in ps:
             if len(items) >= n:
                 break
-            pair = _gen_pair(p)
+            _check_cancel(_auto)
+            pair = _gen_pair(p, prompt)
             if pair:
                 items.append(pair)
                 _auto["done"] = len(items)
+                _logline(_auto, f"[{len(items)}] {pair['q'][:70]}")
         if not items:
             raise RuntimeError("LLM не вернула ни одной валидной пары — проверьте модель")
         auto_save(items)
+        _logline(_auto, f"✓ сгенерировано пар: {len(items)}")
         _auto["result"] = {"kind": "generate", "count": len(items), "items": items}
+    except _Cancelled:
+        _auto["cancelled"] = True
+        _logline(_auto, "⏹ генерация остановлена")
     except Exception as e:
         _auto["error"] = str(e)
+        _logline(_auto, f"ОШИБКА: {e}")
     finally:
         _auto["running"] = False
         _auto["finished"] = time.time()
-        _auto["phase"] = "Готово" if not _auto.get("error") else "Ошибка"
+        _auto["phase"] = ("Остановлено" if _auto.get("cancelled")
+                          else ("Готово" if not _auto.get("error") else "Ошибка"))
 
 
 def _answer_text(q: str, engine: str) -> str:
@@ -897,19 +1129,30 @@ def _auto_eval_run(deviation, engine) -> None:
         engine = engine if engine in _ENGINES else settings.get("ENGINE")
         thr = max(0.0, min(100.0, float(deviation)))
         _auto.update(phase=f"Оценка ({engine}), отклонение ≤{thr:.0f}%",
-                     total=len(items), done=0)
+                     total=len(items), done=0, points=[])
+        _logline(_auto, f"▶ оценка движком «{engine}», допуск отклонения ≤{thr:.0f}%, "
+                        f"вопросов: {len(items)}")
         rows, ok = [], 0
-        for it in items:
+        for i, it in enumerate(items, 1):
+            _check_cancel(_auto)
             sys_ans = _answer_text(it["q"], engine)
             sim = _similarity(sys_ans, it.get("a", ""))
             dev = round((1.0 - sim) * 100, 1)
             passed = dev <= thr
             ok += passed
+            simp = round(sim * 100, 1)
             rows.append({"q": it["q"], "ref": it.get("a", ""), "sys": sys_ans,
-                         "sim": round(sim * 100, 1), "dev": dev, "ok": bool(passed),
+                         "sim": simp, "dev": dev, "ok": bool(passed),
                          "source": it.get("source", "")})
             _auto["done"] = len(rows)
+            # точка сходимости: сходство вопрос↔ответ и накопленная доля зачётов
+            _auto.setdefault("points", []).append(
+                {"i": i, "sim": simp, "dev": dev, "ok": bool(passed),
+                 "rate": round(ok / i * 100, 1), "thr": thr})
+            _logline(_auto, f"[{i}/{len(items)}] сходство {simp}% · откл. {dev}% · "
+                            f"{'OK' if passed else 'нет'} · «{it['q'][:55]}»")
         acc = round(ok / len(items), 4)
+        _logline(_auto, f"✓ итог: точность {acc * 100:.1f}% ({ok}/{len(items)})")
         report = _auto_report(engine, thr, acc, ok, len(items), rows)
         log_id = None
         try:
@@ -922,15 +1165,31 @@ def _auto_eval_run(deviation, engine) -> None:
         _auto["result"] = {"kind": "eval", "engine": engine, "deviation": thr,
                            "accuracy": acc, "ok": ok, "total": len(items),
                            "rows": rows, "report": report, "log_id": log_id}
+        # компактный снимок параметров — для сохранения вместе с набором
+        try:
+            db.kv_set(_AUTO_RESULT_KV, json.dumps({
+                "engine": engine, "deviation": thr, "accuracy": acc,
+                "ok": ok, "total": len(items),
+                "MIN_SCORE": settings.get("MIN_SCORE"),
+                "TOP_K_RETRIEVE": settings.get("TOP_K_RETRIEVE"),
+                "TOP_K_RERANK": settings.get("TOP_K_RERANK"),
+                "ts": time.time()}, ensure_ascii=False))
+        except Exception:
+            pass
+    except _Cancelled:
+        _auto["cancelled"] = True
+        _logline(_auto, "⏹ оценка остановлена")
     except Exception as e:
         _auto["error"] = str(e)
+        _logline(_auto, f"ОШИБКА: {e}")
     finally:
         _auto["running"] = False
         _auto["finished"] = time.time()
-        _auto["phase"] = "Готово" if not _auto.get("error") else "Ошибка"
+        _auto["phase"] = ("Остановлено" if _auto.get("cancelled")
+                          else ("Готово" if not _auto.get("error") else "Ошибка"))
 
 
-def auto_generate(n: int = 50, folder: str = "test") -> dict:
+def auto_generate(n: int = 50, folder: str = "test", prompt: str = "") -> dict:
     with _auto_lock:
         if _auto["running"]:
             return {"ok": False, "msg": "операция уже выполняется"}
@@ -939,8 +1198,12 @@ def auto_generate(n: int = 50, folder: str = "test") -> dict:
         except Exception:
             n = 50
         _auto.update(running=True, phase="Запуск", done=0, total=n, result=None,
-                     error=None, started=time.time(), finished=0.0)
-    threading.Thread(target=_auto_gen_run, args=(n, folder or "test"), daemon=True).start()
+                     error=None, started=time.time(), finished=0.0,
+                     cancel=False, cancelled=False, log=[], points=[])
+    prompt = (prompt or "").strip() or auto_prompt_get()
+    auto_prompt_set(prompt)
+    threading.Thread(target=_auto_gen_run, args=(n, folder or "test", prompt),
+                     daemon=True).start()
     return {"ok": True, "msg": f"генерация {n} пар запущена"}
 
 
@@ -951,6 +1214,22 @@ def auto_run(deviation=30, engine=None) -> dict:
         if not auto_load():
             return {"ok": False, "msg": "набор пуст — сначала сгенерируйте пары из папки test"}
         _auto.update(running=True, phase="Запуск", done=0, total=0, result=None,
-                     error=None, started=time.time(), finished=0.0)
+                     error=None, started=time.time(), finished=0.0,
+                     cancel=False, cancelled=False, log=[], points=[])
     threading.Thread(target=_auto_eval_run, args=(deviation, engine), daemon=True).start()
     return {"ok": True, "msg": "оценка запущена"}
+
+
+def save_log(which: str = "calib") -> dict:
+    """Сохранить текущий живой лог калибровки/оценки в БД (ingest_logs)."""
+    job = _auto if which == "auto" else _job
+    lines = job.get("log") or []
+    if not lines:
+        return {"ok": False, "msg": "лог пуст"}
+    label = "Автокалибровка (лог оценки)" if which == "auto" else "Автокалибровка (лог)"
+    summary = lines[-1][:200] if lines else ""
+    try:
+        log_id = db.ingest_log_save(label, summary, "\n".join(lines))
+    except Exception as e:
+        return {"ok": False, "msg": f"не удалось сохранить: {e}"}
+    return {"ok": True, "id": log_id, "msg": f"лог сохранён в БД (№{log_id})"}

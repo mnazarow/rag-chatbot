@@ -925,6 +925,19 @@ def admin_calib_status(x_admin_token: str | None = Header(None)):
     return calibrate.status()
 
 
+@app.post("/api/admin/calib/cancel")
+def admin_calib_cancel(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.cancel()
+
+
+@app.post("/api/admin/calib/save-log")
+def admin_calib_save_log(payload: dict = Body(default={}),
+                         x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.save_log(payload.get("which", "calib"))
+
+
 @app.post("/api/admin/calib/apply")
 def admin_calib_apply(payload: dict = Body(default={}),
                       x_admin_token: str | None = Header(None)):
@@ -933,6 +946,33 @@ def admin_calib_apply(payload: dict = Body(default={}),
                                   payload.get("k_rerank"),
                                   payload.get("k_retrieve"),
                                   mode=payload.get("mode"))
+
+
+@app.get("/api/admin/calib/sets")
+def admin_calib_sets(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"sets": calibrate.mset_list()}
+
+
+@app.post("/api/admin/calib/sets/save")
+def admin_calib_sets_save(payload: dict = Body(default={}),
+                          x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.mset_save(payload.get("name", ""))
+
+
+@app.post("/api/admin/calib/sets/load")
+def admin_calib_sets_load(payload: dict = Body(default={}),
+                          x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.mset_load(payload.get("id"))
+
+
+@app.post("/api/admin/calib/sets/delete")
+def admin_calib_sets_delete(payload: dict = Body(default={}),
+                            x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.mset_delete(payload.get("id"))
 
 
 @app.get("/api/admin/calib/auto/testset")
@@ -946,13 +986,62 @@ def admin_calib_auto_generate(payload: dict = Body(default={}),
                               x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return calibrate.auto_generate(n=payload.get("n", 50),
-                                   folder=payload.get("folder", "test"))
+                                   folder=payload.get("folder", "test"),
+                                   prompt=payload.get("prompt", ""))
+
+
+@app.get("/api/admin/calib/auto/prompt")
+def admin_calib_auto_prompt_get(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"prompt": calibrate.auto_prompt_get(),
+            "default": calibrate.DEFAULT_GEN_PROMPT}
+
+
+@app.post("/api/admin/calib/auto/prompt")
+def admin_calib_auto_prompt_set(payload: dict = Body(default={}),
+                                x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    calibrate.auto_prompt_set(payload.get("prompt", ""))
+    return {"ok": True, "prompt": calibrate.auto_prompt_get()}
+
+
+@app.get("/api/admin/calib/auto/sets")
+def admin_calib_auto_sets(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"sets": calibrate.set_list()}
+
+
+@app.post("/api/admin/calib/auto/sets/save")
+def admin_calib_auto_sets_save(payload: dict = Body(default={}),
+                               x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.set_save(payload.get("name", ""))
+
+
+@app.post("/api/admin/calib/auto/sets/load")
+def admin_calib_auto_sets_load(payload: dict = Body(default={}),
+                               x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.set_load(payload.get("id"))
+
+
+@app.post("/api/admin/calib/auto/sets/delete")
+def admin_calib_auto_sets_delete(payload: dict = Body(default={}),
+                                 x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.set_delete(payload.get("id"))
 
 
 @app.get("/api/admin/calib/auto/status")
 def admin_calib_auto_status(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return calibrate.auto_status()
+
+
+@app.post("/api/admin/calib/auto/cancel")
+def admin_calib_auto_cancel(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.auto_cancel()
 
 
 @app.post("/api/admin/calib/auto/run")
