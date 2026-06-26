@@ -610,18 +610,26 @@
       </div>
       <div id="calibengines" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px"></div>
 
-      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+      <div class="clb-help" style="margin:4px 0"><b>Параметры перебора (сетка)</b> — отметьте
+        галочкой параметры компонентов, которые подбирать, и задайте <b>диапазон</b> и <b>шаг</b>.
+        Снятые с галочки берутся из текущих настроек одним значением. Перебор применяется к
+        калибровке <b>режимов</b> (для движков — оценка на текущих настройках; параметры KAG и
+        индексации настраиваются отдельно — см. ниже).
+        <button class="act ghost" style="padding:2px 8px;margin-left:6px" onclick="calibGridReset()">Сбросить к умолчаниям</button>
+        <span id="calibgridtot" class="note" style="margin-left:6px"></span></div>
+      <div id="calibgrid"></div>
+
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:12px">
         <button class="act" onclick="calibRun()">▶️ Запустить калибровку</button>
         <label class="note" style="display:flex;align-items:center;gap:6px;cursor:pointer">
           <input type="checkbox" id="calib_llm"> проверять и текст ответа (LLM)
         </label>
         <span id="calibmsg" class="note"></span>
       </div>
-      <div class="clb-help">Сетка по умолчанию: MIN_SCORE [0.10…0.40], TOP_K_RERANK [3,5,8,10],
-        TOP_K_RETRIEVE [20,30,40,60]. Галка LLM — дополнительно генерирует ответ для
-        рекомендованной и текущей комбинаций и проверяет наличие ожидаемого текста (медленнее,
-        зато оценивает качество самого ответа, а не только поиска). При выборе нескольких
-        режимов калибровка идёт по очереди — время растёт пропорционально.</div>
+      <div class="clb-help">Галка LLM — дополнительно генерирует ответ для рекомендованной и
+        текущей комбинаций и проверяет наличие ожидаемого текста (медленнее). При выборе
+        нескольких режимов калибровка идёт по очереди — время растёт пропорционально числу
+        комбинаций × режимов.</div>
     </div>
 
     <div class="box">
@@ -2184,10 +2192,94 @@ function calibApplyJson(){
     calibItems=calibNorm(v); calibBuildRender(); calibSetMsg('JSON применён в конструктор'); }
   catch(e){ calibSetMsg('ошибка JSON — проверьте формат',false); }
 }
+let calibCfgVals={};
 async function calibLoad(){
   let r; try{ r=await adminGet('/api/admin/calib/testset'); }catch(e){ return; }
   calibItems=calibNorm((r&&r.items)||[]); calibBuildRender(); calibSyncToJson();
+  try{ const cf=await (await fetch('/api/config?t='+Date.now(),{cache:'no-store'})).json(); calibCfgVals=(cf&&cf.values)||{}; }catch(e){}
+  calibRenderGrid();
 }
+// ---- редактор сетки перебора (по компонентам) ----
+const CALIB_PARAMS=[
+  {group:'🔎 Поиск (вектор-ретрив)', items:[
+    {key:'k_retrieve', cfg:'TOP_K_RETRIEVE', label:'TOP_K_RETRIEVE — кандидатов из Qdrant', kind:'int',
+     dmin:10,dmax:60,dstep:10, lo:1,hi:300,
+     desc:'Сколько ближайших чанков достаётся из векторного индекса ДО реранка — «широта» выборки.',
+     reco:'10–60. Шире — выше шанс, что нужный фрагмент попадёт в пул (полнота), но реранк дороже. Если система часто «не знает», хотя данные есть — расширяйте.'},
+    {key:'min_score', cfg:'MIN_SCORE', label:'MIN_SCORE — порог релевантности', kind:'float',
+     dmin:0.10,dmax:0.40,dstep:0.05, lo:0,hi:1,
+     desc:'Минимальная оценка реранкера, ниже которой фрагмент отбрасывается. Управляет честным «не знаю».',
+     reco:'0.10–0.40. Выше — строже и честнее «не знаю», но риск потерять полноту; ниже — больше «притянутых» ответов.'},
+  ]},
+  {group:'🎯 Реранк (cross-encoder)', items:[
+    {key:'k_rerank', cfg:'TOP_K_RERANK', label:'TOP_K_RERANK — фрагментов в контекст LLM', kind:'int',
+     dmin:3,dmax:10,dstep:1, lo:1,hi:30,
+     desc:'Сколько лучших по реранку фрагментов передаётся в LLM как контекст ответа.',
+     reco:'3–10. Больше — полнее контекст, но шум и расход токенов; меньше — рискуете потерять нужный фрагмент.'},
+  ]},
+  {group:'🪢 KAG (оценивается end-to-end, не в быстрой сетке)', info:true, items:[
+    {cfg:'KAG_MAX_HOPS', label:'KAG_MAX_HOPS — под-вопросов (шагов)', desc:'Глубина декомпозиции сложного вопроса.', reco:'3 (2 — быстрее, 4–5 — для аналитики).'},
+    {cfg:'KAG_CHUNKS_PER_HOP', label:'Фрагментов на под-вопрос', desc:'Сколько фрагментов берётся из поиска по каждому под-вопросу.', reco:'3–5.'},
+    {cfg:'KAG_CONTEXT_CHUNKS', label:'Итоговых фрагментов в контексте', desc:'Сколько остаётся после объединения и переоценки.', reco:'6–10 (с учётом длины контекста модели).'},
+    {cfg:'KAG_TEMPERATURE', label:'Температура финальной генерации KAG', desc:'Чем ниже — строже и фактологичнее.', reco:'0.0–0.2.'},
+  ]},
+  {group:'⚙️ Индексация / эмбеддинг (требует переиндексации)', info:true, items:[
+    {cfg:'CHUNK_SIZE', label:'CHUNK_SIZE — размер чанка', desc:'«Единица поиска». Мелкие — точные факты, но рваный контекст; крупные — связнее, но шумнее.', reco:'1000–1200; меньше для FAQ/прайсов, больше для регламентов.'},
+    {cfg:'CHUNK_OVERLAP', label:'CHUNK_OVERLAP — перекрытие чанков', desc:'Сколько символов делят соседние чанки, чтобы факт на границе не разрезался.', reco:'10–20% от размера чанка.'},
+    {cfg:'EMBED_BATCH', label:'EMBED_BATCH — пачка эмбеддера', desc:'Сколько чанков считать за проход (скорость индексации).', reco:'CPU 16–32, MPS 32–64, CUDA 64–128.'},
+  ]},
+];
+function calibRange(mn,mx,st){ const out=[]; if(!(st>0)) return [mn]; let v=mn,g=0;
+  while(v<=mx+1e-9 && g<2000){ out.push(Math.round(v*1e6)/1e6); v+=st; g++; } return out.length?out:[mn]; }
+function gridInput(cls,key){ const e=document.querySelector(`#calibgrid .${cls}[data-key="${key}"]`); return e?e.value:0; }
+function calibCfgNum(key){ const m={k_retrieve:'TOP_K_RETRIEVE',k_rerank:'TOP_K_RERANK',min_score:'MIN_SCORE'};
+  const v=calibCfgVals[m[key]]; return v==null?0:+v; }
+function calibRenderGrid(){
+  const el=$('#calibgrid'); if(!el) return;
+  el.innerHTML=CALIB_PARAMS.map(g=>{
+    const items=g.items.map(it=>{
+      if(g.info){ const cur=calibCfgVals[it.cfg]; return `<div class="card" style="margin:0 0 8px">
+        <div style="font-weight:600">${esc(it.label)} <span class="note">текущее: ${cur==null?'—':esc(String(cur))}</span></div>
+        <div class="clb-help">${it.desc}<br><b>Рекомендация:</b> ${it.reco}</div></div>`; }
+      const cur=calibCfgVals[it.cfg];
+      return `<div class="card" style="margin:0 0 8px">
+        <label style="display:flex;gap:8px;align-items:center;font-weight:600;cursor:pointer">
+          <input type="checkbox" class="cgchk" data-key="${it.key}" checked onchange="calibGridTotal()"> ${esc(it.label)}
+          <span class="note">текущее: ${cur==null?'—':esc(String(cur))}</span></label>
+        <div class="clb-help">${it.desc}<br><b>Рекомендация:</b> ${it.reco}</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px">
+          <label class="note">мин <input type="number" class="cgmin" data-key="${it.key}" value="${it.dmin}" step="${it.dstep}" min="${it.lo}" max="${it.hi}" style="width:84px" oninput="calibGridTotal()"></label>
+          <label class="note">макс <input type="number" class="cgmax" data-key="${it.key}" value="${it.dmax}" step="${it.dstep}" min="${it.lo}" max="${it.hi}" style="width:84px" oninput="calibGridTotal()"></label>
+          <label class="note">шаг <input type="number" class="cgstep" data-key="${it.key}" value="${it.dstep}" step="${it.dstep}" min="0" style="width:84px" oninput="calibGridTotal()"></label>
+          <span class="note cgcount" data-key="${it.key}"></span>
+        </div></div>`;
+    }).join('');
+    return `<div style="margin:8px 0 4px"><b style="font-size:13px">${esc(g.group)}</b></div>${items}`;
+  }).join('');
+  calibGridTotal();
+}
+function calibGridTotal(){
+  let tot=1;
+  document.querySelectorAll('#calibgrid .cgchk').forEach(chk=>{
+    const key=chk.dataset.key; let n=1;
+    if(chk.checked){ const mn=+gridInput('cgmin',key),mx=+gridInput('cgmax',key),st=+gridInput('cgstep',key);
+      n=calibRange(Math.min(mn,mx),Math.max(mn,mx),Math.abs(st)).length; }
+    const cc=document.querySelector(`#calibgrid .cgcount[data-key="${key}"]`); if(cc) cc.textContent=chk.checked?(n+' знач.'):'фиксировано';
+    tot*=Math.max(1,n);
+  });
+  const t=$('#calibgridtot'); if(t) t.textContent='комбинаций: '+tot;
+}
+function calibBuildGrid(){
+  const g={};
+  document.querySelectorAll('#calibgrid .cgchk').forEach(chk=>{
+    const key=chk.dataset.key;
+    if(chk.checked){ const mn=+gridInput('cgmin',key),mx=+gridInput('cgmax',key),st=+gridInput('cgstep',key);
+      g[key]=calibRange(Math.min(mn,mx),Math.max(mn,mx),Math.abs(st)); }
+    else g[key]=[calibCfgNum(key)];
+  });
+  return g;
+}
+function calibGridReset(){ calibRenderGrid(); }
 async function calibExample(){
   let r; try{ r=await adminGet('/api/admin/calib/example'); }catch(e){ return; }
   calibItems=calibNorm((r&&r.items)||[]); calibBuildRender(); calibSyncToJson();
@@ -2221,7 +2313,7 @@ async function calibRun(){
   const modes=calibSelectedModes(), engines=calibSelectedEngines();
   if(!modes.length && !engines.length){ calibMsg('выберите хотя бы один режим или движок',false); return; }
   await adminPost('/api/admin/calib/testset',{items});
-  const r=await adminPost('/api/admin/calib/run',{use_llm:$('#calib_llm').checked,modes,engines});
+  const r=await adminPost('/api/admin/calib/run',{use_llm:$('#calib_llm').checked,modes,engines,grid:calibBuildGrid()});
   if(r.ok===false){ calibMsg(r.msg||'не удалось запустить',false); return; }
   calibMsg('калибровка запущена…'); $('#calibres').innerHTML=''; calibScheme('load');
   clearInterval(calibPoll); calibPoll=setInterval(calibStatus,1000); calibStatus();
