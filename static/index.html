@@ -561,6 +561,33 @@
     </div>
 
     <div class="box">
+      <h3>Альтернатива: набор из папки <code>test</code> (авто Q&A)</h3>
+      <div class="clb-help">Положите файлы-образцы в подпапку <b><code>test</code></b> каталога
+        документов. По ним LLM сгенерирует пары «вопрос → эталонный ответ» (по умолчанию 50).
+        При прогоне система отвечает на каждый вопрос текущим/выбранным движком, и ответ
+        сравнивается с эталоном по <b>смысловой близости</b> (эмбеддинг-косинус). «Отклонение» =
+        (1 − близость)·100%; зачёт — если отклонение ≤ заданного порога. Это оценка <b>качества
+        ответа целиком</b> (дополняет калибровку порога/выборки выше).</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:10px 0">
+        <label class="note">Пар: <input type="number" id="auto_n" value="50" min="1" max="200" style="width:70px"></label>
+        <button class="act" onclick="autoGen()">🧪 Сгенерировать из папки test</button>
+        <span id="autogenmsg" class="note"></span>
+      </div>
+      <div id="autoprog" class="note"></div>
+      <div id="autopairs" style="margin-top:8px"></div>
+
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+        <label class="note">Допустимое отклонение ответа: <input type="number" id="auto_dev" value="30" min="0" max="100" step="5" style="width:70px"> %</label>
+        <label class="note">Движок: <select id="auto_engine"><option value="">текущий</option><option value="vector">Векторный</option><option value="lightrag">LightRAG</option><option value="kag">KAG</option></select></label>
+        <button class="act" onclick="autoRun()">▶ Прогнать оценку</button>
+        <span id="autorunmsg" class="note"></span>
+      </div>
+      <div class="clb-help">Меньше отклонение — строже зачёт (ответ должен быть ближе к эталону).
+        Рекомендация: 20–35%. Прогон вызывает LLM на каждый вопрос — это занимает время.</div>
+      <div id="autores" style="margin-top:10px"></div>
+    </div>
+
+    <div class="box">
       <h3>2. Запуск</h3>
       <div class="clb-help" style="margin-bottom:6px"><b>Режимы работы (варианты)</b> —
         для каких режимов подобрать параметры (порог/выборку). Режимы отличаются фильтрацией
@@ -2014,7 +2041,71 @@ async function loadConfig(){
 function calibSetMsg(t,ok=true){ const e=$('#calibsetmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 function calibMsg(t,ok=true){ const e=$('#calibmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 let calibCurMode='', calibCurEngine='';
-async function loadCalib(){ await calibLoad(); await calibLoadModes(); calibScheme(null); $('#calivecards').innerHTML=''; }
+async function loadCalib(){ await calibLoad(); await calibLoadModes(); calibScheme(null); $('#calivecards').innerHTML=''; autoLoad(); }
+// ---- альтернативный набор из папки test ----
+let autoPoll=null;
+function autoMsg(id,t,ok=true){ const e=$('#'+id); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
+async function autoLoad(){
+  let r; try{ r=await adminGet('/api/admin/calib/auto/testset'); }catch(e){ return; }
+  autoRenderPairs((r&&r.items)||[]);
+}
+function autoRenderPairs(items){
+  const el=$('#autopairs'); if(!el) return;
+  if(!items.length){ el.innerHTML='<span class="note">набор ещё не сгенерирован</span>'; return; }
+  el.innerHTML=`<div class="note" style="margin-bottom:4px">Пар в наборе: <b>${items.length}</b></div>
+    <div style="max-height:300px;overflow:auto"><table><thead><tr><th>#</th><th>Вопрос</th><th>Эталонный ответ</th><th>Источник</th></tr></thead><tbody>`+
+    items.map((it,i)=>`<tr><td>${i+1}</td><td>${esc(it.q||'')}</td>
+      <td style="color:var(--muted)">${esc(it.a||'')}</td>
+      <td style="white-space:nowrap">${esc(short(it.source||''))}</td></tr>`).join('')+
+    `</tbody></table></div>`;
+}
+async function autoGen(){
+  const n=+($('#auto_n').value||50);
+  const r=await adminPost('/api/admin/calib/auto/generate',{n});
+  if(r.ok===false){ autoMsg('autogenmsg',r.msg||'не удалось',false); return; }
+  autoMsg('autogenmsg','генерация запущена…'); autoPollStart();
+}
+async function autoRun(){
+  const deviation=+($('#auto_dev').value||30), engine=$('#auto_engine').value||null;
+  const r=await adminPost('/api/admin/calib/auto/run',{deviation,engine});
+  if(r.ok===false){ autoMsg('autorunmsg',r.msg||'не удалось',false); return; }
+  autoMsg('autorunmsg','оценка запущена…'); $('#autores').innerHTML=''; autoPollStart();
+}
+function autoPollStart(){ clearInterval(autoPoll); autoPoll=setInterval(autoStatus,1500); autoStatus(); }
+async function autoStatus(){
+  let s; try{ s=await adminGet('/api/admin/calib/auto/status'); }catch(e){ return; }
+  const p=$('#autoprog');
+  if(s.running){ if(p)p.textContent=`${s.phase||'…'} — ${s.done||0}/${s.total||0}`; return; }
+  clearInterval(autoPoll); if(p)p.textContent='';
+  if(s.error){ autoMsg('autogenmsg','ошибка: '+s.error,false); autoMsg('autorunmsg','ошибка: '+s.error,false); return; }
+  const r=s.result;
+  if(r&&r.kind==='generate'){ autoMsg('autogenmsg','готово: '+r.count+' пар'); autoRenderPairs(r.items||[]); }
+  else if(r&&r.kind==='eval'){ autoMsg('autorunmsg','готово'); autoRenderEval(r); }
+}
+function autoRenderEval(r){
+  const rows=(r.rows||[]).map((x,i)=>`<tr style="${x.ok?'':'background:rgba(239,68,68,.10)'}">
+    <td>${i+1}</td><td>${esc(x.q||'')}</td>
+    <td style="color:var(--muted)">${esc(x.ref||'')}</td>
+    <td>${esc((x.sys||'').slice(0,220))}</td>
+    <td>${x.sim}%</td><td>${x.dev}%</td>
+    <td>${x.ok?'<span class="tag ok">зачёт</span>':'<span class="tag no">мимо</span>'}</td></tr>`).join('');
+  $('#autores').innerHTML=`
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:6px 0">
+      <div class="card"><div class="k">Движок</div><div class="v" style="font-size:18px">${esc(r.engine)}</div></div>
+      <div class="card"><div class="k">Допуск отклонения</div><div class="v" style="font-size:18px">≤ ${r.deviation}%</div></div>
+      <div class="card" style="border-color:var(--accent2)"><div class="k">Точность</div><div class="v" style="font-size:18px">${pct(r.accuracy)} <small>${r.ok}/${r.total}</small></div></div>
+      <button class="act ghost" onclick="autoToggleLog()">📄 Полный отчёт</button>
+      ${r.log_id?`<button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="autoDelLog(${r.log_id})">🗑 Удалить лог</button>`:''}
+    </div>
+    <pre id="autolog" style="display:none;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:340px;overflow:auto;white-space:pre-wrap"></pre>
+    <div style="max-height:420px;overflow:auto;margin-top:6px"><table>
+      <thead><tr><th>#</th><th>Вопрос</th><th>Эталон</th><th>Ответ системы</th><th>Сходство</th><th>Откл.</th><th>Вердикт</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  $('#autolog')._report=r.report||'';
+}
+function autoToggleLog(){ const pre=$('#autolog'); if(!pre)return; if(pre.style.display==='none'){pre.textContent=pre._report||'(пусто)';pre.style.display='block';}else pre.style.display='none'; }
+async function autoDelLog(id){ if(!confirm('Удалить сохранённый лог №'+id+'?'))return;
+  const r=await adminPost('/api/admin/ingest-logs/delete',{id}); autoMsg('autorunmsg',r.msg||'удалено',r.ok!==false); loadIngestLogs(); }
 async function calibLoadModes(){
   const box=$('#calibmodes'); if(!box) return;
   let r; try{ r=await adminGet('/api/admin/calib/modes'); }catch(e){ return; }

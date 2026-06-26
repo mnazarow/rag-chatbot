@@ -935,6 +935,34 @@ def admin_calib_apply(payload: dict = Body(default={}),
                                   mode=payload.get("mode"))
 
 
+@app.get("/api/admin/calib/auto/testset")
+def admin_calib_auto_testset(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"items": calibrate.auto_load()}
+
+
+@app.post("/api/admin/calib/auto/generate")
+def admin_calib_auto_generate(payload: dict = Body(default={}),
+                              x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.auto_generate(n=payload.get("n", 50),
+                                   folder=payload.get("folder", "test"))
+
+
+@app.get("/api/admin/calib/auto/status")
+def admin_calib_auto_status(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.auto_status()
+
+
+@app.post("/api/admin/calib/auto/run")
+def admin_calib_auto_run(payload: dict = Body(default={}),
+                         x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.auto_run(deviation=payload.get("deviation", 30),
+                              engine=payload.get("engine"))
+
+
 @app.post("/api/admin/reindex")
 def admin_reindex(payload: dict = Body(default={}),
                   x_admin_token: str | None = Header(None)):

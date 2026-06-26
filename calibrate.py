@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from pathlib import Path
 
 import settings
 import db
@@ -701,3 +702,255 @@ def apply_params(min_score=None, k_rerank=None, k_retrieve=None, mode=None) -> d
         pass
     msg = "параметры применены" + (f"; режим: {switched}" if switched else "")
     return {"ok": True, "applied": ch, "mode": switched, "msg": msg}
+
+
+# ===================================================================================
+# Альтернативный набор: авто Q&A из папки test + оценка по сходству ответа с эталоном
+# ===================================================================================
+_AUTO_KV = "calib_testset_auto"
+_auto: dict = {"running": False, "phase": "", "done": 0, "total": 0,
+               "result": None, "error": None, "started": 0.0, "finished": 0.0}
+_auto_lock = threading.Lock()
+
+
+def auto_load() -> list:
+    try:
+        raw = db.kv_get(_AUTO_KV)
+        items = json.loads(raw) if raw else []
+        return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+    except Exception:
+        return []
+
+
+def auto_save(items: list) -> None:
+    try:
+        db.kv_set(_AUTO_KV, json.dumps(items, ensure_ascii=False))
+    except Exception as e:
+        print(f"[calib-auto] не удалось сохранить набор: {e}")
+
+
+def auto_status() -> dict:
+    out = {k: _auto.get(k) for k in
+           ("running", "phase", "done", "total", "result", "error", "started", "finished")}
+    out["count"] = len(auto_load())
+    return out
+
+
+def _passages(folder: str, max_passages: int = 400) -> list:
+    """Нарезать текст файлов из DOCS_DIR/<folder> на пассажи (text, source)."""
+    import fsutil
+    from loaders import load_file
+    root = Path(settings.get("DOCS_DIR")).expanduser()
+    base = root / folder
+    if not base.exists():
+        raise RuntimeError(f"папка не найдена: {base} — создайте подпапку «{folder}» "
+                           "в каталоге документов и положите туда файлы")
+    try:
+        from ingest import SUPPORTED
+    except Exception:
+        SUPPORTED = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".csv", ".txt",
+                     ".md", ".html", ".htm"}
+    out = []
+    for path in fsutil.iter_doc_files(base, SUPPORTED):
+        try:
+            parts = load_file(path)
+        except Exception:
+            continue
+        try:
+            rel = str(path.relative_to(root))
+        except Exception:
+            rel = path.name
+        buf = ""
+        for part in parts:
+            t = (part.get("text") or "").strip()
+            if not t:
+                continue
+            buf += ("\n" if buf else "") + t
+            while len(buf) >= 1400:
+                out.append({"text": buf[:1400], "source": rel})
+                buf = buf[1400:]
+        if len(buf.strip()) >= 40:
+            out.append({"text": buf.strip(), "source": rel})
+        if len(out) >= max_passages:
+            break
+    return out
+
+
+def _gen_pair(passage: dict) -> dict | None:
+    import llm_backend
+    import re
+    sys_p = ("На основе ТОЛЬКО приведённого фрагмента придумай один осмысленный вопрос и "
+             "краткий точный ответ строго по фрагменту (1–3 предложения, без воды). Ответь "
+             "СТРОГО одним JSON-объектом: {\"q\": \"вопрос\", \"a\": \"ответ\"} — без пояснений.")
+    try:
+        out = llm_backend.chat([{"role": "system", "content": sys_p},
+                                {"role": "user", "content": passage["text"][:2500]}], 0.2)
+    except Exception:
+        return None
+    m = re.search(r"\{.*\}", out or "", re.DOTALL)
+    if not m:
+        return None
+    try:
+        d = json.loads(m.group(0))
+    except Exception:
+        return None
+    q = str(d.get("q") or "").strip()
+    a = str(d.get("a") or "").strip()
+    if len(q) < 5 or len(a) < 2:
+        return None
+    return {"q": q, "a": a, "source": passage.get("source", "")}
+
+
+def _auto_gen_run(n: int, folder: str) -> None:
+    try:
+        ps = _passages(folder)
+        if not ps:
+            raise RuntimeError("в папке нет распознаваемых документов с текстом")
+        import random
+        random.shuffle(ps)
+        _auto.update(phase=f"Генерация пар из «{folder}»", total=n, done=0)
+        items = []
+        for p in ps:
+            if len(items) >= n:
+                break
+            pair = _gen_pair(p)
+            if pair:
+                items.append(pair)
+                _auto["done"] = len(items)
+        if not items:
+            raise RuntimeError("LLM не вернула ни одной валидной пары — проверьте модель")
+        auto_save(items)
+        _auto["result"] = {"kind": "generate", "count": len(items), "items": items}
+    except Exception as e:
+        _auto["error"] = str(e)
+    finally:
+        _auto["running"] = False
+        _auto["finished"] = time.time()
+        _auto["phase"] = "Готово" if not _auto.get("error") else "Ошибка"
+
+
+def _answer_text(q: str, engine: str) -> str:
+    """Полный ответ системы на вопрос выбранным движком (для оценки по сходству)."""
+    if engine == "kag":
+        import asyncio
+        import kag
+        return (asyncio.run(kag.answer(q)) or {}).get("text", "") or ""
+    if engine == "lightrag":
+        import asyncio
+        import graph_rag
+        return asyncio.run(graph_rag.answer(q)) or ""
+    # vector / по умолчанию — полный конвейер: поиск → контекст → генерация
+    import prompts
+    import llm_backend
+    hits = retriever.search(q) or []
+    if not hits:
+        return "В доступных документах нет точного ответа на этот вопрос."
+    ctx = prompts.build_context(hits)
+    msgs = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")},
+            {"role": "user", "content": prompts.build_user_message(q, ctx)}]
+    try:
+        return llm_backend.chat(msgs, 0.1, settings.active_model()) or ""
+    except Exception:
+        return ""
+
+
+def _similarity(a: str, b: str) -> float:
+    """Косинусная близость ответов через эмбеддер (0..1)."""
+    if not (a or "").strip() or not (b or "").strip():
+        return 0.0
+    try:
+        import numpy as np
+        v = retriever._embedder().encode([a, b], normalize_embeddings=True)
+        return max(0.0, min(1.0, float(np.dot(v[0], v[1]))))
+    except Exception:
+        return 0.0
+
+
+def _auto_report(engine, thr, acc, ok, total, rows) -> str:
+    import datetime
+    L = ["=" * 78, "ОТЧЁТ ОЦЕНКИ ПО АВТО-НАБОРУ (папка test)",
+         datetime.datetime.now().strftime("Дата: %Y-%m-%d %H:%M:%S"), "=" * 78, "",
+         "Пары «вопрос → эталонный ответ» сгенерированы LLM из файлов папки test.",
+         "Система отвечает на каждый вопрос текущим движком, ответ сравнивается с эталоном",
+         "по косинусной близости эмбеддингов. «Отклонение» = (1 − близость)·100%.",
+         f"Зачёт, если отклонение ≤ {thr:.0f}%.", "",
+         f"ДВИЖОК: {engine}   ПАР: {total}   ТОЧНОСТЬ: {acc * 100:.1f}% ({ok}/{total})",
+         "-" * 78]
+    for i, r in enumerate(rows, 1):
+        verdict = "OK " if r["ok"] else "нет"
+        L.append(f"[{i}] [{verdict}] откл. {r['dev']}% (сходство {r['sim']}%)  «{r['q']}»")
+        L.append(f"      эталон:  {r['ref']}")
+        L.append(f"      система: {(r['sys'] or '')[:300]}")
+        if r.get("source"):
+            L.append(f"      источник: {r['source']}")
+        L.append("")
+    L.append("=" * 78)
+    L.append("Конец отчёта.")
+    return "\n".join(L)
+
+
+def _auto_eval_run(deviation, engine) -> None:
+    try:
+        items = auto_load()
+        if not items:
+            raise RuntimeError("сначала сгенерируйте набор из папки test")
+        engine = engine if engine in _ENGINES else settings.get("ENGINE")
+        thr = max(0.0, min(100.0, float(deviation)))
+        _auto.update(phase=f"Оценка ({engine}), отклонение ≤{thr:.0f}%",
+                     total=len(items), done=0)
+        rows, ok = [], 0
+        for it in items:
+            sys_ans = _answer_text(it["q"], engine)
+            sim = _similarity(sys_ans, it.get("a", ""))
+            dev = round((1.0 - sim) * 100, 1)
+            passed = dev <= thr
+            ok += passed
+            rows.append({"q": it["q"], "ref": it.get("a", ""), "sys": sys_ans,
+                         "sim": round(sim * 100, 1), "dev": dev, "ok": bool(passed),
+                         "source": it.get("source", "")})
+            _auto["done"] = len(rows)
+        acc = round(ok / len(items), 4)
+        report = _auto_report(engine, thr, acc, ok, len(items), rows)
+        log_id = None
+        try:
+            log_id = db.ingest_log_save(
+                "Автокалибровка (папка test)",
+                f"движок {engine}, отклонение ≤{thr:.0f}% — точность {acc * 100:.1f}% "
+                f"({ok}/{len(items)})", report)
+        except Exception as e:
+            print(f"[calib-auto] лог не сохранён: {e}")
+        _auto["result"] = {"kind": "eval", "engine": engine, "deviation": thr,
+                           "accuracy": acc, "ok": ok, "total": len(items),
+                           "rows": rows, "report": report, "log_id": log_id}
+    except Exception as e:
+        _auto["error"] = str(e)
+    finally:
+        _auto["running"] = False
+        _auto["finished"] = time.time()
+        _auto["phase"] = "Готово" if not _auto.get("error") else "Ошибка"
+
+
+def auto_generate(n: int = 50, folder: str = "test") -> dict:
+    with _auto_lock:
+        if _auto["running"]:
+            return {"ok": False, "msg": "операция уже выполняется"}
+        try:
+            n = max(1, min(200, int(n)))
+        except Exception:
+            n = 50
+        _auto.update(running=True, phase="Запуск", done=0, total=n, result=None,
+                     error=None, started=time.time(), finished=0.0)
+    threading.Thread(target=_auto_gen_run, args=(n, folder or "test"), daemon=True).start()
+    return {"ok": True, "msg": f"генерация {n} пар запущена"}
+
+
+def auto_run(deviation=30, engine=None) -> dict:
+    with _auto_lock:
+        if _auto["running"]:
+            return {"ok": False, "msg": "операция уже выполняется"}
+        if not auto_load():
+            return {"ok": False, "msg": "набор пуст — сначала сгенерируйте пары из папки test"}
+        _auto.update(running=True, phase="Запуск", done=0, total=0, result=None,
+                     error=None, started=time.time(), finished=0.0)
+    threading.Thread(target=_auto_eval_run, args=(deviation, engine), daemon=True).start()
+    return {"ok": True, "msg": "оценка запущена"}
