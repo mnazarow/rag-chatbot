@@ -472,8 +472,10 @@ def session_history(session_id: str) -> list[dict]:
 def engine_usage() -> dict:
     g = _one("SELECT COUNT(*) n FROM requests WHERE category='graph'")["n"]
     l = _one("SELECT COUNT(*) n FROM requests WHERE category='lightrag'")["n"]
+    k = _one("SELECT COUNT(*) n FROM requests WHERE category='kag'")["n"]
     tot = _one("SELECT COUNT(*) n FROM requests")["n"]
-    return {"graph": g, "lightrag": l, "vector": max(tot - g - l, 0), "total": tot}
+    return {"graph": g, "lightrag": l, "kag": k,
+            "vector": max(tot - g - l - k, 0), "total": tot}
 
 
 def analytics() -> dict:

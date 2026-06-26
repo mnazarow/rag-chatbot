@@ -1044,6 +1044,37 @@ def admin_calib_auto_cancel(x_admin_token: str | None = Header(None)):
     return calibrate.auto_cancel()
 
 
+@app.get("/api/admin/calib/opt/variants")
+def admin_calib_opt_variants(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"engines": calibrate.optimize_engines(),
+            "modes": calibrate.optimize_modes(),
+            "current_engine": settings.get("ENGINE"),
+            "current_mode": settings.current_mode()}
+
+
+@app.post("/api/admin/calib/opt/run")
+def admin_calib_opt_run(payload: dict = Body(default={}),
+                        x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.optimize_start(max_iter=payload.get("max_iter", 50),
+                                    deviation=payload.get("deviation", 30),
+                                    engine=payload.get("engine"),
+                                    mode=payload.get("mode"))
+
+
+@app.get("/api/admin/calib/opt/status")
+def admin_calib_opt_status(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.optimize_status()
+
+
+@app.post("/api/admin/calib/opt/cancel")
+def admin_calib_opt_cancel(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return calibrate.optimize_cancel()
+
+
 @app.post("/api/admin/calib/auto/run")
 def admin_calib_auto_run(payload: dict = Body(default={}),
                          x_admin_token: str | None = Header(None)):

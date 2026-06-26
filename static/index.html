@@ -291,6 +291,7 @@
     <div class="box"><h3>🧠 LightRAG (граф знаний)</h3><div id="sys_graph"></div></div>
     <div class="box"><h3>🎓 Дообучение (LoRA)</h3><div id="sys_ft"></div></div>
     <div class="box"><h3>⚡ Hybrid+ и использование движков</h3><div id="sys_hybrid"></div></div>
+    <div class="box"><h3>🪢 KAG (знание-усиленная генерация)</h3><div id="sys_kag"></div></div>
     <div class="box"><h3>⏱ Время обработки (индексация)</h3><div id="sys_ingest"></div></div>
     <div class="box"><h3>🗃 Базы данных (SQLite / MySQL / PostgreSQL)</h3><div id="sys_db"></div></div>
     <div class="box"><h3>⚡ Кэш Redis</h3><div id="sys_cache"></div></div>
@@ -445,6 +446,16 @@
       <div id="cc_fbars" style="margin-top:12px"></div>
       <div class="note" style="margin-top:12px">Распределение длины ответов в датасете</div>
       <canvas id="cc_ans" height="150"></canvas>
+    </div>
+
+    <div class="box"><h3>🪢 KAG (знание-усиленная генерация)</h3>
+      <div id="cc_kstats"></div>
+      <div id="cc_kbars" style="margin-top:12px"></div>
+      <div class="grid2" style="margin-top:12px">
+        <div><div class="note">Ответы по движкам (доля)</div><canvas id="cc_kusage" height="170"></canvas></div>
+        <div><div class="note">Параметры конвейера KAG</div><canvas id="cc_kparams" height="170"></canvas></div>
+      </div>
+      <div class="note" id="cc_knote" style="margin-top:8px"></div>
     </div>
 
     <div class="box"><h3>⏱ Тайминги по компонентам</h3>
@@ -640,6 +651,40 @@
           border-radius:9px;padding:10px;font-size:12px;max-height:220px;overflow:auto;white-space:pre-wrap"></pre>
       </div>
       <div id="autores" style="margin-top:10px"></div>
+
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
+        <b style="font-size:13px">🤖 LLM-автокалибровка (итеративная)</b>
+        <div class="clb-help">Цикл: оценка набора текущими параметрами → LLM получает структуру
+          проекта, взаимодействие компонентов, их настройки, пары вопрос/ответ, тестовые файлы и
+          лог предыдущей итерации → возвращает рекомендуемые параметры → они применяются → запуск
+          следующей итерации. И так по кругу до лимита циклов или сходимости. <b>Универсально для
+          любого варианта работы</b>: выберите движок и режим — оптимизатор активирует этот вариант
+          и подбирает <b>только актуальные для него параметры</b> (порог/выборка/температура для
+          вектора; режим графа для LightRAG/Hybrid+; параметры KAG для KAG; фильтры режима).
+          Допуск отклонения берётся из блока оценки выше. ⚠️ Каждая итерация вызывает LLM на все
+          пары + запрос параметров — это долго и затратно; начните с небольшого лимита.</div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin:8px 0">
+          <label class="note">Вариант — движок: <select id="opt_engine"><option value="">текущий</option><option value="vector">Векторный</option><option value="lightrag">LightRAG</option><option value="kag">KAG</option></select></label>
+          <label class="note">режим: <select id="opt_mode"><option value="">текущий</option><option value="basic">Базовый</option><option value="meta">С метаданными</option><option value="hybrid">Hybrid+</option></select></label>
+          <label class="note">Лимит циклов: <input type="number" id="opt_iter" value="200" min="1" max="200" style="width:80px"></label>
+          <button class="act" onclick="optRun()">🤖 Запустить LLM-автокалибровку</button>
+          <button class="act ghost" id="optstop" style="display:none;border-color:#ef4444;color:#f87171" onclick="optCancel()">⏹ Остановить</button>
+          <span id="optmsg" class="note"></span>
+        </div>
+        <div id="optprog" class="note"></div>
+        <div id="optwrap" style="display:none;margin-top:8px">
+          <div class="note">График сходимости: точность и среднее сходство по итерациям</div>
+          <canvas id="opt_conv" height="150"></canvas>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+            <b style="font-size:13px">Лог итераций</b>
+            <button class="act ghost" onclick="optSaveLog()">💾 Сохранить лог в БД</button>
+            <span id="optlogmsg" class="note"></span>
+          </div>
+          <pre id="optlive" style="margin-top:6px;background:var(--panel2);border:1px solid var(--line);
+            border-radius:9px;padding:10px;font-size:12px;max-height:240px;overflow:auto;white-space:pre-wrap"></pre>
+        </div>
+        <div id="optres" style="margin-top:10px"></div>
+      </div>
     </div>
 
     <div class="box">
@@ -1382,8 +1427,28 @@ async function loadSystem(){
     ['Авто-фильтр',sysBool(hb.AUTO_FILTER)]]);
   hh+='<div class="note" style="margin:12px 0 4px">Ответов по движкам:</div>'+
     sysCards([['Векторный',nz(u.vector)],['Граф (hybrid)',nz(u.graph)],
-      ['LightRAG (целиком)',nz(u.lightrag)],['Всего',nz(u.total)]]);
+      ['LightRAG (целиком)',nz(u.lightrag)],['KAG',nz(u.kag)],['Всего',nz(u.total)]]);
   $('#sys_hybrid').innerHTML=hh;
+  // KAG — сводка
+  const k=s.kag||{};
+  let kh=`<div class="note" style="margin-bottom:8px">${k.active
+    ? '<span style="color:#4ade80">● KAG — активный движок ответов</span>'
+    : 'KAG не активен (текущий движок — '+(g.engine==='lightrag'?'LightRAG':'векторный')+'); параметры применятся при выборе движка KAG.'}</div>`;
+  kh+=sysCards([['Активен',sysBool(k.active)],['Декомпозиция',sysBool(k.decompose)],
+    ['Макс. шагов',nz(k.max_hops)],['Фрагм./шаг',nz(k.chunks_per_hop)],
+    ['Контекст (фрагм.)',nz(k.context_chunks)],['Взаимн. индексирование',sysBool(k.mutual_index)],
+    ['Ответов через KAG',nz(u.kag)]]);
+  kh+='<div class="note" style="margin:12px 0 4px">Знания графа в KAG:</div>'+
+    sysCards([['Использовать граф',sysBool(k.use_graph)],['Граф построен',sysBool(k.graph_ready)],
+      ['Режим графа',esc(nz(k.graph_mode))],['Ссылки в ответе',sysBool(k.citations)]]);
+  kh+='<div class="note" style="margin:12px 0 4px">Поиск, используемый мультихопом KAG:</div>'+
+    sysCards([['MIN_SCORE',nz(k.min_score)],['TOP_K_RETRIEVE',nz(k.top_k_retrieve)],
+      ['TOP_K_RERANK',nz(k.top_k_rerank)],['Температура',nz(k.temperature)]]);
+  kh+=`<div class="ro" style="margin-top:12px">
+    <div><span>Бэкенд / модель:</span> ${esc(nz(k.backend))} · ${esc(nz(k.model))}</div>
+    <div style="grid-column:1/-1"><span>Конвейер:</span> декомпозиция → мультихоп-поиск → взаимное индексирование${k.use_graph?' → знания графа':''} → генерация со ссылками</div></div>`;
+  if(k.use_graph && !k.graph_ready) kh+='<div class="note" style="margin-top:8px;color:#f59e0b">⚠ «Использовать граф» включено, но граф не построен — KAG работает как мультихоп-RAG. Постройте граф в админке.</div>';
+  $('#sys_kag').innerHTML=kh;
   // Время обработки (индексация)
   const ing=s.ingest||{};
   if(ing.last_duration_sec!=null||ing.total_ms!=null){
@@ -1803,8 +1868,26 @@ async function loadComponents(){
       datasets:[{data:e.map(x=>x[1]),backgroundColor:C.a}]},options:axes}); }
   if(q.meta) mkChart('cc_meta',{type:'bar',data:{labels:['product','topic','doc_type'],
     datasets:[{data:[q.meta.product,q.meta.topic,q.meta.doc_type],backgroundColor:C.palette}]},options:axes});
-  mkChart('cc_usage',{type:'doughnut',data:{labels:['Векторный','Граф','LightRAG'],
-    datasets:[{data:[u.vector||0,u.graph||0,u.lightrag||0],backgroundColor:C.palette}]},options:dough});
+  mkChart('cc_usage',{type:'doughnut',data:{labels:['Векторный','Граф','LightRAG','KAG'],
+    datasets:[{data:[u.vector||0,u.graph||0,u.lightrag||0,u.kag||0],backgroundColor:C.palette}]},options:dough});
+  // KAG — сводка
+  const kg=s.kag||{};
+  $('#cc_kstats').innerHTML=sysCards([['Активен',sysBool(kg.active)],['Декомпозиция',sysBool(kg.decompose)],
+    ['Макс. шагов',nz(kg.max_hops)],['Фрагм./шаг',nz(kg.chunks_per_hop)],['Контекст',nz(kg.context_chunks)],
+    ['Знания графа',sysBool(kg.use_graph)],['Ответов через KAG',nz(u.kag)]]);
+  let kb='';
+  const utot=u.total||((u.vector||0)+(u.graph||0)+(u.lightrag||0)+(u.kag||0))||1;
+  kb+=pbarHead('Доля ответов через KAG');
+  kb+=pbar('KAG',100*(u.kag||0)/utot,(u.kag||0)+' / '+utot);
+  $('#cc_kbars').innerHTML=kb;
+  mkChart('cc_kusage',{type:'doughnut',data:{labels:['Векторный','Граф','LightRAG','KAG'],
+    datasets:[{data:[u.vector||0,u.graph||0,u.lightrag||0,u.kag||0],backgroundColor:C.palette}]},options:dough});
+  mkChart('cc_kparams',{type:'bar',data:{labels:['Шагов','Фрагм./шаг','Контекст'],
+    datasets:[{data:[kg.max_hops||0,kg.chunks_per_hop||0,kg.context_chunks||0],backgroundColor:C.palette[3]}]},options:axes});
+  $('#cc_knote').innerHTML = kg.active
+    ? '<span style="color:#4ade80">● KAG — активный движок ответов.</span> Конвейер: декомпозиция → мультихоп-поиск → взаимное индексирование'+(kg.use_graph?' → знания графа ('+esc(nz(kg.graph_mode))+')':'')+' → генерация. Бэкенд: '+esc(nz(kg.backend))+' · '+esc(nz(kg.model))+'.'
+    : 'KAG не активен (выберите движок KAG в админке, чтобы он отвечал). Параметры настраиваются в группе «KAG».'
+    + (kg.use_graph && !kg.graph_ready ? '<br><span style="color:#f59e0b">⚠ «Использовать граф» включено, но граф не построен — KAG работает как мультихоп-RAG.</span>' : '');
   // Граф
   $('#cc_gstats').innerHTML = g.ready
     ? sysCards([['Сущности',nz(g.entities)],['Связи',nz(g.relations)],
@@ -2238,6 +2321,54 @@ async function autoStatus(){
   else if(r&&r.kind==='eval'){ autoMsg('autorunmsg','готово'); autoRenderEval(r); }
 }
 async function autoCancel(){ const r=await adminPost('/api/admin/calib/auto/cancel'); autoMsg('autorunmsg',r.msg||'остановка…'); }
+// ---- LLM-итеративная автокалибровка ----
+let optPoll=null;
+async function optRun(){
+  const max_iter=+($('#opt_iter').value||50), deviation=+($('#auto_dev').value||30),
+        engine=$('#opt_engine').value||null, mode=$('#opt_mode').value||null;
+  const r=await adminPost('/api/admin/calib/opt/run',{max_iter,deviation,engine,mode});
+  if(r.ok===false){ autoMsg('optmsg',r.msg||'не удалось',false); return; }
+  autoMsg('optmsg',r.msg||'запущено…'); $('#optres').innerHTML=''; $('#optlive').textContent=''; $('#optwrap').style.display='none';
+  clearInterval(optPoll); optPoll=setInterval(optStatus,1500); optStatus();
+}
+async function optCancel(){ const r=await adminPost('/api/admin/calib/opt/cancel'); autoMsg('optmsg',r.msg||'остановка…'); }
+async function optSaveLog(){ const r=await adminPost('/api/admin/calib/save-log',{which:'opt'});
+  const e=$('#optlogmsg'); if(e){ e.textContent=r.msg||(r.ok?'сохранено':'ошибка'); e.className=r.ok!==false?'saved':'note'; }
+  if(r.ok!==false&&r.id){ e.innerHTML=esc(r.msg)+' <a style="cursor:pointer;color:#f87171" onclick="delIngestLog('+r.id+')">удалить</a>'; loadIngestLogs&&loadIngestLogs(); } }
+async function optStatus(){
+  let s; try{ s=await adminGet('/api/admin/calib/opt/status'); }catch(e){ return; }
+  const pts=s.points||[];
+  if(pts.length){ $('#optwrap').style.display='block'; optConvChart(pts); }
+  liveLog('optlive', s.log);
+  const stop=$('#optstop'); if(stop) stop.style.display=s.running?'inline-block':'none';
+  const p=$('#optprog');
+  if(s.running){ if(p)p.textContent=`${s.phase||'…'} (итерация ${s.iter||0}/${s.max_iter||0})`; return; }
+  clearInterval(optPoll); if(p)p.textContent='';
+  if(s.cancelled){ autoMsg('optmsg','остановлено'); }
+  else if(s.error){ autoMsg('optmsg','ошибка: '+s.error,false); }
+  else { autoMsg('optmsg','готово'); }
+  if(s.result) optRenderResult(s.result);
+}
+function optConvChart(pts){
+  mkChart('opt_conv',{type:'line',data:{labels:pts.map(p=>p.iter),datasets:[
+    {label:'Точность, %',data:pts.map(p=>p.accuracy),borderColor:C.palette[1],backgroundColor:'rgba(34,197,94,.12)',fill:true,tension:.2,pointRadius:3},
+    {label:'Среднее сходство, %',data:pts.map(p=>p.sim),borderColor:C.palette[0],fill:false,tension:.2,pointRadius:0,borderDash:[5,4]}]},
+    options:{animation:false,scales:{x:{ticks:{color:C.txt},grid:{color:C.grid},title:{display:true,text:'итерация',color:C.txt}},
+      y:{ticks:{color:C.txt},grid:{color:C.grid},suggestedMin:0,suggestedMax:100}},plugins:{legend:{display:true,labels:{color:C.txt}}}}});
+}
+function optRenderResult(r){
+  const b=r.best;
+  const params=b&&b.params?Object.entries(b.params).map(([k,v])=>`${k} = ${v}`).join(' · '):'—';
+  $('#optres').innerHTML=`
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:6px 0">
+      <div class="card" style="border-color:var(--accent2)"><div class="k">Лучшая точность</div>
+        <div class="v" style="font-size:18px">${b?pct(b.accuracy):'—'} <small>итер ${b?b.iter:'—'}/${r.iters}</small></div></div>
+      <div class="card"><div class="k">Вариант · допуск</div><div class="v" style="font-size:15px">${esc(r.engine)} / ${esc(r.mode||'')} · ≤${r.deviation}%</div></div>
+      ${r.log_id?`<button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="delIngestLog(${r.log_id})">🗑 Удалить лог</button>`:''}
+    </div>
+    <div class="clb-help">Настраивались параметры варианта: ${(r.keys||[]).map(esc).join(', ')||'—'}.<br>
+      Применён лучший набор: <b>${esc(params)}</b>. Их можно посмотреть/изменить в настройках.</div>`;
+}
 async function autoSaveLog(){ const r=await adminPost('/api/admin/calib/save-log',{which:'auto'});
   const e=$('#autologmsg'); if(e){ e.textContent=r.msg||(r.ok?'сохранено':'ошибка'); e.className=r.ok!==false?'saved':'note'; }
   if(r.ok!==false&&r.id){ e.innerHTML=esc(r.msg)+' <a style="cursor:pointer;color:#f87171" onclick="delIngestLog('+r.id+')">удалить</a>'; loadIngestLogs&&loadIngestLogs(); } }

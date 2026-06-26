@@ -1715,6 +1715,27 @@ def _system_info_raw() -> dict:
         "GRAPH_MODE": settings.get("GRAPH_MODE"),
     }
 
+    # ---- KAG (знание-усиленная генерация) ----
+    kag = {
+        "active": settings.get("ENGINE") == "kag",
+        "backend": settings.get("LLM_BACKEND"),
+        "model": settings.active_model(),
+        "decompose": bool(settings.get("KAG_DECOMPOSE")),
+        "max_hops": settings.get("KAG_MAX_HOPS"),
+        "chunks_per_hop": settings.get("KAG_CHUNKS_PER_HOP"),
+        "context_chunks": settings.get("KAG_CONTEXT_CHUNKS"),
+        "mutual_index": bool(settings.get("KAG_MUTUAL_INDEX")),
+        "use_graph": bool(settings.get("KAG_GRAPH")),
+        "graph_mode": settings.get("KAG_GRAPH_MODE"),
+        "graph_ready": bool(graph.get("ready")),
+        "citations": bool(settings.get("KAG_REQUIRE_CITATIONS")),
+        "temperature": settings.get("KAG_TEMPERATURE"),
+        # текущие параметры поиска, которые использует мультихоп KAG
+        "min_score": settings.get("MIN_SCORE"),
+        "top_k_retrieve": settings.get("TOP_K_RETRIEVE"),
+        "top_k_rerank": settings.get("TOP_K_RERANK"),
+    }
+
     # ---- База данных и кэш ----
     try:
         database = db.system_stats()
@@ -1727,7 +1748,7 @@ def _system_info_raw() -> dict:
         cache_info = {"enabled": False, "error": str(e)}
 
     return {"qdrant": qd, "graph": graph, "finetune": ft,
-            "hybrid": hybrid, "usage": db.engine_usage(),
+            "hybrid": hybrid, "kag": kag, "usage": db.engine_usage(),
             "ingest": _ingest_summary(),
             "database": database, "cache": cache_info}
 
@@ -2029,7 +2050,23 @@ def component_analytics() -> dict:
         "ingest_breakdown": _ingest_breakdown(),
     }
 
-    return {"qdrant": qd, "graph": graph, "finetune": ft,
+    kag = {
+        "active": settings.get("ENGINE") == "kag",
+        "decompose": bool(settings.get("KAG_DECOMPOSE")),
+        "max_hops": settings.get("KAG_MAX_HOPS"),
+        "chunks_per_hop": settings.get("KAG_CHUNKS_PER_HOP"),
+        "context_chunks": settings.get("KAG_CONTEXT_CHUNKS"),
+        "mutual_index": bool(settings.get("KAG_MUTUAL_INDEX")),
+        "use_graph": bool(settings.get("KAG_GRAPH")),
+        "graph_mode": settings.get("KAG_GRAPH_MODE"),
+        "graph_ready": bool(graph.get("ready")),
+        "citations": bool(settings.get("KAG_REQUIRE_CITATIONS")),
+        "temperature": settings.get("KAG_TEMPERATURE"),
+        "backend": settings.get("LLM_BACKEND"),
+        "model": settings.active_model(),
+    }
+
+    return {"qdrant": qd, "graph": graph, "finetune": ft, "kag": kag,
             "usage": db.engine_usage(), "timings": timings}
 
 

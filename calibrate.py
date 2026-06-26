@@ -1222,14 +1222,381 @@ def auto_run(deviation=30, engine=None) -> dict:
 
 def save_log(which: str = "calib") -> dict:
     """Сохранить текущий живой лог калибровки/оценки в БД (ingest_logs)."""
-    job = _auto if which == "auto" else _job
+    job = {"auto": _auto, "opt": _opt}.get(which, _job)
     lines = job.get("log") or []
     if not lines:
         return {"ok": False, "msg": "лог пуст"}
-    label = "Автокалибровка (лог оценки)" if which == "auto" else "Автокалибровка (лог)"
+    label = {"auto": "Автокалибровка (лог оценки)",
+             "opt": "LLM-автокалибровка (лог)"}.get(which, "Автокалибровка (лог)")
     summary = lines[-1][:200] if lines else ""
     try:
         log_id = db.ingest_log_save(label, summary, "\n".join(lines))
     except Exception as e:
         return {"ok": False, "msg": f"не удалось сохранить: {e}"}
     return {"ok": True, "id": log_id, "msg": f"лог сохранён в БД (№{log_id})"}
+
+
+# ===================================================================================
+# Итеративная LLM-автокалибровка по альтернативному набору (папка test)
+# ===================================================================================
+_opt: dict = {"running": False, "phase": "", "iter": 0, "max_iter": 0,
+              "result": None, "error": None, "started": 0.0, "finished": 0.0,
+              "log": [], "points": [], "cancel": False, "cancelled": False, "best": None}
+_opt_lock = threading.Lock()
+
+_OPT_CATALOG = {
+    "TEMPERATURE": {"kind": "float", "lo": 0.0, "hi": 1.5,
+                    "desc": "температура генерации (ниже — строже/фактологичнее)"},
+    "MIN_SCORE": {"kind": "float", "lo": 0.0, "hi": 0.8,
+                  "desc": "порог релевантности реранка (выше — строже «не знаю»)"},
+    "TOP_K_RETRIEVE": {"kind": "int", "lo": 5, "hi": 120,
+                       "desc": "кандидатов из Qdrant до реранка (ширина выборки)"},
+    "TOP_K_RERANK": {"kind": "int", "lo": 1, "hi": 20,
+                     "desc": "фрагментов в контекст LLM после реранка"},
+    "NO_ANSWER_FALLBACK": {"kind": "bool",
+                           "desc": "доп. поиск (лексический/глубокий), если ответ не найден"},
+    "AUTO_FILTER": {"kind": "bool", "desc": "авто-фильтр по категории вопроса (правила)"},
+    "SMART_FILTER": {"kind": "bool", "desc": "умные фильтры из вопроса (доп. вызов LLM)"},
+    "GRAPH_RAG": {"kind": "bool", "desc": "направлять сводные вопросы в граф (hybrid)"},
+    "GRAPH_MODE": {"kind": "select", "options": ["mix", "hybrid", "local", "global", "naive"],
+                   "desc": "режим извлечения из графа знаний"},
+    "KAG_MAX_HOPS": {"kind": "int", "lo": 1, "hi": 6, "desc": "под-вопросов (шагов) KAG"},
+    "KAG_CHUNKS_PER_HOP": {"kind": "int", "lo": 1, "hi": 10,
+                           "desc": "фрагментов на под-вопрос KAG"},
+    "KAG_CONTEXT_CHUNKS": {"kind": "int", "lo": 2, "hi": 24,
+                           "desc": "итоговых фрагментов в контексте KAG"},
+    "KAG_TEMPERATURE": {"kind": "float", "lo": 0.0, "hi": 1.0,
+                        "desc": "температура финальной генерации KAG"},
+    "KAG_GRAPH": {"kind": "bool", "desc": "дополнять контекст KAG знаниями из графа"},
+    "KAG_MUTUAL_INDEX": {"kind": "bool",
+                         "desc": "взаимное индексирование (переоценка пула) в KAG"},
+    "KAG_GRAPH_MODE": {"kind": "select",
+                       "options": ["local", "global", "hybrid", "mix", "naive"],
+                       "desc": "режим извлечения знаний из графа в KAG"},
+}
+
+_PROJECT_STRUCTURE = (
+    "СТРУКТУРА ПРОЕКТА (корпоративный RAG): документы → индексация (чанкинг, эмбеддер "
+    "bge-m3) → Qdrant (векторы). Ответ зависит от ВАРИАНТА РАБОТЫ (движок + режим):\n"
+    "• Движок «Векторный»: плотный поиск top-k (TOP_K_RETRIEVE) → BM25 + кросс-энкодер "
+    "реранк (TOP_K_RERANK фрагментов с оценкой ≥ MIN_SCORE) → генерация LLM (TEMPERATURE).\n"
+    "• Движок «LightRAG»: все вопросы в граф знаний (GRAPH_MODE); порог/выборка не "
+    "применяются, влияет TEMPERATURE.\n"
+    "• Движок «KAG»: декомпозиция (KAG_MAX_HOPS) → мультихоп-поиск (KAG_CHUNKS_PER_HOP, "
+    "использует MIN_SCORE/TOP_K_*) → взаимное индексирование (KAG_MUTUAL_INDEX, до "
+    "KAG_CONTEXT_CHUNKS) → опц. знания графа (KAG_GRAPH, KAG_GRAPH_MODE) → генерация "
+    "(KAG_TEMPERATURE).\n"
+    "• Режим работы задаёт фильтрацию: AUTO_FILTER (по категории), SMART_FILTER (LLM), "
+    "GRAPH_RAG (граф для сводных). NO_ANSWER_FALLBACK включает доп. поиск.\n"
+    "ВЗАИМОДЕЙСТВИЕ: шире TOP_K_RETRIEVE → выше полнота, но больше шум; выше MIN_SCORE → "
+    "строже отбор (риск «не знаю»); ниже TEMPERATURE → стабильнее ответ. Качество = "
+    "близость ответа к эталону (косинус эмбеддингов).")
+
+
+def _opt_keys(engine: str, mode: str) -> list:
+    """Параметры, актуальные для выбранного варианта работы (движок + режим)."""
+    keys = ["TEMPERATURE"]
+    if engine != "lightrag":          # используется векторный поиск (vector, kag)
+        keys += ["MIN_SCORE", "TOP_K_RETRIEVE", "TOP_K_RERANK",
+                 "NO_ANSWER_FALLBACK", "AUTO_FILTER", "SMART_FILTER"]
+    if engine == "lightrag" or mode == "hybrid":
+        keys += ["GRAPH_MODE"]
+        if mode == "hybrid":
+            keys += ["GRAPH_RAG"]
+    if engine == "kag":
+        keys += ["KAG_MAX_HOPS", "KAG_CHUNKS_PER_HOP", "KAG_CONTEXT_CHUNKS",
+                 "KAG_TEMPERATURE", "KAG_GRAPH", "KAG_MUTUAL_INDEX", "KAG_GRAPH_MODE"]
+    seen, out = set(), []
+    for k in keys:
+        if k in _OPT_CATALOG and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def _to_bool(v):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    s = str(v).strip().lower()
+    if s in ("true", "1", "yes", "да", "вкл", "on"):
+        return True
+    if s in ("false", "0", "no", "нет", "выкл", "off"):
+        return False
+    return None
+
+
+def _coerce_opt(key, v):
+    """Привести значение параметра к корректному типу/диапазону по каталогу."""
+    spec = _OPT_CATALOG.get(key)
+    if not spec or v is None:
+        return None
+    try:
+        if spec["kind"] == "float":
+            return max(spec["lo"], min(spec["hi"], float(v)))
+        if spec["kind"] == "int":
+            return max(spec["lo"], min(spec["hi"], int(round(float(v)))))
+        if spec["kind"] == "bool":
+            return _to_bool(v)
+        if spec["kind"] == "select":
+            return v if v in spec["options"] else None
+    except Exception:
+        return None
+    return None
+
+
+def _apply_opt_params(d: dict, keys: list) -> dict:
+    ch = {}
+    for k in keys:
+        if isinstance(d, dict) and d.get(k) is not None:
+            cv = _coerce_opt(k, d[k])
+            if cv is not None:
+                ch[k] = cv
+    if ch:
+        settings.update(ch)
+        try:
+            import cache
+            cache.bump("index")
+        except Exception:
+            pass
+    return ch
+
+
+def _eval_pairs(items, engine, thr, job):
+    rows, ok = [], 0
+    for it in items:
+        _check_cancel(job)
+        a = _answer_text(it["q"], engine)
+        sim = _similarity(a, it.get("a", ""))
+        dev = round((1.0 - sim) * 100, 1)
+        passed = dev <= thr
+        ok += passed
+        rows.append({"q": it["q"], "ref": it.get("a", ""), "sys": a,
+                     "sim": round(sim * 100, 1), "dev": dev, "ok": bool(passed)})
+    acc = round(ok / len(items), 4) if items else 0.0
+    msim = round(sum(r["sim"] for r in rows) / len(rows), 1) if rows else 0.0
+    return rows, ok, acc, msim
+
+
+def _param_line(k) -> str:
+    spec = _OPT_CATALOG[k]
+    cur = settings.get(k)
+    if spec["kind"] in ("float", "int"):
+        rng = f"[{spec['lo']}…{spec['hi']}]"
+    elif spec["kind"] == "bool":
+        rng = "(true/false)"
+    else:
+        rng = "(варианты: " + ", ".join(map(str, spec["options"])) + ")"
+    return f"  {k}: {cur} {rng} — {spec['desc']}"
+
+
+def _build_opt_context(engine, mode, keys, items, files, prev, it_num, max_iter) -> str:
+    L = [_PROJECT_STRUCTURE,
+         f"\nИТЕРАЦИЯ {it_num} из {max_iter}. ВАРИАНТ РАБОТЫ: движок «{engine}», "
+         f"режим «{mode}».",
+         "\nНАСТРАИВАЕМЫЕ ПАРАМЕТРЫ ЭТОГО ВАРИАНТА (имя: текущее [диапазон/варианты] — смысл):"]
+    for k in keys:
+        L.append(_param_line(k))
+    L.append(f"\nТЕСТОВЫЕ ФАЙЛЫ ({len(files)}): " + ", ".join(files[:30]))
+    L.append(f"\nПАРЫ ВОПРОС→ЭТАЛОН: {len(items)} (примеры):")
+    for it in items[:8]:
+        L.append(f"  В: {it['q'][:120]}")
+        L.append(f"  Э: {(it.get('a') or '')[:160]}")
+    if prev:
+        L.append(f"\nРЕЗУЛЬТАТ ПРЕДЫДУЩЕЙ ИТЕРАЦИИ: точность {prev['acc'] * 100:.1f}%, "
+                 f"среднее сходство {prev['msim']}%.")
+        fails = [r for r in prev["rows"] if not r["ok"]][:12]
+        if fails:
+            L.append("Провалившиеся вопросы (сходство ответа с эталоном):")
+            for r in fails:
+                L.append(f"  [{r['sim']}%] {r['q'][:90]}")
+    L.append("\nЗАДАЧА: предложи НОВЫЕ значения параметров (строго в пределах диапазонов / из "
+             "списка вариантов), которые повысят долю ответов с малым отклонением от эталона. "
+             "Рассуждай по структуре варианта: много «не найдено»/низкое сходство → снизь "
+             "MIN_SCORE и/или расширь TOP_K_RETRIEVE, включи NO_ANSWER_FALLBACK; ответы "
+             "размыты → снизь TEMPERATURE и/или TOP_K_RERANK; для графа подбери GRAPH_MODE; "
+             "для KAG — глубину/контекст. Меняй ТОЛЬКО перечисленные параметры. Ответь СТРОГО "
+             "одним JSON-объектом (числа, true/false, строки для вариантов), например "
+             "{\"MIN_SCORE\": 0.25, \"TOP_K_RETRIEVE\": 40, \"NO_ANSWER_FALLBACK\": true}. "
+             "Без пояснений.")
+    return "\n".join(L)
+
+
+def _ask_llm_params(context):
+    import llm_backend
+    import re
+    try:
+        out = llm_backend.chat(
+            [{"role": "system", "content": "Ты — оптимизатор гиперпараметров RAG-системы."},
+             {"role": "user", "content": context}], 0.2)
+    except Exception as e:
+        return {}, f"(ошибка LLM: {e})"
+    m = re.search(r"\{.*\}", out or "", re.DOTALL)
+    if not m:
+        return {}, out
+    try:
+        return json.loads(m.group(0)), out
+    except Exception:
+        return {}, out
+
+
+def _opt_report(engine, mode, thr, best, points, keys) -> str:
+    import datetime
+    L = ["=" * 78, "ОТЧЁТ LLM-АВТОКАЛИБРОВКИ (итеративная, набор из папки test)",
+         datetime.datetime.now().strftime("Дата: %Y-%m-%d %H:%M:%S"), "=" * 78, "",
+         f"ВАРИАНТ РАБОТЫ: движок «{engine}» + режим «{mode}». "
+         f"Допуск отклонения: ≤{thr:.0f}%. Итераций: {len(points)}.",
+         "Настраивались параметры: " + ", ".join(keys), ""]
+    if best:
+        L.append(f"ЛУЧШИЙ РЕЗУЛЬТАТ: точность {best['accuracy'] * 100:.1f}% "
+                 f"(итерация {best['iter']}). Параметры:")
+        for k, v in (best.get("params") or {}).items():
+            L.append(f"  {k} = {v}")
+    L.append("")
+    L.append("СХОДИМОСТЬ ПО ИТЕРАЦИЯМ:")
+    L.append(f"{'итер':>5} {'точность':>9} {'ср.сходство':>12}")
+    for p in points:
+        L.append(f"{p['iter']:>5} {p['accuracy']:>8}% {p['sim']:>11}%")
+    L.append("")
+    L.append("=" * 78)
+    L.append("Конец отчёта.")
+    return "\n".join(L)
+
+
+def _set_variant(engine, mode):
+    """Сделать активным выбранный вариант работы (движок + режим)."""
+    ch = {}
+    if engine in _ENGINES:
+        ch["ENGINE"] = engine
+    if ch:
+        settings.update(ch)
+    if mode and mode in getattr(settings, "MODES", {}):
+        try:
+            settings.set_mode(mode)
+        except Exception as e:
+            print(f"[opt] не удалось включить режим {mode}: {e}")
+
+
+def _optimize_run(max_iter, deviation, engine, mode) -> None:
+    try:
+        items = auto_load()
+        if not items:
+            raise RuntimeError("сначала сгенерируйте набор из папки test")
+        engine = engine if engine in _ENGINES else settings.get("ENGINE")
+        try:
+            mode = mode if mode in getattr(settings, "MODES", {}) else settings.current_mode()
+        except Exception:
+            mode = mode or "basic"
+        thr = max(0.0, min(100.0, float(deviation)))
+        _set_variant(engine, mode)                 # активируем выбранный вариант работы
+        keys = _opt_keys(engine, mode)
+        files = sorted({it.get("source", "") for it in items if it.get("source")})
+        _opt.update(max_iter=max_iter, points=[], engine=engine, mode=mode, keys=keys)
+        _logline(_opt, f"▶ LLM-автокалибровка: вариант движок «{engine}» + режим «{mode}», "
+                       f"допуск ≤{thr:.0f}%, вопросов {len(items)}, лимит {max_iter} циклов")
+        _logline(_opt, "  настраиваемые параметры варианта: " + ", ".join(keys))
+        best = None
+        prev = None
+        last_ch = None
+        for i in range(1, max_iter + 1):
+            _check_cancel(_opt)
+            _opt.update(iter=i, phase=f"Итерация {i}/{max_iter}: оценка ответов")
+            rows, ok, acc, msim = _eval_pairs(items, engine, thr, _opt)
+            cur = {k: settings.get(k) for k in keys}
+            _opt["points"].append({"iter": i, "accuracy": round(acc * 100, 1), "sim": msim})
+            _logline(_opt, f"[итер {i}] точность {acc * 100:.1f}% · ср.сходство {msim}% · "
+                           + " · ".join(f"{k}={cur[k]}" for k in keys))
+            if best is None or acc > best["accuracy"]:
+                best = {"accuracy": acc, "msim": msim, "params": cur, "iter": i}
+                _opt["best"] = best
+                _logline(_opt, f"  ↑ новый лучший: {acc * 100:.1f}%")
+            prev = {"acc": acc, "msim": msim, "rows": rows}
+            if acc >= 1.0:
+                _logline(_opt, "  ✓ точность 100% — останов")
+                break
+            if i >= max_iter:
+                break
+            _opt.update(phase=f"Итерация {i}/{max_iter}: LLM рекомендует параметры")
+            ctx = _build_opt_context(engine, mode, keys, items, files, prev, i, max_iter)
+            params, _raw = _ask_llm_params(ctx)
+            ch = _apply_opt_params(params, keys)
+            if ch:
+                _logline(_opt, f"  применены параметры: " + ", ".join(f"{k}={v}" for k, v in ch.items()))
+            else:
+                _logline(_opt, "  LLM не предложила валидных параметров — повтор с текущими")
+            if ch and ch == last_ch:
+                _logline(_opt, "  параметры стабилизировались — останов (сходимость)")
+                break
+            last_ch = ch or last_ch
+        if best:
+            _apply_opt_params(best["params"], keys)
+            _logline(_opt, f"✓ применён лучший набор (итер {best['iter']}, "
+                           f"{best['accuracy'] * 100:.1f}%)")
+        report = _opt_report(engine, mode, thr, best, _opt["points"], keys)
+        log_id = None
+        try:
+            summary = (f"вариант {engine}/{mode}: лучшее {best['accuracy'] * 100:.1f}% за "
+                       f"{_opt['iter']} итер." if best else "нет данных")
+            log_id = db.ingest_log_save("LLM-автокалибровка", summary, report)
+        except Exception as e:
+            print(f"[opt] лог не сохранён: {e}")
+        _opt["result"] = {"engine": engine, "mode": mode, "deviation": thr,
+                          "iters": _opt["iter"], "best": best, "points": _opt["points"],
+                          "report": report, "log_id": log_id, "keys": keys}
+    except _Cancelled:
+        _opt["cancelled"] = True
+        _logline(_opt, "⏹ остановлено пользователем")
+    except Exception as e:
+        _opt["error"] = str(e)
+        _logline(_opt, f"ОШИБКА: {e}")
+    finally:
+        _opt["running"] = False
+        _opt["finished"] = time.time()
+        _opt["phase"] = ("Остановлено" if _opt.get("cancelled")
+                         else ("Готово" if not _opt.get("error") else "Ошибка"))
+
+
+def optimize_engines() -> list:
+    return available_engines()
+
+
+def optimize_modes() -> list:
+    return [{"key": k, "label": m.get("label", k)}
+            for k, m in getattr(settings, "MODES", {}).items()]
+
+
+def optimize_start(max_iter=50, deviation=30, engine=None, mode=None) -> dict:
+    with _opt_lock:
+        if _opt["running"]:
+            return {"ok": False, "msg": "оптимизация уже выполняется"}
+        if not auto_load():
+            return {"ok": False, "msg": "набор пуст — сначала сгенерируйте пары из папки test"}
+        try:
+            max_iter = max(1, min(200, int(max_iter)))
+        except Exception:
+            max_iter = 50
+        _opt.update(running=True, phase="Запуск", iter=0, max_iter=max_iter,
+                    result=None, error=None, started=time.time(), finished=0.0,
+                    cancel=False, cancelled=False, log=[], points=[], best=None)
+    threading.Thread(target=_optimize_run, args=(max_iter, deviation, engine, mode),
+                     daemon=True).start()
+    return {"ok": True, "msg": f"LLM-автокалибровка запущена (до {max_iter} циклов)"}
+
+
+def optimize_cancel() -> dict:
+    if _opt.get("running"):
+        _opt["cancel"] = True
+        return {"ok": True, "msg": "остановка…"}
+    return {"ok": False, "msg": "оптимизация не выполняется"}
+
+
+def optimize_status() -> dict:
+    out = {k: _opt.get(k) for k in
+           ("running", "phase", "iter", "max_iter", "result", "error", "started",
+            "finished", "cancelled", "best")}
+    lg = _opt.get("log") or []
+    out["log"] = "\n".join(lg[-400:])
+    out["log_lines"] = len(lg)
+    out["points"] = list(_opt.get("points") or [])
+    return out
