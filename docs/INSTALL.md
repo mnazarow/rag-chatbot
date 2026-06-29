@@ -360,6 +360,8 @@ python query_lightrag.py "вопрос" --mode mix
 | `TELEGRAM_SHOW_ANSWER` | Выводить текст ответа LLM в Телеграм (можно отключить) | `1` (вкл)             |
 | `TELEGRAM_FEEDBACK` | Кнопки оценки 👍/👎 и комментария под ответом бота | `1` (вкл)                       |
 | `TTS_ENGINE` / `TTS_VOICE` | Движок синтеза речи и голос/модель (выбор из списка доступных в UI) | `auto` / пусто        |
+| `OCR_LLM_DESCRIBE` | При пустом/слабом OCR описывать изображение vision-моделью и индексировать описание | `0` (выкл) |
+| `OCR_LLM_MAX_CHUNKS` / `VISION_MODEL` | Порог чанков для описания / имя vision-модели (пусто = основная LLM) | `1` / пусто |
 | `SIP_ENABLED`     | Голосовой бот по SIP/АТС (Asterisk AudioSocket: STT→RAG→TTS) | `0` (выкл)               |
 | `SIP_BRIDGE_HOST` / `SIP_BRIDGE_PORT` | Адрес и порт AudioSocket-моста (указать в диалплане Asterisk) | `0.0.0.0` / `8090` |
 | `PRICE_FOLDER`    | Брать прайсы из отдельной папки без индексации (ценовые вопросы) | `0` (выкл)              |

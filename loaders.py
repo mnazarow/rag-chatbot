@@ -120,9 +120,40 @@ def _enabled(key: str) -> bool:
         return True
 
 
+def _describe_due(total_chars: int) -> bool:
+    """Нужно ли описывать изображение моделью: получилось ≤ N чанков (0/1 по умолч.)."""
+    if not _enabled("OCR_LLM_DESCRIBE"):
+        return False
+    try:
+        cs = int(settings.get("CHUNK_SIZE") or 900)
+    except Exception:
+        cs = 900
+    try:
+        maxc = int(_ocr_setting("OCR_LLM_MAX_CHUNKS", 1))
+    except Exception:
+        maxc = 1
+    import math
+    chunks = 0 if total_chars <= 0 else math.ceil(total_chars / max(1, cs))
+    return chunks <= maxc
+
+
+def _describe_image_part(img, page=None):
+    """Описать изображение vision-моделью → {'text','page'} или None."""
+    try:
+        import llm_backend
+        desc = llm_backend.describe_image(img)
+        if desc and desc.strip():
+            return {"text": "Описание изображения (vision-модель):\n" + desc.strip(),
+                    "page": page}
+    except Exception as e:
+        print(f"  ~ описание изображения моделью не удалось: {e}")
+    return None
+
+
 def _ocr_pdf_page(page, i):
     """Распознать «картиночную» страницу PDF (текст нарисован графикой): рендерим
-    страницу в изображение и прогоняем через OCR. Возвращает {'text','page'}."""
+    страницу в изображение и прогоняем через OCR. Возвращает {'text','page'}.
+    Если OCR дал мало текста — дополнительно описываем страницу vision-моделью."""
     try:
         import fitz  # pymupdf
         from PIL import Image
@@ -132,9 +163,16 @@ def _ocr_pdf_page(page, i):
             scale = 2.5
         pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))  # масштаб из настроек
         img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        total = 0
         for part in _ocr_image(img):
-            if part.get("text", "").strip():
+            t = (part.get("text") or "").strip()
+            if t:
+                total += len(t)
                 yield {"text": part["text"], "page": i}
+        if _describe_due(total):
+            d = _describe_image_part(img, i)
+            if d:
+                yield d
     except Exception as e:
         print(f"  ~ OCR страницы PDF {i} не удался: {e}")
 
@@ -468,30 +506,59 @@ def _ocr_image(img):
 
 def _load_image(path: Path):
     """Растровое изображение (jpg/png/…) → OCR. Полезно для сканов и фото
-    документов, скриншотов прайсов и т. п."""
-    if not _ocr_available():
-        return  # нет tesseract/pytesseract — не декодируем картинку зря
+    документов, скриншотов прайсов и т. п. Если OCR дал ≤1 чанк — изображение
+    дополнительно описывается vision-моделью (если включено)."""
+    describe_on = _enabled("OCR_LLM_DESCRIBE")
+    ocr_on = _ocr_available()
+    if not ocr_on and not describe_on:
+        return  # ни OCR, ни описания — не декодируем картинку зря
     from PIL import Image
 
-    print(f"  ~ распознаю (OCR) {path.name} ...")
+    if ocr_on:
+        print(f"  ~ распознаю (OCR) {path.name} ...")
     with Image.open(path) as img:
         img.load()
-        yield from _ocr_image(img)
+        total = 0
+        if ocr_on:
+            for part in _ocr_image(img):
+                t = (part.get("text") or "").strip()
+                if t:
+                    total += len(t)
+                yield part
+        if _describe_due(total):
+            print(f"  ~ описываю изображение моделью: {path.name}")
+            d = _describe_image_part(img)
+            if d:
+                yield d
 
 
 def _load_raw(path: Path):
     """RAW-фото (CR2 и др.) → изображение → OCR → текст.
-    Полезно для сфотографированных документов."""
-    if not _ocr_available():
+    Полезно для сфотографированных документов. При ≤1 чанке — описание моделью."""
+    describe_on = _enabled("OCR_LLM_DESCRIBE")
+    ocr_on = _ocr_available()
+    if not ocr_on and not describe_on:
         return
     import rawpy
     from PIL import Image
 
-    print(f"  ~ распознаю (OCR) {path.name} ...")
+    if ocr_on:
+        print(f"  ~ распознаю (OCR) {path.name} ...")
     with rawpy.imread(str(path)) as raw:
         rgb = raw.postprocess()
     img = Image.fromarray(rgb)
-    yield from _ocr_image(img)
+    total = 0
+    if ocr_on:
+        for part in _ocr_image(img):
+            t = (part.get("text") or "").strip()
+            if t:
+                total += len(t)
+            yield part
+    if _describe_due(total):
+        print(f"  ~ описываю изображение моделью: {path.name}")
+        d = _describe_image_part(img)
+        if d:
+            yield d
 
 
 def _load_svg(path: Path):

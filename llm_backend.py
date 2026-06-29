@@ -68,3 +68,54 @@ def chat(messages: list[dict], temperature: float = 0.1,
               "stream": False, "options": {"temperature": temperature}},
     )
     return r.json()["message"]["content"]
+
+
+_DEFAULT_VISION_PROMPT = (
+    "Опиши, что изображено, подробно и по-деловому: текст, таблицы, схемы, графики, "
+    "объекты, назначение. Если это документ, прайс-лист, чертёж или диаграмма — передай "
+    "ключевую информацию и числа. Ответь по-русски, без вступлений.")
+
+
+def describe_image(image, prompt: str | None = None, model: str | None = None) -> str:
+    """Описать изображение визуальной (vision) моделью. `image` — путь/Path,
+    bytes или PIL.Image. Возвращает текст описания ('' при недоступности).
+    Бэкенд openai (vLLM) — content с image_url; ollama — поле images:[base64]."""
+    import base64
+    import io
+    try:
+        if hasattr(image, "save"):                    # PIL.Image
+            buf = io.BytesIO()
+            image.convert("RGB").save(buf, format="PNG")
+            data = buf.getvalue()
+        elif isinstance(image, (bytes, bytearray)):
+            data = bytes(image)
+        else:
+            with open(image, "rb") as f:
+                data = f.read()
+    except Exception as e:
+        print(f"[vision] чтение изображения: {e}")
+        return ""
+    b64 = base64.b64encode(data).decode("ascii")
+    model = (model or settings.get("VISION_MODEL") or settings.get("LLM_MODEL"))
+    prompt = prompt or _DEFAULT_VISION_PROMPT
+    try:
+        if settings.get("LLM_BACKEND") == "openai":
+            content = [{"type": "text", "text": prompt},
+                       {"type": "image_url",
+                        "image_url": {"url": "data:image/png;base64," + b64}}]
+            r = httpx.post(
+                f"{settings.get('LLM_BASE_URL')}/chat/completions", timeout=180,
+                headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
+                json={"model": model, "stream": False, "temperature": 0.2,
+                      "messages": [{"role": "user", "content": content}]})
+            r.raise_for_status()
+            return (r.json()["choices"][0]["message"]["content"] or "").strip()
+        r = httpx.post(
+            f"{settings.get('OLLAMA_URL')}/api/chat", timeout=180,
+            json={"model": model, "stream": False, "options": {"temperature": 0.2},
+                  "messages": [{"role": "user", "content": prompt, "images": [b64]}]})
+        r.raise_for_status()
+        return (r.json().get("message", {}).get("content", "") or "").strip()
+    except Exception as e:
+        print(f"[vision] описание изображения не удалось (model={model}): {e}")
+        return ""

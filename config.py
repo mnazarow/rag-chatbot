@@ -104,6 +104,11 @@ OCR_MAX_DIM = _int("OCR_MAX_DIM", 3500)
 # Сколько символов на странице PDF считать «достаточным» текстовым слоем; ниже —
 # страница считается «картиночной» и прогоняется через OCR.
 OCR_MIN_CHARS = _int("OCR_MIN_CHARS", 25)
+# Если OCR дал мало текста (≤ OCR_LLM_MAX_CHUNKS чанков), передать изображение
+# vision-модели за описанием и тоже добавить его в базу знаний.
+OCR_LLM_DESCRIBE = _bool("OCR_LLM_DESCRIBE", False)
+OCR_LLM_MAX_CHUNKS = _int("OCR_LLM_MAX_CHUNKS", 1)
+VISION_MODEL = os.getenv("VISION_MODEL", "")   # vision-модель (пусто = основная LLM)
 # Tesseract PSM (page segmentation mode): 3 — авто; 4 — колонками; 6 — единый блок;
 # 11 — разрозненный текст. OEM: 1 — нейросеть LSTM; 3 — авто (LSTM+legacy).
 OCR_PSM = _int("OCR_PSM", 3)
