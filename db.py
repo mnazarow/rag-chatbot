@@ -265,6 +265,10 @@ def _ddl(d: str) -> list[str]:
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 term VARCHAR(255), syns MEDIUMTEXT, updated DOUBLE
                 ) CHARACTER SET utf8mb4""",
+            """CREATE TABLE IF NOT EXISTS dns_hosts(
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                hostname VARCHAR(255), ip VARCHAR(64), updated DOUBLE
+                ) CHARACTER SET utf8mb4""",
         ]
     if d == "postgresql":
         return [
@@ -311,6 +315,9 @@ def _ddl(d: str) -> list[str]:
             """CREATE TABLE IF NOT EXISTS synonyms(
                 id BIGSERIAL PRIMARY KEY, term TEXT, syns TEXT,
                 updated DOUBLE PRECISION)""",
+            """CREATE TABLE IF NOT EXISTS dns_hosts(
+                id BIGSERIAL PRIMARY KEY, hostname TEXT, ip TEXT,
+                updated DOUBLE PRECISION)""",
         ]
     # sqlite (по умолчанию)
     return [
@@ -354,6 +361,8 @@ def _ddl(d: str) -> list[str]:
             email TEXT, suppliers TEXT, updated REAL)""",
         """CREATE TABLE IF NOT EXISTS synonyms(
             id INTEGER PRIMARY KEY AUTOINCREMENT, term TEXT, syns TEXT, updated REAL)""",
+        """CREATE TABLE IF NOT EXISTS dns_hosts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, hostname TEXT, ip TEXT, updated REAL)""",
     ]
 
 
@@ -1648,3 +1657,53 @@ def syn_clear() -> int:
         n = 0
     _bump()
     return n
+
+
+# ===================== Статические DNS-записи =====================
+
+def dns_list() -> list[dict]:
+    try:
+        return _all("SELECT id, hostname, ip, updated FROM dns_hosts ORDER BY hostname")
+    except Exception as e:
+        print(f"[db] dns_list: {e}")
+        return []
+
+
+def dns_map() -> dict:
+    """{hostname_lower: ip} для перехвата разрешения имён."""
+    out = {}
+    for r in dns_list():
+        h = (r.get("hostname") or "").strip().lower()
+        ip = (r.get("ip") or "").strip()
+        if h and ip:
+            out[h] = ip
+    return out
+
+
+def dns_add(hostname: str, ip: str) -> int:
+    hostname = (hostname or "").strip()
+    ip = (ip or "").strip()
+    if not hostname or not ip:
+        return 0
+    rid = _insert("INSERT INTO dns_hosts(hostname, ip, updated) VALUES(?,?,?)",
+                  (hostname, ip, datetime.now().timestamp()))
+    return rid
+
+
+def dns_update(dns_id: int, hostname: str, ip: str) -> bool:
+    n = _exec("UPDATE dns_hosts SET hostname=?, ip=?, updated=? WHERE id=?",
+              ((hostname or "").strip(), (ip or "").strip(),
+               datetime.now().timestamp(), int(dns_id)))
+    return n > 0
+
+
+def dns_delete(dns_id: int) -> bool:
+    return _exec("DELETE FROM dns_hosts WHERE id=?", (int(dns_id),)) > 0
+
+
+def dns_clear() -> int:
+    try:
+        return _exec("DELETE FROM dns_hosts")
+    except Exception as e:
+        print(f"[db] dns_clear: {e}")
+        return 0

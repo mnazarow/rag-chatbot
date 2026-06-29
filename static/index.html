@@ -917,6 +917,26 @@
         <div class="note" id="tokennote"></div></div>
     </div>
 
+    <!-- DNS: статические записи имя→IP -->
+    <div class="box">
+      <h3>🌐 DNS — статические записи <span id="dns_count" class="tag"></span></h3>
+      <div class="note" style="margin-bottom:10px;line-height:1.5">Сопоставление <b>имя хоста → IP-адрес</b> на уровне приложения.
+        Помогает, когда внутренние адреса компании (например <code>in.vodokomfort.ru</code>) не резолвятся из среды, где
+        запущен RAG (частый случай в Docker без доступа к внутреннему DNS). Записи применяются ко всем сетевым запросам
+        (синхронизация справочника, парсинг сайтов, Qdrant, LLM и т. д.) <b>без перезапуска</b> — править <code>/etc/hosts</code> не нужно.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <input id="dns_host" placeholder="имя хоста (in.vodokomfort.ru)" style="flex:1;min-width:220px">
+        <input id="dns_ip" placeholder="IP-адрес (10.20.30.40)" style="flex:0 0 200px">
+        <button class="act" onclick="dnsAdd()">Добавить</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="dnsClear()">🗑 Очистить</button>
+      </div>
+      <div id="dns_msg" class="note" style="margin-bottom:8px"></div>
+      <div style="overflow:auto">
+        <table><thead><tr><th>Имя хоста</th><th style="width:220px">IP-адрес</th><th style="width:130px">Действия</th></tr></thead>
+        <tbody id="dns_rows"></tbody></table>
+      </div>
+    </div>
+
     <!-- операции -->
     <div class="box">
       <h3>Состояние и операции</h3>
@@ -2639,7 +2659,7 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs();
+  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns();
 }
 
 // ---- автокалибровка параметров ----
@@ -4057,6 +4077,45 @@ async function adminGet(url){
   const r=await fetch(url+sep+'t='+Date.now(),
     {cache:'no-store',headers:{'X-Admin-Token':tok()}});
   return r.json().catch(()=>({}));
+}
+
+// ---- DNS (статические записи) ----
+let DNS_ITEMS=[];
+function dnsMsg(t,ok=true){ const e=$('#dns_msg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+async function loadDns(){
+  if(!$('#dns_rows')) return;
+  const d=await adminGet('/api/admin/dns');
+  DNS_ITEMS=(d&&d.items)||[];
+  if($('#dns_count')) $('#dns_count').textContent=DNS_ITEMS.length?(DNS_ITEMS.length+' записей'):'';
+  $('#dns_rows').innerHTML = DNS_ITEMS.length ? DNS_ITEMS.map(r=>`<tr>
+    <td><input id="dnsh_${r.id}" value="${escAttr(r.hostname||'')}" style="width:100%"></td>
+    <td><input id="dnsi_${r.id}" value="${escAttr(r.ip||'')}" style="width:100%"></td>
+    <td style="white-space:nowrap">
+      <button class="dirbtn" onclick="dnsSave(${r.id})">💾</button>
+      <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="dnsDel(${r.id})">🗑</button>
+    </td></tr>`).join('')
+    : '<tr><td colspan="3" class="note">записей нет. Добавьте имя хоста и его IP-адрес выше.</td></tr>';
+}
+async function dnsAdd(){
+  const hostname=$('#dns_host').value.trim(), ip=$('#dns_ip').value.trim();
+  if(!hostname||!ip){ dnsMsg('укажите имя хоста и IP',false); return; }
+  const r=await adminPost('/api/admin/dns/add',{hostname,ip});
+  if(r&&r.ok){ $('#dns_host').value=''; $('#dns_ip').value=''; dnsMsg('добавлено',true); loadDns(); }
+  else dnsMsg((r&&r.msg)||'ошибка',false);
+}
+async function dnsSave(id){
+  const hostname=$('#dnsh_'+id).value.trim(), ip=$('#dnsi_'+id).value.trim();
+  const r=await adminPost('/api/admin/dns/update',{id,hostname,ip});
+  dnsMsg(r&&r.ok?('сохранено: '+hostname+' → '+ip):((r&&r.msg)||'ошибка'), !!(r&&r.ok));
+  if(r&&r.ok) loadDns();
+}
+async function dnsDel(id){
+  if(!confirm('Удалить эту DNS-запись?')) return;
+  const r=await adminPost('/api/admin/dns/delete',{id}); if(r&&r.ok) loadDns();
+}
+async function dnsClear(){
+  if(!confirm('Удалить все DNS-записи?')) return;
+  const r=await adminPost('/api/admin/dns/clear'); dnsMsg('удалено: '+((r&&r.removed)||0),true); loadDns();
 }
 
 // ---- структура компании ----

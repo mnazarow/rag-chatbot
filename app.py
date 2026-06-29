@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 import activity
+import dns_override
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
@@ -40,6 +41,14 @@ if os.path.exists("/.dockerenv"):
                 print(f"[docker] не удалось зафиксировать {_k}: {_e}")
 
 import db
+
+# Статические DNS-записи активируем как можно раньше — до создания клиентов Qdrant
+# и любых сетевых вызовов в импортируемых ниже модулях.
+try:
+    dns_override.install()
+except Exception as _e:
+    print(f"[dns] ранняя инициализация не удалась: {_e}")
+
 import llm_backend
 import admin_ops
 import graph_rag
@@ -55,6 +64,16 @@ from retriever import search, infer_category
 
 app = FastAPI(title="Корпоративный RAG-чатбот")
 _qdrant = QdrantClient(url=settings.get("QDRANT_URL"))
+
+
+@app.on_event("startup")
+def _start_dns():
+    """Включить статические DNS-записи (имя→IP) до сетевых операций бота/монитора."""
+    try:
+        r = dns_override.install()
+        print(f"[dns] статических записей: {r.get('count', 0)}")
+    except Exception as e:
+        print(f"[dns] не инициализированы: {e}")
 
 
 @app.on_event("startup")
@@ -630,6 +649,76 @@ def api_syn_delete(payload: dict = Body(...), x_admin_token: str | None = Header
 def api_syn_clear(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return {"ok": True, "removed": db.syn_clear()}
+
+
+# ===================== Статические DNS-записи =====================
+
+def _valid_ip(ip: str) -> bool:
+    import ipaddress
+    try:
+        ipaddress.ip_address((ip or "").strip())
+        return True
+    except Exception:
+        return False
+
+
+def _valid_host(h: str) -> bool:
+    h = (h or "").strip()
+    if not h or len(h) > 253 or " " in h:
+        return False
+    # допускаем буквы/цифры/дефис/точку (домены и поддомены)
+    import re as _re
+    return bool(_re.fullmatch(r"[A-Za-z0-9_.-]+", h))
+
+
+@app.get("/api/admin/dns")
+def api_dns_list(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"items": db.dns_list(), "active": dns_override.active()}
+
+
+@app.post("/api/admin/dns/add")
+def api_dns_add(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    host = (payload.get("hostname") or "").strip()
+    ip = (payload.get("ip") or "").strip()
+    if not _valid_host(host):
+        return {"ok": False, "msg": "некорректное имя хоста"}
+    if not _valid_ip(ip):
+        return {"ok": False, "msg": "некорректный IP-адрес"}
+    rid = db.dns_add(host, ip)
+    dns_override.reload()
+    return {"ok": bool(rid), "id": rid}
+
+
+@app.post("/api/admin/dns/update")
+def api_dns_update(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    host = (payload.get("hostname") or "").strip()
+    ip = (payload.get("ip") or "").strip()
+    if not _valid_host(host):
+        return {"ok": False, "msg": "некорректное имя хоста"}
+    if not _valid_ip(ip):
+        return {"ok": False, "msg": "некорректный IP-адрес"}
+    ok = db.dns_update(int(payload.get("id")), host, ip)
+    dns_override.reload()
+    return {"ok": ok}
+
+
+@app.post("/api/admin/dns/delete")
+def api_dns_delete(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    ok = db.dns_delete(int(payload.get("id")))
+    dns_override.reload()
+    return {"ok": ok}
+
+
+@app.post("/api/admin/dns/clear")
+def api_dns_clear(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    n = db.dns_clear()
+    dns_override.reload()
+    return {"ok": True, "removed": n}
 
 
 @app.post("/api/admin/selftest")
