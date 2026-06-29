@@ -18,6 +18,7 @@ import settings
 import db
 import prompts
 import llm_backend
+import retriever
 from retriever import search
 
 _API = "https://api.telegram.org/bot{token}/{method}"
@@ -86,7 +87,44 @@ def _answer(question: str):
                 return c.get("text", ""), c.get("sources", []), hits
         except Exception:
             ckey = None
+
+    # Тот же выбор движка, что и в веб-чате: LightRAG целиком / KAG / граф для
+    # сводных вопросов (hybrid) — иначе вектор+реранк.
+    engine = settings.get("ENGINE")
+    try:
+        if engine == "kag":
+            import asyncio
+            import kag
+            res = asyncio.run(kag.answer(question)) or {}
+            hits = res.get("hits", [])
+            text = res.get("text", "") or "В доступных документах нет точного ответа на этот вопрос."
+            sources = [{"source": h["source"], "page": h.get("page"),
+                        "score": round(h.get("score", 0), 3)} for h in hits]
+            return text, sources, hits
+        use_graph = (engine == "lightrag")
+        if not use_graph and settings.get("GRAPH_RAG"):
+            try:
+                import graph_rag
+                use_graph = graph_rag.is_global(question)
+            except Exception:
+                use_graph = False
+        if use_graph:
+            import asyncio
+            import graph_rag
+            text = asyncio.run(graph_rag.answer(question)) or ""
+            if text.strip():
+                return text, [{"source": "граф знаний (LightRAG)", "page": None}], \
+                    [{"score": 1.0}]
+    except Exception as e:
+        print(f"[tg] движок {engine} недоступен, фолбэк на вектор: {e}")
+
+    # Векторный путь + расширенный фолбэк (как в /chat)
     hits = search(question)
+    if not hits and settings.get("NO_ANSWER_FALLBACK"):
+        try:
+            hits = retriever.no_answer_fallback(question) or []
+        except Exception as e:
+            print(f"[tg] фолбэк-поиск не удался: {e}")
     if not hits:
         return "В доступных документах нет точного ответа на этот вопрос.", [], []
     context = prompts.build_context(hits)
