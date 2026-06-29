@@ -2903,7 +2903,8 @@ def _kb_build(max_nodes: int) -> None:
              ok=None, error=None)
     try:
         for _ in range(200000):
-            body = {"limit": 512, "with_payload": ["source", "doc_category", "page"],
+            body = {"limit": 512,
+                    "with_payload": ["source", "doc_category", "page", "org", "department"],
                     "with_vector": False}
             if next_off is not None:
                 body["offset"] = next_off
@@ -2928,37 +2929,61 @@ def _kb_build(max_nodes: int) -> None:
                 f = files.get(src)
                 if f is None:
                     f = {"chunks": 0, "category": pl.get("doc_category") or "без категории",
-                         "pages": set()}
+                         "pages": set(), "is_org": False, "department": ""}
                     files[src] = f
                 f["chunks"] += 1
                 if pl.get("page") is not None:
                     f["pages"].add(pl.get("page"))
                 if pl.get("doc_category") and f["category"] == "без категории":
                     f["category"] = pl.get("doc_category")
+                if pl.get("org"):
+                    f["is_org"] = True
+                    if pl.get("department") and not f["department"]:
+                        f["department"] = pl.get("department")
             j["scrolled"] = total_points
             next_off = res.get("next_page_offset")
             if next_off is None:
                 break
 
         j["stage"] = "построение графа"
+
+        # Кластер: для карточек сотрудников — отдел, иначе категория документа.
+        def _cluster(f):
+            if f.get("is_org"):
+                return f.get("department") or "Сотрудники (без отдела)"
+            return f.get("category") or "без категории"
+
         cats: dict = {}
         for f in files.values():
-            cats[f["category"]] = cats.get(f["category"], 0) + 1
-        items = sorted(files.items(), key=lambda kv: kv[1]["chunks"], reverse=True)
-        truncated = len(items) > max_nodes
-        items = items[:max_nodes]
+            cats[_cluster(f)] = cats.get(_cluster(f), 0) + 1
+
+        # Сотрудников показываем полностью (каждый — отдельная сущность), документы —
+        # топ по числу фрагментов; в сумме не больше лимита.
+        org_items = sorted([kv for kv in files.items() if kv[1].get("is_org")],
+                           key=lambda kv: kv[0])
+        doc_items = sorted([kv for kv in files.items() if not kv[1].get("is_org")],
+                           key=lambda kv: kv[1]["chunks"], reverse=True)
+        keep_org = org_items[:max_nodes]
+        keep_doc = doc_items[:max(0, max_nodes - len(keep_org))]
+        items = keep_org + keep_doc
+        truncated = len(files) > len(items)
+
         nodes, links, used_cats = [], [], set()
         for src, f in items:
-            nodes.append({"id": "f:" + src, "label": os.path.basename(src) or src,
-                          "type": "file", "category": f["category"], "chunks": f["chunks"],
+            clu = _cluster(f)
+            label = src.split(" — ")[0] if f.get("is_org") else (os.path.basename(src) or src)
+            nodes.append({"id": "f:" + src, "label": label,
+                          "type": ("employee" if f.get("is_org") else "file"),
+                          "category": clu, "chunks": f["chunks"],
                           "pages": len(f["pages"]), "source": src})
-            links.append({"source": "c:" + f["category"], "target": "f:" + src})
-            used_cats.add(f["category"])
+            links.append({"source": "c:" + clu, "target": "f:" + src})
+            used_cats.add(clu)
         for c in used_cats:
             nodes.append({"id": "c:" + c, "label": c, "type": "category",
                           "files": cats.get(c, 0)})
         j["result"] = {"online": online, "nodes": nodes, "links": links,
                        "stats": {"files": len(files), "shown_files": len(items),
+                                 "employees": len(org_items),
                                  "categories": len(cats), "chunks": total_points,
                                  "truncated": truncated, "max_nodes": max_nodes}}
         j["ts"] = time.time()
@@ -2971,7 +2996,7 @@ def _kb_build(max_nodes: int) -> None:
         j["stage"] = ""
 
 
-def kb_graph(max_nodes: int = 400, force: bool = False) -> dict:
+def kb_graph(max_nodes: int = 800, force: bool = False) -> dict:
     """Вернуть граф базы знаний. Если есть свежий кэш — отдаём сразу; иначе запускаем
     фоновую сборку и возвращаем {building:true} с прогрессом (клиент опрашивает
     kb_graph_status). force=True игнорирует кэш."""

@@ -809,7 +809,7 @@ def admin_files_catalog(limit: int = 100, offset: int = 0, q: str = "",
 
 
 @app.get("/api/admin/kb-graph")
-def admin_kb_graph(max_nodes: int = 400, force: bool = False,
+def admin_kb_graph(max_nodes: int = 800, force: bool = False,
                    x_admin_token: str | None = Header(None)):
     """Граф проиндексированной базы знаний (Obsidian-вид): файлы и категории.
     Кэшируется; при отсутствии свежего кэша запускает фоновую сборку с прогрессом."""

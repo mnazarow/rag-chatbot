@@ -4255,7 +4255,9 @@ async function loadObsidian(force){
   obsProgressDone();
   if(!d||!d.nodes){ $('#obs_stats').textContent='ошибка загрузки'+(d&&d.error?(': '+esc(d.error)):''); return; }
   const st=d.stats||{};
-  $('#obs_stats').innerHTML=`файлов: <b>${st.shown_files||0}</b>${st.truncated?(' из '+st.files):''} · категорий: <b>${st.categories||0}</b> · фрагментов: <b>${st.chunks||0}</b>`
+  $('#obs_stats').innerHTML=`узлов: <b>${st.shown_files||0}</b>${st.truncated?(' из '+st.files):''}`
+    +(st.employees?` · сотрудников: <b>${st.employees}</b>`:'')
+    +` · категорий/отделов: <b>${st.categories||0}</b> · фрагментов: <b>${st.chunks||0}</b>`
     +(d.online?'':' · <span style="color:#f87171">⚠ Qdrant недоступен</span>')
     +(d.cached?(' · <span style="color:#34d399">из кэша'+(d.age_sec!=null?(' '+d.age_sec+' с'):'')+'</span>'):'');
   obsUnbind(OBS); obsStop();

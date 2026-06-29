@@ -19,10 +19,24 @@ import uuid
 
 import db
 
-SOURCE = "Справочник сотрудников"
 CATEGORY = "сотрудники"
 KV_MAP = "org.index.map"
 _NS = uuid.uuid5(uuid.NAMESPACE_URL, "rag-org-employees")
+
+
+def _fio(e: dict) -> str:
+    return " ".join(x for x in [e.get("last_name"), e.get("first_name"),
+                                e.get("middle_name")] if x).strip()
+
+
+def _source(e: dict) -> str:
+    """Персональный источник сотрудника (для ссылок и графа). Каждый сотрудник —
+    отдельная сущность; для различения тёзок добавляем должность/отдел."""
+    fio = _fio(e)
+    if not fio:
+        return (e.get("email") or "Сотрудник")
+    extra = " · ".join(x for x in [e.get("position"), e.get("department")] if x)
+    return f"{fio} — {extra}" if extra else fio
 
 
 def _key(e: dict) -> str:
@@ -120,15 +134,13 @@ def sync_index(rows: list[dict]) -> dict:
         day = time.strftime("%Y-%m-%d")
         pts = []
         for (k, card, e), v in zip(to_embed, vecs):
-            fio = " ".join(x for x in [e.get("last_name"), e.get("first_name"),
-                                       e.get("middle_name")] if x).strip()
             pts.append(qm.PointStruct(
                 id=_point_id(k),
                 vector=(v.tolist() if hasattr(v, "tolist") else list(v)),
-                payload={"text": card, "source": SOURCE, "page": None,
+                payload={"text": card, "source": _source(e), "page": None,
                          "doc_category": CATEGORY, "indexed_at": day,
                          "org": True, "org_key": k,
-                         "emp_name": fio, "emp_email": e.get("email") or "",
+                         "emp_name": _fio(e), "emp_email": e.get("email") or "",
                          "department": e.get("department") or ""}))
         retriever._client.upsert(retriever._COLLECTION, wait=False, points=pts)
 
