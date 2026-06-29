@@ -721,6 +721,59 @@ def admin_tg_clear(x_admin_token: str | None = Header(None)):
     return {"ok": True, "deleted": n, "msg": f"удалено записей: {n}"}
 
 
+# ---- Телеграм: обучение (документы от пользователей) ----
+@app.get("/api/admin/telegram/train-users")
+def admin_tg_train_users(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import tg_train
+    counts = tg_train.user_file_counts()
+    users = []
+    for u in db.tg_users():
+        if u.get("status") == "blocked":
+            continue
+        users.append({"chat_id": u["chat_id"], "username": u.get("username"),
+                      "first_name": u.get("first_name"), "status": u.get("status"),
+                      "can_train": bool(u.get("can_train")), "mode": u.get("mode") or "ask",
+                      "files": counts.get(u["chat_id"], 0)})
+    return {"users": users}
+
+
+@app.post("/api/admin/telegram/train-allow")
+def admin_tg_train_allow(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    cid = int(payload.get("chat_id"))
+    ok = db.tg_set_train(cid, bool(payload.get("allow")))
+    return {"ok": ok}
+
+
+@app.get("/api/admin/telegram/train-files")
+def admin_tg_train_files(chat_id: int, x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import tg_train
+    return {"files": tg_train.list_files(chat_id)}
+
+
+@app.post("/api/admin/telegram/train-delete")
+def admin_tg_train_delete(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import tg_train
+    cid = int(payload.get("chat_id"))
+    name = payload.get("name")
+    if name:
+        tg_train.delete_file(cid, name)
+        return {"ok": True, "msg": "файл удалён"}
+    tg_train.delete_user(cid)
+    return {"ok": True, "msg": "все документы пользователя удалены"}
+
+
+@app.post("/api/admin/telegram/train-delete-all")
+def admin_tg_train_delete_all(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import tg_train
+    tg_train.delete_all()
+    return {"ok": True, "msg": "все документы из Телеграм удалены"}
+
+
 @app.get("/api/admin/db/status")
 def admin_db_status(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

@@ -102,6 +102,17 @@ TELEGRAM_AUTO_APPROVE = _bool("TELEGRAM_AUTO_APPROVE", False)
 # socks5://, socks5h://, http://, https:// (можно с user:pass@). ВНИМАНИЕ: MTProto-прокси
 # (tg://proxy-ссылки) — для клиентов Telegram и НЕ работают с Bot API; нужен SOCKS5/HTTP.
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")
+# Голосовые сообщения бота: распознавание входящих (Whisper) и ответ голосом (TTS).
+TELEGRAM_VOICE_IN = _bool("TELEGRAM_VOICE_IN", True)     # распознавать голосовые запросы
+TELEGRAM_VOICE_OUT = _bool("TELEGRAM_VOICE_OUT", False)  # отвечать голосом на голосовые
+# Распознавать приложенные к сообщению файлы (документы/фото): извлечь текст и ответить
+# на подпись-вопрос по содержимому файла (без добавления в базу).
+TELEGRAM_FILES = _bool("TELEGRAM_FILES", True)
+# Движок синтеза речи: auto (пробует доступные) | piper | say (macOS) | espeak | off.
+TTS_ENGINE = os.getenv("TTS_ENGINE", "auto")
+# Голос/модель: для macOS `say` — имя голоса (напр. Milena/Yuri); для piper — путь к .onnx;
+# для espeak — код языка (напр. ru). Пусто = по умолчанию для движка.
+TTS_VOICE = os.getenv("TTS_VOICE", "")
 
 # --- Парсинг сайтов в базу знаний ---
 # Глубина обхода ссылок (0 = только указанная страница), лимит страниц на сайт,

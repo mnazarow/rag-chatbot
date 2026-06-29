@@ -227,7 +227,8 @@ def _ddl(d: str) -> list[str]:
                 ) CHARACTER SET utf8mb4""",
             """CREATE TABLE IF NOT EXISTS tg_users(
                 chat_id BIGINT PRIMARY KEY, username VARCHAR(255), first_name VARCHAR(255),
-                status VARCHAR(16), created DOUBLE, updated DOUBLE, n_requests INT DEFAULT 0
+                status VARCHAR(16), created DOUBLE, updated DOUBLE, n_requests INT DEFAULT 0,
+                can_train INT DEFAULT 0, mode VARCHAR(16) DEFAULT 'ask'
                 ) CHARACTER SET utf8mb4""",
             """CREATE TABLE IF NOT EXISTS tg_requests(
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -261,7 +262,8 @@ def _ddl(d: str) -> list[str]:
             """CREATE TABLE IF NOT EXISTS tg_users(
                 chat_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT,
                 status TEXT, created DOUBLE PRECISION, updated DOUBLE PRECISION,
-                n_requests INTEGER DEFAULT 0)""",
+                n_requests INTEGER DEFAULT 0,
+                can_train INTEGER DEFAULT 0, mode TEXT DEFAULT 'ask')""",
             """CREATE TABLE IF NOT EXISTS tg_requests(
                 id BIGSERIAL PRIMARY KEY,
                 ts DOUBLE PRECISION, day TEXT, chat_id BIGINT, username TEXT,
@@ -291,7 +293,8 @@ def _ddl(d: str) -> list[str]:
         """CREATE TABLE IF NOT EXISTS tg_users(
             chat_id INTEGER PRIMARY KEY,
             username TEXT, first_name TEXT, status TEXT,
-            created REAL, updated REAL, n_requests INTEGER DEFAULT 0)""",
+            created REAL, updated REAL, n_requests INTEGER DEFAULT 0,
+            can_train INTEGER DEFAULT 0, mode TEXT DEFAULT 'ask')""",
         """CREATE TABLE IF NOT EXISTS tg_requests(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts REAL, day TEXT, chat_id INTEGER, username TEXT,
@@ -351,6 +354,13 @@ def init(dialect: str | None = None) -> None:
             cur.execute(f"ALTER TABLE calib_sets ADD COLUMN kind {_kind_t}")
         except Exception:
             pass
+        # миграция: обучение пользователей Телеграм (старые базы)
+        _mode_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        for _c, _t in (("can_train", "INTEGER"), ("mode", _mode_t)):
+            try:
+                cur.execute(f"ALTER TABLE tg_users ADD COLUMN {_c} {_t}")
+            except Exception:
+                pass
         if dd == "sqlite":
             conn.commit()
     finally:
@@ -573,6 +583,23 @@ def tg_set_status(chat_id: int, status: str) -> bool:
     return n > 0
 
 
+def tg_set_train(chat_id: int, allowed: bool) -> bool:
+    """Разрешить/запретить пользователю режим обучения (добавление документов)."""
+    n = _exec("UPDATE tg_users SET can_train=?, updated=? WHERE chat_id=?",
+              (1 if allowed else 0, datetime.now().timestamp(), int(chat_id)))
+    if not allowed:  # сняли разрешение — выводим из режима обучения
+        _exec("UPDATE tg_users SET mode='ask' WHERE chat_id=?", (int(chat_id),))
+    return n > 0
+
+
+def tg_set_mode(chat_id: int, mode: str) -> bool:
+    """Переключить пользователя между режимами 'ask' (вопросы) и 'train' (обучение)."""
+    mode = "train" if mode == "train" else "ask"
+    n = _exec("UPDATE tg_users SET mode=?, updated=? WHERE chat_id=?",
+              (mode, datetime.now().timestamp(), int(chat_id)))
+    return n > 0
+
+
 def tg_users(status: str | None = None) -> list[dict]:
     if status:
         return _all("SELECT * FROM tg_users WHERE status=? ORDER BY updated DESC",
@@ -660,7 +687,7 @@ _TABLES = {
                  "latency_ms", "answer_chars", "answered", "sources", "rating",
                  "retrieve_ms", "gen_ms", "session_id"],
     "tg_users": ["chat_id", "username", "first_name", "status", "created", "updated",
-                 "n_requests"],
+                 "n_requests", "can_train", "mode"],
     "tg_requests": ["id", "ts", "day", "chat_id", "username", "question", "answer",
                     "n_hits", "top_score", "latency_ms", "answer_chars", "answered",
                     "sources"],

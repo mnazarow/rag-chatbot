@@ -741,6 +741,20 @@ def _av_windows(segments):
         yield {"text": " ".join(buf), "page": None, "t_start": t0, "t_end": t1}
 
 
+def transcribe_audio(path) -> str:
+    """Распознать речь из аудиофайла настроенным бэкендом Whisper и вернуть текст.
+    Используется, например, Телеграм-ботом для голосовых сообщений."""
+    parts = []
+    try:
+        for p in _load_av(Path(path)):
+            t = (p.get("text") or "").strip()
+            if t:
+                parts.append(t)
+    except Exception as e:
+        print(f"  ! транскрибация {path}: {e}")
+    return " ".join(parts).strip()
+
+
 def _load_av(path: Path):
     """Транскрибация аудио/видео. Бэкенд зависит от настройки WHISPER_BACKEND:
        mlx    — Apple Metal (mlx-whisper),

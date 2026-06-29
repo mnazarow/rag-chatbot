@@ -9,6 +9,8 @@
 перезапускать бота можно из админки.
 """
 from __future__ import annotations
+import os
+import tempfile
 import threading
 import time
 
@@ -59,6 +61,51 @@ def send(chat_id: int, text: str) -> None:
     for i in range(0, len(text), 4096):
         _call("sendMessage", chat_id=chat_id, text=text[i:i + 4096],
               disable_web_page_preview=True)
+
+
+def _download_file(file_id: str) -> str | None:
+    """Скачать файл Telegram по file_id во временный файл; вернуть путь (или None)."""
+    token = _token()
+    if not token or not file_id:
+        return None
+    r = _call("getFile", file_id=file_id)
+    if not r or not r.get("ok"):
+        return None
+    fp = (r.get("result") or {}).get("file_path")
+    if not fp:
+        return None
+    suffix = os.path.splitext(fp)[1] or ".oga"
+    out = tempfile.mktemp(suffix=suffix)
+    try:
+        url = f"https://api.telegram.org/file/bot{token}/{fp}"
+        with httpx.Client(proxy=_proxy(), timeout=120) as c:
+            resp = c.get(url)
+        if resp.status_code != 200:
+            return None
+        with open(out, "wb") as f:
+            f.write(resp.content)
+        return out
+    except Exception as e:
+        print(f"[tg] загрузка файла не удалась: {e}")
+        return None
+
+
+def send_voice(chat_id: int, ogg_path: str, caption: str = "") -> bool:
+    """Отправить голосовое сообщение (OGG/Opus) через sendVoice (multipart)."""
+    token = _token()
+    if not token:
+        return False
+    try:
+        data = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption[:1024]
+        with httpx.Client(proxy=_proxy(), timeout=120) as c, open(ogg_path, "rb") as f:
+            r = c.post(_API.format(token=token, method="sendVoice"),
+                       data=data, files={"voice": ("voice.ogg", f, "audio/ogg")})
+        return bool(r.json().get("ok"))
+    except Exception as e:
+        print(f"[tg] sendVoice не удался: {e}")
+        return False
 
 
 def notify_approved(chat_id: int) -> None:
@@ -145,6 +192,41 @@ def _answer(question: str):
     return text, sources, hits
 
 
+def _answer_attachment(path: str, name: str, question: str):
+    """Ответ по приложенному файлу: извлечь текст, при наличии вопроса — ответить по
+    содержимому файла (реранк), иначе вернуть распознанный фрагмент. Возвращает
+    (text, sources, hits) как и _answer."""
+    import loaders
+    from ingest import chunk_text
+    items = []
+    try:
+        for part in loaders.load_file(__import__("pathlib").Path(path)):
+            for ch in chunk_text(part.get("text") or "", settings.get("CHUNK_SIZE"),
+                                 settings.get("CHUNK_OVERLAP")):
+                if ch.strip():
+                    items.append({"text": ch, "source": name, "page": part.get("page")})
+    except Exception as e:
+        print(f"[tg] разбор файла {name}: {e}")
+    if not items:
+        return "Не удалось извлечь текст из файла (пустой или неподдерживаемый формат).", [], []
+    q = (question or "").strip()
+    if not q:
+        full = " ".join(i["text"] for i in items).strip()[:2500]
+        return f"📄 Распознанный текст файла «{name}»:\n\n{full}\n\n" \
+               f"Задайте вопрос по этому файлу в подписи к нему.", [], items[:1]
+    hits = retriever.rerank_texts(q, items)
+    if not hits:
+        return "Не удалось найти ответ в приложенном файле.", [], []
+    context = prompts.build_context(hits)
+    messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")},
+                {"role": "user", "content": prompts.build_user_message(q, context)}]
+    text = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
+                            model=settings.active_model())
+    sources = [{"source": h["source"], "page": h.get("page"),
+                "score": round(h.get("score", 0), 3)} for h in hits]
+    return text, sources, hits
+
+
 def _handle(msg: dict) -> None:
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
@@ -181,19 +263,141 @@ def _handle(msg: dict) -> None:
         return
 
     # approved
+    can_train = bool(user.get("can_train"))
+
+    # команды переключения режима обучения
+    if text:
+        low = text.strip().lower()
+        if low in ("/train", "/learn", "/обучение"):
+            if not can_train:
+                send(chat_id, "🚫 У вас нет разрешения на обучение бота. Обратитесь к администратору.")
+                return
+            db.tg_set_mode(chat_id, "train")
+            send(chat_id, "🎓 Режим обучения включён. Пришлите документы (PDF, DOCX, XLSX, фото и др.) — "
+                          "я распознаю их и добавлю в базу знаний. Команда /ask — выйти из режима обучения.")
+            return
+        if low in ("/ask", "/stop", "/вопросы"):
+            db.tg_set_mode(chat_id, "ask")
+            send(chat_id, "✅ Режим обучения выключен. Задавайте вопросы по документам компании.")
+            return
+
+    # режим обучения: входящие файлы добавляются в базу знаний
+    if can_train and user.get("mode") == "train":
+        doc = msg.get("document")
+        photo = msg.get("photo")
+        if doc or photo:
+            if doc:
+                fid = doc.get("file_id")
+                fname = doc.get("file_name") or "файл"
+            else:
+                big = (photo or [])[-1] if photo else {}
+                fid = big.get("file_id")
+                fname = "photo.jpg"
+            send(chat_id, f"📥 Скачиваю «{fname}»…")
+            fp = _download_file(fid)
+            if not fp:
+                send(chat_id, "Не удалось скачать файл. Попробуйте ещё раз.")
+                return
+            send(chat_id, "🔎 Распознаю и добавляю в базу знаний…")
+            res = {"name": fname, "chunks": 0}
+            try:
+                import tg_train
+                res = tg_train.save_and_index(chat_id, fp, fname)
+            except Exception as e:
+                print(f"[tg] обучение {fname}: {e}")
+            finally:
+                try:
+                    os.remove(fp)
+                except Exception:
+                    pass
+            if res.get("chunks"):
+                send(chat_id, f"✅ «{res['name']}»: добавлено {res['chunks']} фрагментов в базу знаний. "
+                              "Пришлите ещё документы или /ask — выйти из обучения.")
+            else:
+                send(chat_id, f"⚠ Из «{fname}» не удалось извлечь текст (пустой/неподдерживаемый "
+                              "формат). В базу не добавлено.")
+            return
+        # в режиме обучения текст/голос — подсказка, что нужны документы
+        send(chat_id, "🎓 Вы в режиме обучения. Пришлите документ — я добавлю его в базу знаний. "
+                      "Команда /ask — выйти и задавать вопросы.")
+        return
+
+    voice_in = False
+    attach_path = attach_name = None
+    caption = (msg.get("caption") or "").strip()
     if not text:
+        vmsg = msg.get("voice") or msg.get("audio") or msg.get("video_note")
+        doc = msg.get("document")
+        photo = msg.get("photo")
+        # голосовое сообщение → распознаём через Whisper
+        if vmsg:
+            if not settings.get("TELEGRAM_VOICE_IN"):
+                send(chat_id, "Распознавание голосовых сообщений выключено. Напишите вопрос текстом.")
+                return
+            send(chat_id, "🎙 Распознаю голосовое сообщение…")
+            fp = _download_file(vmsg.get("file_id"))
+            if fp:
+                try:
+                    import loaders
+                    text = (loaders.transcribe_audio(fp) or "").strip()
+                except Exception as e:
+                    print(f"[tg] распознавание не удалось: {e}")
+                finally:
+                    try:
+                        os.remove(fp)
+                    except Exception:
+                        pass
+            if not text:
+                send(chat_id, "Не удалось распознать голосовое сообщение. "
+                              "Попробуйте ещё раз или напишите текстом.")
+                return
+            voice_in = True
+            send(chat_id, f"🔎 Вопрос: {text}")
+        # приложенный файл (документ или фото) → распознаём и отвечаем по нему
+        elif doc or photo:
+            if not settings.get("TELEGRAM_FILES"):
+                send(chat_id, "Распознавание приложенных файлов выключено.")
+                return
+            if doc:
+                fid = doc.get("file_id")
+                attach_name = doc.get("file_name") or "файл"
+            else:  # фото — берём самый крупный размер
+                big = (photo or [])[-1] if photo else {}
+                fid = big.get("file_id")
+                attach_name = "photo.jpg"
+            send(chat_id, f"📎 Распознаю файл «{attach_name}»…")
+            attach_path = _download_file(fid)
+            if not attach_path:
+                send(chat_id, "Не удалось скачать файл. Попробуйте ещё раз.")
+                return
+            text = caption  # подпись к файлу — это вопрос
+
+    if not text and not attach_path:
         return
-    if text.startswith("/start") or text.startswith("/help"):
-        send(chat_id, "Просто напишите вопрос — я найду ответ в документах компании "
-                      "и пришлю его со ссылками на источники.")
+    if text and (text.startswith("/start") or text.startswith("/help")):
+        msg_help = ("Напишите вопрос текстом, продиктуйте голосом или пришлите файл с "
+                    "вопросом в подписи — я отвечу по документам компании.")
+        if can_train:
+            msg_help += ("\n\n🎓 Вам разрешено обучение бота: команда /train — войти в режим "
+                         "обучения и присылать документы для добавления в базу знаний; /ask — выйти.")
+        send(chat_id, msg_help)
         return
-    if text.startswith("/"):
+    if text and text.startswith("/") and not attach_path:
         send(chat_id, "Неизвестная команда. Просто задайте вопрос текстом.")
         return
 
     t0 = time.time()
     try:
-        ans, sources, hits = _answer(text)
+        if attach_path:
+            try:
+                ans, sources, hits = _answer_attachment(attach_path, attach_name, text)
+            finally:
+                try:
+                    os.remove(attach_path)
+                except Exception:
+                    pass
+        else:
+            ans, sources, hits = _answer(text)
         answered = bool(hits)
     except Exception as e:
         print(f"  ! telegram answer error: {e}")
@@ -209,8 +413,21 @@ def _handle(msg: dict) -> None:
                            for s in sources[:6])
         out = f"{ans}\n\n📎 Источники: {srctxt}"
     send(chat_id, out)
-    db.tg_log_request(chat_id, username, text, ans, len(sources),
-                      hits[0]["score"] if hits else 0.0, latency, answered, sources)
+    # голосовой ответ на голосовой запрос (если включено и доступен TTS)
+    if voice_in and settings.get("TELEGRAM_VOICE_OUT") and ans:
+        try:
+            import tts
+            ogg = tempfile.mktemp(suffix=".ogg")
+            if tts.synthesize(ans, ogg):
+                send_voice(chat_id, ogg)
+            try:
+                os.remove(ogg)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[tg] голосовой ответ не сформирован: {e}")
+    db.tg_log_request(chat_id, username, text or (attach_name or ""), ans, len(sources),
+                      (hits[0].get("score", 0.0) if hits else 0.0), latency, answered, sources)
 
 
 def _loop() -> None:
@@ -282,6 +499,12 @@ def restart() -> dict:
 
 
 def status() -> dict:
+    try:
+        import tts
+        tts_info = tts.available()
+    except Exception as e:
+        tts_info = {"ok": False, "engine": None, "candidates": [], "ffmpeg": False,
+                    "error": str(e)}
     return {"running": bool(_state.get("running")),
             "username": _state.get("username"),
             "token_set": bool(_token()),
@@ -289,4 +512,11 @@ def status() -> dict:
             "proxy": _proxy() or "",
             "error": _state.get("error"),
             "started": _state.get("started"),
+            "voice_in": bool(settings.get("TELEGRAM_VOICE_IN")),
+            "voice_out": bool(settings.get("TELEGRAM_VOICE_OUT")),
+            "files": bool(settings.get("TELEGRAM_FILES")),
+            "tts_engine": settings.get("TTS_ENGINE"),
+            "tts_voice": settings.get("TTS_VOICE") or "",
+            "tts": tts_info,
+            "whisper_backend": settings.get("WHISPER_BACKEND"),
             **db.tg_counts()}

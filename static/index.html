@@ -379,12 +379,87 @@
       <div class="note" style="margin-top:6px">Токен бота задаётся в «Администратор» → группа «Телеграм-бот» (получить у @BotFather). После смены токена нажмите «Перезапустить бота».</div>
     </div>
 
+    <div class="box"><h3>🎙 Голосовые сообщения, ответы голосом и файлы</h3>
+      <div id="tg_voice_status" class="note" style="margin-bottom:10px"></div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+
+        <div class="field" style="margin:0">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="tgv_in" onchange="tgVoiceSave()"> <b>Распознавать голосовые сообщения</b></label>
+          <div class="note" style="line-height:1.5">Голосовое сообщение боту скачивается и распознаётся
+            <b>локальным Whisper</b> (настройки и модель — группа «Транскрибация» в админке); распознанный
+            текст обрабатывается как обычный вопрос. <b>Рекомендация:</b> включено. Нужны установленный бэкенд
+            Whisper и <code>ffmpeg</code>. На слабом CPU распознавание длинных сообщений может быть медленным —
+            используйте модель Whisper поменьше.</div>
+        </div>
+
+        <div class="field" style="margin:0">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="tgv_files" onchange="tgVoiceSave()"> <b>Распознавать приложенные файлы</b></label>
+          <div class="note" style="line-height:1.5">Приложенный к сообщению файл (PDF, DOCX, XLSX, изображение
+            и др.) скачивается, из него извлекается текст (с OCR для картинок), и бот отвечает на <b>подпись-вопрос</b>
+            по содержимому именно этого файла (в базу знаний не добавляется). Без подписи — присылает распознанный
+            фрагмент. <b>Рекомендация:</b> включено; следите, чтобы были включены нужные экстракторы (OCR/CAD) и
+            установлен <code>ffmpeg</code>.</div>
+        </div>
+
+        <div class="field" style="margin:0">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="tgv_out" onchange="tgVoiceSave()"> <b>Отвечать голосом на голосовые</b></label>
+          <div class="note" style="line-height:1.5">На голосовой запрос бот, помимо текста, присылает
+            <b>озвученный ответ</b> (синтез речи). <b>Рекомендация:</b> включайте, только если настроен и доступен
+            TTS-движок (см. ниже). Если синтез недоступен — отправляется только текст. Длинные ответы озвучиваются
+            до ~3000 символов.</div>
+        </div>
+
+        <div class="field" style="margin:0">
+          <label>Движок синтеза речи (TTS)</label>
+          <select id="tgv_engine" onchange="tgVoiceSave()" style="max-width:280px">
+            <option value="auto">auto — выбрать доступный</option>
+            <option value="piper">piper — нейросетевой (.onnx)</option>
+            <option value="say">say — встроенный в macOS</option>
+            <option value="espeak">espeak — espeak-ng (Linux)</option>
+            <option value="off">off — выключить</option>
+          </select>
+          <div class="note" style="line-height:1.5"><b>Рекомендации:</b> <code>piper</code> — лучшее качество и
+            естественный русский (нужно скачать модель <code>.onnx</code> и указать путь ниже); <code>say</code> —
+            хорошее качество на macOS без установки; <code>espeak</code> — есть везде на Linux, но «робот-голос»;
+            <code>auto</code> подберёт доступный. Результат кодируется в OGG/Opus через <code>ffmpeg</code>.</div>
+        </div>
+
+        <div class="field" style="margin:0">
+          <label>Голос / модель TTS</label>
+          <input type="text" id="tgv_voice" placeholder="say: Milena · piper: /путь/model.onnx · espeak: ru" onchange="tgVoiceSave()" style="max-width:420px">
+          <div class="note" style="line-height:1.5">Для <code>say</code> — имя голоса (для русского — <code>Milena</code>
+            или <code>Yuri</code>); для <code>piper</code> — путь к файлу модели <code>.onnx</code>; для
+            <code>espeak</code> — код языка (<code>ru</code>). Пусто = значение по умолчанию движка.</div>
+        </div>
+
+        <span id="tgvmsg" class="note"></span>
+      </div>
+    </div>
+
     <div class="box"><h3>🙋 Запросы на доступ</h3>
       <div id="tg_pending"></div>
     </div>
 
     <div class="box"><h3>👥 Пользователи</h3>
       <div id="tg_users"></div>
+    </div>
+
+    <div class="box"><h3>🎓 Обучение бота (документы от пользователей)</h3>
+      <div class="note" style="line-height:1.5">Разрешите выбранным пользователям обучение: в Telegram они
+        командой <code>/train</code> входят в режим обучения и присылают документы (PDF, DOCX, XLSX, фото и др.).
+        Файлы скачиваются в отдельную папку на каждого пользователя (<code>DOCS_DIR/telegram/&lt;id&gt;</code>),
+        распознаются (с OCR) и добавляются в базу знаний; бот присылает статус. Командой <code>/ask</code>
+        пользователь выходит из режима обучения. Ниже можно посмотреть и удалить их документы.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0">
+        <button class="act ghost" onclick="tgTrainLoad()">Обновить</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="tgTrainDeleteAll()">🗑 Удалить все документы из Телеграм</button>
+        <span id="tgtrainmsg" class="note"></span>
+      </div>
+      <div id="tgtrain_users"></div>
+      <div id="tgtrain_files" style="margin-top:10px"></div>
     </div>
 
     <div class="box"><h3>💬 История и запросы из Телеграм</h3>
@@ -1657,7 +1732,9 @@ async function loadTelegram(){
       ['Подтверждено',nz(st.approved)],['Ожидают',nz(st.pending)],['Заблокировано',nz(st.blocked)]])
       +(st.error?`<div class="note" style="margin-top:6px;color:#f59e0b">Последняя ошибка: ${esc(st.error)}</div>`:'');
     if($('#tg_auto')) $('#tg_auto').checked=!!st.auto_approve;
+    tgVoiceFill(st);
   }
+  tgTrainLoad();
   // запросы на доступ (pending)
   const pend=await tgGet('/api/admin/telegram/users?status=pending');
   const pl=(pend&&pend.users)||[];
@@ -1702,6 +1779,86 @@ async function tgRestart(){ tgMsg('перезапуск бота…'); const r=a
 async function tgToggleAuto(){ const v=$('#tg_auto').checked;
   await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':tok()},body:JSON.stringify({TELEGRAM_AUTO_APPROVE:v})});
   tgMsg('авто-подтверждение '+(v?'включено':'выключено')); }
+function tgVoiceFill(st){
+  if(!st) return;
+  const set=(id,v)=>{ const e=$('#'+id); if(e) e.checked=!!v; };
+  set('tgv_in',st.voice_in); set('tgv_out',st.voice_out); set('tgv_files',st.files);
+  if($('#tgv_engine')) $('#tgv_engine').value=st.tts_engine||'auto';
+  if($('#tgv_voice')) $('#tgv_voice').value=st.tts_voice||'';
+  const t=st.tts||{}, el=$('#tg_voice_status');
+  if(el){
+    const ff=t.ffmpeg?'<span style="color:#4ade80">ffmpeg ✓</span>':'<span style="color:#f87171">ffmpeg не найден</span>';
+    const eng=t.ok?('<span style="color:#4ade80">TTS: '+esc(t.engine)+'</span>'):'<span style="color:#f59e0b">TTS недоступен</span>';
+    el.innerHTML=`Whisper-бэкенд: <b>${esc(st.whisper_backend||'—')}</b> · ${ff} · ${eng}`
+      +(t.candidates&&t.candidates.length?(' · найдены движки: '+t.candidates.map(esc).join(', ')):'')
+      +((!t.ok&&st.voice_out)?' — для голосовых ответов установите TTS-движок (piper/say/espeak) и ffmpeg':'');
+  }
+}
+function tgTrainMsg(t,ok=true){ const e=$('#tgtrainmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
+async function tgTrainLoad(){
+  const el=$('#tgtrain_users'); if(!el) return;
+  let r; try{ r=await tgGet('/api/admin/telegram/train-users'); }catch(e){ return; }
+  const us=(r&&r.users)||[];
+  el.innerHTML = us.length
+    ? '<div style="max-height:40vh;overflow:auto"><table><thead><tr><th>Пользователь</th><th>ID</th><th>Обучение</th><th>Режим</th><th>Файлов</th><th></th></tr></thead><tbody>'
+      + us.map(u=>`<tr>
+        <td>${esc(u.first_name||'—')} ${u.username?('@'+esc(u.username)):''}</td>
+        <td>${u.chat_id}</td>
+        <td><label class="note" style="cursor:pointer;white-space:nowrap"><input type="checkbox" ${u.can_train?'checked':''} onchange="tgTrainAllow(${u.chat_id},this.checked)"> разрешено</label></td>
+        <td>${u.mode==='train'?'<span class="tag ok">обучение</span>':'<span class="note">вопросы</span>'}</td>
+        <td>${nz(u.files)}</td>
+        <td style="white-space:nowrap">
+          <button class="dirbtn" onclick="tgTrainFiles(${u.chat_id})" title="Показать файлы">📁 Файлы</button>
+          <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="tgTrainDelUser(${u.chat_id})" title="Удалить все документы пользователя">🗑</button>
+        </td></tr>`).join('') + '</tbody></table></div>'
+    : '<div class="note">Пользователей нет.</div>';
+}
+async function tgTrainAllow(id,allow){
+  const r=await tgPost('/api/admin/telegram/train-allow',{chat_id:id,allow});
+  tgTrainMsg(r&&r.ok?('обучение '+(allow?'разрешено':'запрещено')+' для '+id):'ошибка',!!(r&&r.ok));
+}
+async function tgTrainFiles(id){
+  let r; try{ r=await tgGet('/api/admin/telegram/train-files?chat_id='+id); }catch(e){ return; }
+  const files=(r&&r.files)||[];
+  const box=$('#tgtrain_files');
+  box.innerHTML=`<div class="box" style="margin:0"><b style="font-size:13px">Документы пользователя ${id}</b> <span class="note">(${files.length})</span>`+
+    (files.length
+      ? '<div style="max-height:32vh;overflow:auto;margin-top:6px"><table><thead><tr><th>Файл</th><th>Размер</th><th>Дата</th><th></th></tr></thead><tbody>'
+        + files.map(f=>`<tr>
+          <td style="word-break:break-all">${esc(f.name)}</td>
+          <td style="white-space:nowrap">${(f.size/1024).toFixed(0)} КБ</td>
+          <td style="white-space:nowrap">${fmtTime(f.mtime)}</td>
+          <td><button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="tgTrainDelFile(${id},'${escAttr(f.name)}')">Удалить</button></td></tr>`).join('')
+        + '</tbody></table></div>'
+      : '<div class="note" style="margin-top:6px">Файлов нет.</div>')
+    + '</div>';
+}
+async function tgTrainDelFile(id,name){
+  if(!confirm('Удалить документ из базы знаний?\n'+name))return;
+  const r=await tgPost('/api/admin/telegram/train-delete',{chat_id:id,name});
+  tgTrainMsg(r.msg||'удалено',r.ok!==false); tgTrainFiles(id); tgTrainLoad();
+}
+async function tgTrainDelUser(id){
+  if(!confirm('Удалить ВСЕ документы пользователя '+id+' из базы знаний?'))return;
+  const r=await tgPost('/api/admin/telegram/train-delete',{chat_id:id});
+  tgTrainMsg(r.msg||'удалено',r.ok!==false); $('#tgtrain_files').innerHTML=''; tgTrainLoad();
+}
+async function tgTrainDeleteAll(){
+  if(!confirm('Удалить ВСЕ документы, добавленные через Телеграм (по всем пользователям)?'))return;
+  const r=await tgPost('/api/admin/telegram/train-delete-all');
+  tgTrainMsg(r.msg||'удалено',r.ok!==false); $('#tgtrain_files').innerHTML=''; tgTrainLoad();
+}
+async function tgVoiceSave(){
+  const body={
+    TELEGRAM_VOICE_IN:$('#tgv_in').checked,
+    TELEGRAM_VOICE_OUT:$('#tgv_out').checked,
+    TELEGRAM_FILES:$('#tgv_files').checked,
+    TTS_ENGINE:$('#tgv_engine').value,
+    TTS_VOICE:$('#tgv_voice').value };
+  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':tok()},body:JSON.stringify(body)});
+  const m=$('#tgvmsg'); if(m){ m.textContent=r.ok?'сохранено':'ошибка (нужен токен администратора)'; m.className=r.ok?'saved':'note'; }
+  setTimeout(loadTelegram,300);
+}
 async function tgApprove(id){ await tgPost('/api/admin/telegram/approve',{chat_id:id}); loadTelegram(); }
 async function tgBlock(id){ await tgPost('/api/admin/telegram/block',{chat_id:id}); loadTelegram(); }
 async function tgUnblock(id){ await tgPost('/api/admin/telegram/unblock',{chat_id:id}); loadTelegram(); }

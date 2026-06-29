@@ -353,6 +353,10 @@ python query_lightrag.py "вопрос" --mode mix
 | `TELEGRAM_BOT_TOKEN` | Токен Телеграм-бота (@BotFather; пусто = выкл) | пусто                          |
 | `TELEGRAM_AUTO_APPROVE` | Авто-подтверждение пользователей бота      | `0` (ручное)                       |
 | `TELEGRAM_PROXY`  | SOCKS5/HTTP-прокси для бота (не MTProto)      | пусто                              |
+| `TELEGRAM_VOICE_IN` | Распознавать голосовые сообщения (Whisper)  | `1` (вкл)                          |
+| `TELEGRAM_FILES`  | Распознавать приложенные файлы (ответ по файлу) | `1` (вкл)                       |
+| `TELEGRAM_VOICE_OUT` | Отвечать голосом на голосовые (TTS)        | `0` (выкл)                         |
+| `TTS_ENGINE` / `TTS_VOICE` | Движок синтеза речи и голос/модель    | `auto` / пусто                     |
 | `DB_BACKEND`      | БД журнала/настроек: `sqlite`/`mysql`/`postgresql` | `sqlite`                     |
 | `MYSQL_HOST` … `MYSQL_DB` | Подключение к MySQL/MariaDB (нужен PyMySQL) | пусто / `rag`                 |
 | `PG_HOST` … `PG_DB` | Подключение к PostgreSQL (нужен psycopg2)   | пусто / `rag`                      |
