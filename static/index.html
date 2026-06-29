@@ -1403,6 +1403,19 @@
   </div>
 </div>
 
+<div class="overlay" id="emppick">
+  <div class="modal">
+    <h3>🔗 Сопоставить сотрудника</h3>
+    <div class="note" id="emppick_for" style="margin-bottom:8px"></div>
+    <input id="emppick_q" placeholder="Поиск: фамилия, должность, отдел, e-mail…" oninput="tgEmpSearch()" style="width:100%">
+    <div class="list" id="emppick_list" style="max-height:48vh;overflow:auto;margin-top:8px"></div>
+    <div class="foot">
+      <span id="emppick_msg" class="note" style="margin-right:auto"></span>
+      <button class="act ghost" onclick="$('#emppick').classList.remove('open')">Закрыть</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = s => document.querySelector(s);
 const fmtTime = ts => new Date(ts*1000).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
@@ -1974,13 +1987,18 @@ async function loadTelegram(){
   const us=await tgGet('/api/admin/telegram/users');
   const ul=(us&&us.users)||[];
   $('#tg_users').innerHTML = ul.length
-    ? '<table><thead><tr><th>Имя</th><th>Username</th><th>ID</th><th>Статус</th><th>Запросов</th><th></th></tr></thead><tbody>'
+    ? '<table><thead><tr><th>Имя</th><th>Username</th><th>ID</th><th>Статус</th><th>Сотрудник</th><th>Запросов</th><th></th></tr></thead><tbody>'
       +ul.map(u=>{ const badge=u.status==='approved'?'<span class="tag ok">подтверждён</span>':(u.status==='blocked'?'<span class="tag no">заблокирован</span>':'<span class="tag">ожидает</span>');
         const act=u.status==='approved'?`<button class="dirbtn" title="Заблокировать" onclick="tgBlock(${u.chat_id})">⛔</button>`
           :(u.status==='blocked'?`<button class="dirbtn" title="Разблокировать" onclick="tgUnblock(${u.chat_id})">✅</button>`
           :`<button class="dirbtn" title="Подтвердить" onclick="tgApprove(${u.chat_id})">✅</button>`);
+        const emp = u.emp_name
+          ? `<div><b>${esc(u.emp_name)}</b>${u.emp_info?(' <span class="note">'+esc(u.emp_info)+'</span>'):''}
+               <button class="dirbtn" title="Изменить" onclick="tgEmpPick(${u.chat_id})">✏️</button>
+               <button class="dirbtn" style="border-color:#ef4444;color:#f87171" title="Снять привязку" onclick="tgEmpClear(${u.chat_id})">✕</button></div>`
+          : `<button class="dirbtn" onclick="tgEmpPick(${u.chat_id})">🔗 Сопоставить</button>`;
         return `<tr><td>${esc(u.first_name||'—')}</td><td>${u.username?('@'+esc(u.username)):'—'}</td>
-          <td>${u.chat_id}</td><td>${badge}</td><td>${nz(u.n_requests)}</td><td>${act}</td></tr>`; }).join('')
+          <td>${u.chat_id}</td><td>${badge}</td><td>${emp}</td><td>${nz(u.n_requests)}</td><td>${act}</td></tr>`; }).join('')
       +'</tbody></table>'
     : '<div class="note">Пользователей пока нет.</div>';
   // история и запросы
@@ -2091,6 +2109,44 @@ async function tgVoiceSave(){
   const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':tok()},body:JSON.stringify(body)});
   const m=$('#tgvmsg'); if(m){ m.textContent=r.ok?'сохранено':'ошибка (нужен токен администратора)'; m.className=r.ok?'saved':'note'; }
   setTimeout(loadTelegram,300);
+}
+// ---- сопоставление Телеграм-пользователя и сотрудника ----
+let _empChat=null, _empSearchT=null, _empResults=[];
+function tgEmpFio(e){ return [e.last_name,e.first_name,e.middle_name].filter(Boolean).join(' '); }
+function tgEmpInfo(e){ return [e.position||e.job_title, e.department, e.location].filter(Boolean).join(' · '); }
+function tgEmpPick(chatId){
+  _empChat=chatId;
+  $('#emppick_for').textContent='Пользователь Телеграм id '+chatId;
+  $('#emppick_q').value=''; $('#emppick_list').innerHTML='<div class="note">Начните вводить для поиска…</div>';
+  $('#emppick_msg').textContent='';
+  $('#emppick').classList.add('open');
+  setTimeout(()=>$('#emppick_q').focus(),50);
+}
+function tgEmpSearch(){ clearTimeout(_empSearchT); _empSearchT=setTimeout(_tgEmpSearch,220); }
+async function _tgEmpSearch(){
+  const q=$('#emppick_q').value.trim();
+  if(q.length<2){ $('#emppick_list').innerHTML='<div class="note">Введите минимум 2 символа…</div>'; return; }
+  const d=await adminGet('/api/admin/org/list?search='+encodeURIComponent(q));
+  _empResults=((d&&d.employees)||[]).slice(0,60);
+  if(!_empResults.length){ $('#emppick_list').innerHTML='<div class="note">Никого не найдено. Возможно, справочник ещё не синхронизирован (раздел «Структура компании»).</div>'; return; }
+  $('#emppick_list').innerHTML = _empResults.map((e,i)=>{
+    const fio=tgEmpFio(e), info=tgEmpInfo(e);
+    return `<div style="cursor:pointer;padding:8px 10px;border-bottom:1px solid var(--line)" onclick="tgEmpChoose(${i})">
+      <b>${esc(fio)}</b>${e.active?'':' <span class="tag no">уволен</span>'}
+      <div class="note">${esc(info||'—')}${e.email?(' · '+esc(e.email)):''}${e.phone_ext?(' · вн.'+esc(e.phone_ext)):''}</div>
+    </div>`; }).join('');
+}
+async function tgEmpChoose(i){
+  const e=_empResults[i]; if(!e||_empChat==null) return;
+  const r=await adminPost('/api/admin/telegram/map-employee',
+    {chat_id:_empChat, email:e.email||'', name:tgEmpFio(e), info:tgEmpInfo(e)});
+  if(r&&r.ok){ $('#emppick').classList.remove('open'); loadTelegram(); }
+  else $('#emppick_msg').textContent='не удалось сохранить';
+}
+async function tgEmpClear(chatId){
+  if(!confirm('Снять привязку к сотруднику?')) return;
+  await adminPost('/api/admin/telegram/map-employee',{chat_id:chatId, email:'', name:'', info:''});
+  loadTelegram();
 }
 async function tgApprove(id){ await tgPost('/api/admin/telegram/approve',{chat_id:id}); loadTelegram(); }
 async function tgBlock(id){ await tgPost('/api/admin/telegram/block',{chat_id:id}); loadTelegram(); }

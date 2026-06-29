@@ -943,6 +943,18 @@ def admin_tg_users(status: str = "", x_admin_token: str | None = Header(None)):
     return {"users": db.tg_users(status or None)}
 
 
+@app.post("/api/admin/telegram/map-employee")
+def admin_tg_map_employee(payload: dict = Body(...),
+                          x_admin_token: str | None = Header(None)):
+    """Сопоставить Телеграм-пользователя сотруднику из справочника компании.
+    Пустые поля снимают привязку."""
+    _check_admin(x_admin_token)
+    cid = int(payload.get("chat_id"))
+    ok = db.tg_set_employee(cid, payload.get("email") or "", payload.get("name") or "",
+                            payload.get("info") or "")
+    return {"ok": ok}
+
+
 @app.post("/api/admin/telegram/approve")
 def admin_tg_approve(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

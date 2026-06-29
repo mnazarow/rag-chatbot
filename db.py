@@ -228,7 +228,8 @@ def _ddl(d: str) -> list[str]:
             """CREATE TABLE IF NOT EXISTS tg_users(
                 chat_id BIGINT PRIMARY KEY, username VARCHAR(255), first_name VARCHAR(255),
                 status VARCHAR(16), created DOUBLE, updated DOUBLE, n_requests INT DEFAULT 0,
-                can_train INT DEFAULT 0, mode VARCHAR(16) DEFAULT 'ask'
+                can_train INT DEFAULT 0, mode VARCHAR(16) DEFAULT 'ask',
+                emp_email VARCHAR(255), emp_name VARCHAR(255), emp_info VARCHAR(255)
                 ) CHARACTER SET utf8mb4""",
             """CREATE TABLE IF NOT EXISTS tg_requests(
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -282,7 +283,8 @@ def _ddl(d: str) -> list[str]:
                 chat_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT,
                 status TEXT, created DOUBLE PRECISION, updated DOUBLE PRECISION,
                 n_requests INTEGER DEFAULT 0,
-                can_train INTEGER DEFAULT 0, mode TEXT DEFAULT 'ask')""",
+                can_train INTEGER DEFAULT 0, mode TEXT DEFAULT 'ask',
+                emp_email TEXT, emp_name TEXT, emp_info TEXT)""",
             """CREATE TABLE IF NOT EXISTS tg_requests(
                 id BIGSERIAL PRIMARY KEY,
                 ts DOUBLE PRECISION, day TEXT, chat_id BIGINT, username TEXT,
@@ -331,7 +333,8 @@ def _ddl(d: str) -> list[str]:
             chat_id INTEGER PRIMARY KEY,
             username TEXT, first_name TEXT, status TEXT,
             created REAL, updated REAL, n_requests INTEGER DEFAULT 0,
-            can_train INTEGER DEFAULT 0, mode TEXT DEFAULT 'ask')""",
+            can_train INTEGER DEFAULT 0, mode TEXT DEFAULT 'ask',
+            emp_email TEXT, emp_name TEXT, emp_info TEXT)""",
         """CREATE TABLE IF NOT EXISTS tg_requests(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts REAL, day TEXT, chat_id INTEGER, username TEXT,
@@ -408,7 +411,9 @@ def init(dialect: str | None = None) -> None:
             pass
         # миграция: обучение пользователей Телеграм (старые базы)
         _mode_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        for _c, _t in (("can_train", "INTEGER"), ("mode", _mode_t)):
+        _emp_t = {"mysql": "VARCHAR(255)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        for _c, _t in (("can_train", "INTEGER"), ("mode", _mode_t),
+                       ("emp_email", _emp_t), ("emp_name", _emp_t), ("emp_info", _emp_t)):
             try:
                 cur.execute(f"ALTER TABLE tg_users ADD COLUMN {_c} {_t}")
             except Exception:
@@ -650,6 +655,28 @@ def tg_set_mode(chat_id: int, mode: str) -> bool:
     n = _exec("UPDATE tg_users SET mode=?, updated=? WHERE chat_id=?",
               (mode, datetime.now().timestamp(), int(chat_id)))
     return n > 0
+
+
+def tg_set_employee(chat_id: int, email: str = "", name: str = "",
+                    info: str = "") -> bool:
+    """Сопоставить Телеграм-пользователя сотруднику из справочника (или снять —
+    пустые значения). Храним email (ключ для повторной привязки) + ФИО и краткую
+    инфо (должность · отдел) для отображения."""
+    n = _exec("UPDATE tg_users SET emp_email=?, emp_name=?, emp_info=?, updated=? "
+              "WHERE chat_id=?",
+              ((email or "").strip(), (name or "").strip(), (info or "").strip(),
+               datetime.now().timestamp(), int(chat_id)))
+    _bump()
+    return n > 0
+
+
+def tg_employee(chat_id: int) -> dict | None:
+    """Текущая привязка пользователя к сотруднику (или None)."""
+    r = _one("SELECT emp_email, emp_name, emp_info FROM tg_users WHERE chat_id=?",
+             (int(chat_id),))
+    if not r or not (r.get("emp_name") or r.get("emp_email")):
+        return None
+    return r
 
 
 def tg_users(status: str | None = None) -> list[dict]:
