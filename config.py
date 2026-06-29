@@ -46,6 +46,12 @@ TOP_K_RETRIEVE = _int("TOP_K_RETRIEVE", 20)
 TOP_K_RERANK = _int("TOP_K_RERANK", 6)
 MIN_SCORE = _float("MIN_SCORE", 0.30)
 
+# Прайс-папка: на «ценовых» вопросах брать контекст напрямую из указанной папки
+# (без индексации — файлы читаются по требованию и реранкуются под вопрос).
+PRICE_FOLDER = os.getenv("PRICE_FOLDER", "0") not in ("0", "false", "")  # включение
+PRICE_DIR = os.getenv("PRICE_DIR", "")          # путь к папке с прайс-листами
+PRICE_TOP_K = _int("PRICE_TOP_K", 6)            # сколько фрагментов прайса в контекст
+
 # Транскрибация
 WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "mlx")  # mlx (Apple) | faster (GPU/CPU)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")

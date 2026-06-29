@@ -141,6 +141,30 @@ def _stg(key: str, status: str = "done", info: dict | None = None, ms: int = 0) 
                        "ms": ms, "info": info or {}}, ensure_ascii=False) + "\n"
 
 
+def _augment_price(question: str, hits: list, trace: list | None = None) -> list:
+    """На ценовых вопросах добавить в начало контекста фрагменты из прайс-папки
+    (без индексации). Дедуп по источнику+началу текста."""
+    try:
+        import price_folder
+        if not (price_folder.enabled() and price_folder.is_price_query(question)):
+            return hits
+        ph = price_folder.hits(question)
+        if not ph:
+            return hits
+        if trace is not None:
+            trace.append({"key": "price", "ms": 0, "info": {"found": len(ph)}})
+        seen = set((h.get("source"), (h.get("text") or "")[:60]) for h in ph)
+        merged = list(ph)
+        for h in hits:
+            k = (h.get("source"), (h.get("text") or "")[:60])
+            if k not in seen:
+                merged.append(h)
+        return merged
+    except Exception as e:
+        print(f"[price] augment: {e}")
+        return hits
+
+
 def _ndjson(gen, aid: int | None = None):
     """StreamingResponse с гарантированным завершением активности после отдачи."""
     bg = BackgroundTask(activity.finish, aid) if aid is not None else None
@@ -285,6 +309,8 @@ async def chat(req: ChatRequest):
             hits = retriever.no_answer_fallback(req.question, trace=trace) or []
         except Exception as e:
             print(f"  ! фолбэк-поиск не удался: {e}")
+    # прайс-папка: на «ценовых» вопросах подмешиваем контекст из папки прайсов
+    hits = _augment_price(req.question, hits, trace)
     retrieve_ms = int((time.time() - t_ret) * 1000)
     category = (req.filters or {}).get("doc_category") or infer_category(req.question)
 
@@ -548,6 +574,14 @@ def api_system():
 def api_server_load():
     """Текущая загрузка хоста: CPU, память, диски, GPU, сеть, аптайм."""
     return admin_ops.server_load()
+
+
+@app.get("/api/admin/price/status")
+def api_price_status(x_admin_token: str | None = Header(None)):
+    """Состояние прайс-папки (включена, путь, число файлов/фрагментов)."""
+    _check_admin(x_admin_token)
+    import price_folder
+    return price_folder.status()
 
 
 @app.get("/api/server-history")
