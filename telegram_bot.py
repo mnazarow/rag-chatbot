@@ -29,6 +29,7 @@ _thread: threading.Thread | None = None
 _stop = threading.Event()
 _state = {"running": False, "error": None, "username": None, "started": None}
 _offset = None
+_pending_comment: dict = {}   # chat_id -> req_id (ждём текст комментария к ответу)
 
 
 def _token() -> str:
@@ -54,13 +55,26 @@ def _call(method: str, http_timeout: float = 40, **params):
         return None
 
 
-def send(chat_id: int, text: str) -> None:
-    """Отправить сообщение (Telegram режет на 4096 символов)."""
+def send(chat_id: int, text: str, reply_markup: dict | None = None) -> None:
+    """Отправить сообщение (Telegram режет на 4096 символов). reply_markup (если
+    задан) прикрепляется к ПОСЛЕДНЕМУ фрагменту (инлайн-клавиатура оценки)."""
     if not text:
         return
-    for i in range(0, len(text), 4096):
-        _call("sendMessage", chat_id=chat_id, text=text[i:i + 4096],
-              disable_web_page_preview=True)
+    chunks = [text[i:i + 4096] for i in range(0, len(text), 4096)] or [""]
+    for idx, ch in enumerate(chunks):
+        params = {"chat_id": chat_id, "text": ch, "disable_web_page_preview": True}
+        if reply_markup is not None and idx == len(chunks) - 1:
+            params["reply_markup"] = reply_markup
+        _call("sendMessage", **params)
+
+
+def _feedback_kb(rid: int) -> dict:
+    """Инлайн-клавиатура оценки ответа: 👍 / 👎 / 💬 Комментарий."""
+    return {"inline_keyboard": [[
+        {"text": "👍", "callback_data": f"rate:{rid}:1"},
+        {"text": "👎", "callback_data": f"rate:{rid}:-1"},
+        {"text": "💬 Комментарий", "callback_data": f"cmt:{rid}"},
+    ]]}
 
 
 def _download_file(file_id: str) -> str | None:
@@ -429,6 +443,14 @@ def _handle(msg: dict) -> None:
     # approved
     can_train = bool(user.get("can_train"))
 
+    # ждём комментарий к ответу (после нажатия «💬 Комментарий»)?
+    if text and not text.startswith("/") and chat_id in _pending_comment:
+        rid = _pending_comment.pop(chat_id, None)
+        if rid:
+            db.tg_set_comment(rid, text)
+            send(chat_id, "✅ Спасибо, комментарий сохранён.")
+            return
+
     # команды переключения режима обучения
     if text:
         low = text.strip().lower()
@@ -600,7 +622,12 @@ def _handle(msg: dict) -> None:
         if pipe:
             parts.append(pipe)
     out = "\n\n".join(parts) if parts else "✓ Запрос обработан."
-    send(chat_id, out)
+    # журналируем заранее, чтобы привязать кнопки оценки к конкретному ответу
+    rid = db.tg_log_request(chat_id, username, text or (attach_name or ""), ans,
+                            len(sources), (hits[0].get("score", 0.0) if hits else 0.0),
+                            latency, answered, sources)
+    kb = _feedback_kb(rid) if (rid and settings.get("TELEGRAM_FEEDBACK")) else None
+    send(chat_id, out, reply_markup=kb)
     # голосовой ответ на голосовой запрос (если включено, доступен TTS и вывод ответа не отключён)
     if show_answer and voice_in and settings.get("TELEGRAM_VOICE_OUT") and ans:
         try:
@@ -614,14 +641,47 @@ def _handle(msg: dict) -> None:
                 pass
         except Exception as e:
             print(f"[tg] голосовой ответ не сформирован: {e}")
-    db.tg_log_request(chat_id, username, text or (attach_name or ""), ans, len(sources),
-                      (hits[0].get("score", 0.0) if hits else 0.0), latency, answered, sources)
     if _aid is not None:
         try:
             import activity
             activity.finish(_aid, ok=answered, stage="ответ отправлен")
         except Exception:
             pass
+
+
+def _handle_callback(cq: dict) -> None:
+    """Обработка нажатий инлайн-кнопок оценки/комментария под ответом."""
+    cq_id = cq.get("id")
+    data = cq.get("data") or ""
+    msg = cq.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    message_id = msg.get("message_id")
+
+    def ack(text=""):
+        _call("answerCallbackQuery", callback_query_id=cq_id, text=text)
+
+    try:
+        if data.startswith("rate:"):
+            _, srid, sval = data.split(":")
+            rid, v = int(srid), int(sval)
+            db.tg_set_rating(rid, v)
+            ack("Спасибо за оценку!")
+            chosen = "👍" if v > 0 else "👎"
+            _call("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
+                  reply_markup={"inline_keyboard": [[
+                      {"text": "✅ " + chosen, "callback_data": f"rate:{rid}:{v}"},
+                      {"text": "💬 Комментарий", "callback_data": f"cmt:{rid}"}]]})
+        elif data.startswith("cmt:"):
+            _, srid = data.split(":")
+            if chat_id is not None:
+                _pending_comment[chat_id] = int(srid)
+            ack("Напишите комментарий сообщением")
+            send(chat_id, "💬 Напишите комментарий к ответу одним сообщением.")
+        else:
+            ack()
+    except Exception as e:
+        print(f"[tg] callback error: {e}")
+        ack()
 
 
 def _loop() -> None:
@@ -650,6 +710,12 @@ def _loop() -> None:
                     _handle(m)
                 except Exception as e:
                     print(f"  ! telegram handle error: {e}")
+            cq = upd.get("callback_query")
+            if cq:
+                try:
+                    _handle_callback(cq)
+                except Exception as e:
+                    print(f"  ! telegram callback error: {e}")
     _state["running"] = False
 
 
@@ -711,6 +777,7 @@ def status() -> dict:
             "files": bool(settings.get("TELEGRAM_FILES")),
             "pipeline": bool(settings.get("TELEGRAM_PIPELINE")),
             "show_answer": bool(settings.get("TELEGRAM_SHOW_ANSWER")),
+            "feedback": bool(settings.get("TELEGRAM_FEEDBACK")),
             "tts_engine": settings.get("TTS_ENGINE"),
             "tts_voice": settings.get("TTS_VOICE") or "",
             "tts": tts_info,

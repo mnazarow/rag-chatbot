@@ -223,7 +223,8 @@ def _ddl(d: str) -> list[str]:
                 ts DOUBLE, day VARCHAR(16), question MEDIUMTEXT, category VARCHAR(128),
                 n_hits INT, top_score DOUBLE, latency_ms INT,
                 answer_chars INT, answered INT, sources MEDIUMTEXT,
-                rating INT, retrieve_ms INT, gen_ms INT, session_id VARCHAR(80)
+                rating INT, retrieve_ms INT, gen_ms INT, session_id VARCHAR(80),
+                comment MEDIUMTEXT
                 ) CHARACTER SET utf8mb4""",
             """CREATE TABLE IF NOT EXISTS tg_users(
                 chat_id BIGINT PRIMARY KEY, username VARCHAR(255), first_name VARCHAR(255),
@@ -235,7 +236,8 @@ def _ddl(d: str) -> list[str]:
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 ts DOUBLE, day VARCHAR(16), chat_id BIGINT, username VARCHAR(255),
                 question MEDIUMTEXT, answer LONGTEXT, n_hits INT, top_score DOUBLE,
-                latency_ms INT, answer_chars INT, answered INT, sources MEDIUMTEXT
+                latency_ms INT, answer_chars INT, answered INT, sources MEDIUMTEXT,
+                rating INT, comment MEDIUMTEXT
                 ) CHARACTER SET utf8mb4""",
             """CREATE TABLE IF NOT EXISTS kv_store(
                 k VARCHAR(190) PRIMARY KEY, v LONGTEXT) CHARACTER SET utf8mb4""",
@@ -278,7 +280,8 @@ def _ddl(d: str) -> list[str]:
                 ts DOUBLE PRECISION, day TEXT, question TEXT, category TEXT,
                 n_hits INTEGER, top_score DOUBLE PRECISION, latency_ms INTEGER,
                 answer_chars INTEGER, answered INTEGER, sources TEXT,
-                rating INTEGER, retrieve_ms INTEGER, gen_ms INTEGER, session_id TEXT)""",
+                rating INTEGER, retrieve_ms INTEGER, gen_ms INTEGER, session_id TEXT,
+                comment TEXT)""",
             """CREATE TABLE IF NOT EXISTS tg_users(
                 chat_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT,
                 status TEXT, created DOUBLE PRECISION, updated DOUBLE PRECISION,
@@ -289,7 +292,8 @@ def _ddl(d: str) -> list[str]:
                 id BIGSERIAL PRIMARY KEY,
                 ts DOUBLE PRECISION, day TEXT, chat_id BIGINT, username TEXT,
                 question TEXT, answer TEXT, n_hits INTEGER, top_score DOUBLE PRECISION,
-                latency_ms INTEGER, answer_chars INTEGER, answered INTEGER, sources TEXT)""",
+                latency_ms INTEGER, answer_chars INTEGER, answered INTEGER, sources TEXT,
+                rating INTEGER, comment TEXT)""",
             """CREATE TABLE IF NOT EXISTS kv_store(k TEXT PRIMARY KEY, v TEXT)""",
             """CREATE TABLE IF NOT EXISTS doc_catalog(
                 rel_path TEXT PRIMARY KEY, fname TEXT, ext TEXT, size BIGINT,
@@ -328,7 +332,8 @@ def _ddl(d: str) -> list[str]:
             ts REAL, day TEXT, question TEXT, category TEXT,
             n_hits INTEGER, top_score REAL, latency_ms INTEGER,
             answer_chars INTEGER, answered INTEGER, sources TEXT,
-            rating INTEGER, retrieve_ms INTEGER, gen_ms INTEGER, session_id TEXT)""",
+            rating INTEGER, retrieve_ms INTEGER, gen_ms INTEGER, session_id TEXT,
+            comment TEXT)""",
         """CREATE TABLE IF NOT EXISTS tg_users(
             chat_id INTEGER PRIMARY KEY,
             username TEXT, first_name TEXT, status TEXT,
@@ -339,7 +344,8 @@ def _ddl(d: str) -> list[str]:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts REAL, day TEXT, chat_id INTEGER, username TEXT,
             question TEXT, answer TEXT, n_hits INTEGER, top_score REAL,
-            latency_ms INTEGER, answer_chars INTEGER, answered INTEGER, sources TEXT)""",
+            latency_ms INTEGER, answer_chars INTEGER, answered INTEGER, sources TEXT,
+            rating INTEGER, comment TEXT)""",
         """CREATE TABLE IF NOT EXISTS kv_store(k TEXT PRIMARY KEY, v TEXT)""",
         """CREATE TABLE IF NOT EXISTS doc_catalog(
             rel_path TEXT PRIMARY KEY, fname TEXT, ext TEXT, size INTEGER,
@@ -388,7 +394,7 @@ def init(dialect: str | None = None) -> None:
         if dd == "sqlite":
             # миграции колонок для старых баз (идемпотентно)
             for col in ("rating INTEGER", "retrieve_ms INTEGER", "gen_ms INTEGER",
-                        "session_id TEXT"):
+                        "session_id TEXT", "comment TEXT"):
                 try:
                     cur.execute(f"ALTER TABLE requests ADD COLUMN {col}")
                 except Exception:
@@ -418,6 +424,17 @@ def init(dialect: str | None = None) -> None:
                 cur.execute(f"ALTER TABLE tg_users ADD COLUMN {_c} {_t}")
             except Exception:
                 pass
+        # миграция: оценка и комментарий к ответам (веб и Телеграм; старые базы)
+        _cmt_t = {"mysql": "MEDIUMTEXT", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        for _c, _t in (("rating", "INTEGER"), ("comment", _cmt_t)):
+            try:
+                cur.execute(f"ALTER TABLE tg_requests ADD COLUMN {_c} {_t}")
+            except Exception:
+                pass
+        try:
+            cur.execute(f"ALTER TABLE requests ADD COLUMN comment {_cmt_t}")
+        except Exception:
+            pass
         if dd == "sqlite":
             conn.commit()
     finally:
@@ -467,6 +484,44 @@ def set_rating(req_id: int, rating: int) -> bool:
     except Exception as e:
         print(f"[db] set_rating: {e}")
         return False
+
+
+def set_comment(req_id: int, comment: str) -> bool:
+    """Комментарий пользователя к ответу веб-чата."""
+    try:
+        with _LOCK:
+            n = _exec("UPDATE requests SET comment=? WHERE id=?",
+                      ((comment or "").strip()[:2000], int(req_id)))
+        _bump()
+        return n > 0
+    except Exception as e:
+        print(f"[db] set_comment: {e}")
+        return False
+
+
+def recent_all(limit: int = 100) -> list[dict]:
+    """Объединённый журнал: запросы веб-чата и Телеграм с пометкой канала."""
+    lim = int(limit)
+    out = []
+    try:
+        web = _all("SELECT id, ts, question, answered, top_score, rating, comment "
+                   "FROM requests ORDER BY id DESC LIMIT ?", (lim,))
+        for w in web:
+            w["channel"] = "web"
+            w["username"] = None
+        out += web
+    except Exception as e:
+        print(f"[db] recent_all web: {e}")
+    try:
+        tg = _all("SELECT id, ts, username, question, answered, top_score, rating, "
+                  "comment FROM tg_requests ORDER BY id DESC LIMIT ?", (lim,))
+        for t in tg:
+            t["channel"] = "telegram"
+        out += tg
+    except Exception as e:
+        print(f"[db] recent_all tg: {e}")
+    out.sort(key=lambda x: x.get("ts") or 0, reverse=True)
+    return out[:lim]
 
 
 def rating_stats() -> dict:
@@ -736,6 +791,30 @@ def tg_log_request(chat_id: int, username: str | None, question: str, answer: st
         return 0
 
 
+def tg_set_rating(req_id: int, rating: int) -> bool:
+    """Оценка ответа Телеграм-бота: 1 (хорошо) / -1 (плохо) / 0 (снять)."""
+    r = 1 if rating > 0 else (-1 if rating < 0 else 0)
+    try:
+        n = _exec("UPDATE tg_requests SET rating=? WHERE id=?", (r, int(req_id)))
+        _bump()
+        return n > 0
+    except Exception as e:
+        print(f"[db] tg_set_rating: {e}")
+        return False
+
+
+def tg_set_comment(req_id: int, comment: str) -> bool:
+    """Комментарий пользователя к ответу Телеграм-бота."""
+    try:
+        n = _exec("UPDATE tg_requests SET comment=? WHERE id=?",
+                  ((comment or "").strip()[:2000], int(req_id)))
+        _bump()
+        return n > 0
+    except Exception as e:
+        print(f"[db] tg_set_comment: {e}")
+        return False
+
+
 def tg_recent(limit: int = 200) -> list[dict]:
     rows = _all("SELECT * FROM tg_requests ORDER BY id DESC LIMIT ?", (int(limit),))
     for d in rows:
@@ -776,12 +855,12 @@ def tg_clear_history() -> int:
 _TABLES = {
     "requests": ["id", "ts", "day", "question", "category", "n_hits", "top_score",
                  "latency_ms", "answer_chars", "answered", "sources", "rating",
-                 "retrieve_ms", "gen_ms", "session_id"],
+                 "retrieve_ms", "gen_ms", "session_id", "comment"],
     "tg_users": ["chat_id", "username", "first_name", "status", "created", "updated",
-                 "n_requests", "can_train", "mode"],
+                 "n_requests", "can_train", "mode", "emp_email", "emp_name", "emp_info"],
     "tg_requests": ["id", "ts", "day", "chat_id", "username", "question", "answer",
                     "n_hits", "top_score", "latency_ms", "answer_chars", "answered",
-                    "sources"],
+                    "sources", "rating", "comment"],
 }
 
 

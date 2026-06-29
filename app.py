@@ -380,6 +380,29 @@ def api_rate(payload: dict = Body(...)):
     return {"ok": True, "note": note}
 
 
+@app.post("/api/comment")
+def api_comment(payload: dict = Body(...)):
+    """Комментарий пользователя к ответу веб-чата (по id запроса)."""
+    rid = payload.get("id")
+    if rid is None:
+        return {"ok": False}
+    ok = db.set_comment(int(rid), payload.get("comment") or "")
+    return {"ok": ok}
+
+
+@app.get("/api/journal")
+def api_journal(limit: int = 100):
+    """Объединённый журнал: запросы веб-чата и Телеграм (с пометкой канала),
+    с оценками и комментариями."""
+    return db.recent_all(min(max(limit, 1), 1000))
+
+
+@app.get("/api/telegram-recent")
+def api_telegram_recent(limit: int = 10):
+    """Последние запросы из Телеграм (для дашборда)."""
+    return {"items": db.tg_recent(min(max(limit, 1), 200))}
+
+
 # ============================ ЧАТ С ПРИЛОЖЕННЫМ ДОКУМЕНТОМ ============================
 @app.post("/chat-doc")
 async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
@@ -1437,6 +1460,22 @@ def admin_calib_opt_status(x_admin_token: str | None = Header(None)):
 def admin_calib_opt_cancel(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return calibrate.optimize_cancel()
+
+
+@app.post("/api/admin/calib/eval-kb")
+def admin_calib_eval_kb(payload: dict = Body(default={}),
+                        x_admin_token: str | None = Header(None)):
+    """Запустить ИИ-оценку всей базы знаний (фоновая задача с прогрессом)."""
+    _check_admin(x_admin_token)
+    import kb_eval
+    return kb_eval.evaluate(force=bool((payload or {}).get("force")))
+
+
+@app.get("/api/admin/calib/eval-kb/status")
+def admin_calib_eval_kb_status(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import kb_eval
+    return kb_eval.status()
 
 
 @app.post("/api/admin/calib/auto/run")

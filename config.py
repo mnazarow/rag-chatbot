@@ -113,6 +113,8 @@ TELEGRAM_PIPELINE = _bool("TELEGRAM_PIPELINE", True)
 # Выводить в ответе бота сам текст ответа LLM (можно отключить, оставив только
 # источники и/или структуру формирования ответа).
 TELEGRAM_SHOW_ANSWER = _bool("TELEGRAM_SHOW_ANSWER", True)
+# Кнопки оценки ответа (👍/👎) и комментария под ответом бота.
+TELEGRAM_FEEDBACK = _bool("TELEGRAM_FEEDBACK", True)
 # Движок синтеза речи: auto (пробует доступные) | piper | say (macOS) | espeak | off.
 TTS_ENGINE = os.getenv("TTS_ENGINE", "auto")
 # Голос/модель: для macOS `say` — имя голоса (напр. Milena/Yuri); для piper — путь к .onnx;

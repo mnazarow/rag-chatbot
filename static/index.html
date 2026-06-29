@@ -206,9 +206,14 @@
       <div id="act_list"></div>
     </div>
     <div class="box">
-      <h3>Последние запросы</h3>
-      <table><thead><tr><th>Время</th><th>Вопрос</th><th>Ответ</th><th>Реленв.</th></tr></thead>
+      <h3>🌐 Последние запросы (веб-чат)</h3>
+      <table><thead><tr><th>Время</th><th>Вопрос</th><th>Ответ</th><th>Оценка</th><th>Комментарий</th></tr></thead>
       <tbody id="dashrecent"></tbody></table>
+    </div>
+    <div class="box">
+      <h3>✈️ Последние запросы в Телеграм</h3>
+      <table><thead><tr><th>Время</th><th>Пользователь</th><th>Вопрос</th><th>Статус</th><th>Оценка</th><th>Комментарий</th></tr></thead>
+      <tbody id="dashtgrecent"></tbody></table>
     </div>
   </section>
 
@@ -291,9 +296,9 @@
   <!-- ===== ЖУРНАЛ ===== -->
   <section id="logs">
     <h1>Журнал запросов</h1>
-    <div class="sub">Все обращения сотрудников <button class="act ghost" onclick="loadLogs()">Обновить</button></div>
+    <div class="sub">Все обращения сотрудников — веб-чат и Телеграм <button class="act ghost" onclick="loadLogs()">Обновить</button></div>
     <div class="box" style="max-height:70vh;overflow:auto">
-      <table><thead><tr><th>Время</th><th>Вопрос</th><th>Категория</th><th>Найдено</th><th>Реленв.</th><th>Задержка</th><th>Статус</th><th>Источники</th></tr></thead>
+      <table><thead><tr><th>Время</th><th>Канал</th><th>Вопрос</th><th>Статус</th><th>Оценка</th><th>Комментарий</th></tr></thead>
       <tbody id="logrows"></tbody></table>
     </div>
   </section>
@@ -456,6 +461,14 @@
 
         <div class="field" style="margin:0">
           <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="tgv_feedback" onchange="tgVoiceSave()"> <b>Кнопки оценки и комментария</b></label>
+          <div class="note" style="line-height:1.5">Под ответом — кнопки <b>👍 / 👎</b> и <b>💬 Комментарий</b>.
+            Оценка сохраняется сразу; по «Комментарий» бот просит написать текст, и следующее сообщение
+            сохраняется как комментарий. Всё видно в журнале, на дашборде и в истории Телеграм.</div>
+        </div>
+
+        <div class="field" style="margin:0">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
             <input type="checkbox" id="tgv_pipeline" onchange="tgVoiceSave()"> <b>Показывать структуру формирования ответа</b></label>
           <div class="note" style="line-height:1.5">К ответу добавляется «структура формирования ответа» —
             этапы конвейера (эмбеддинг → фильтр → поиск → BM25 → реранк → контекст → генерация, либо шаги KAG)
@@ -524,7 +537,7 @@
       </div>
       <div class="cards" id="tg_stats"></div>
       <div style="max-height:46vh;overflow:auto;margin-top:10px">
-        <table><thead><tr><th>Время</th><th>Пользователь</th><th>Вопрос</th><th>Ответ</th><th>Статус</th></tr></thead>
+        <table><thead><tr><th>Время</th><th>Пользователь</th><th>Вопрос</th><th>Ответ</th><th>Статус</th><th>Оценка</th><th>Комментарий</th></tr></thead>
         <tbody id="tg_rows"></tbody></table>
       </div>
     </div>
@@ -673,6 +686,21 @@
     <div class="sub">Объективный подбор <b>MIN_SCORE</b>, <b>TOP_K_RERANK</b> и
       <b>TOP_K_RETRIEVE</b> на вашем эталонном наборе — с живой схемой процесса,
       метриками и графиками в реальном времени.</div>
+
+    <div class="box">
+      <h3>🤖 ИИ-оценка базы знаний</h3>
+      <div class="note" style="line-height:1.5;margin-bottom:10px">Модель проанализирует всю проиндексированную базу
+        (объём, категории, типы файлов, покрытие метаданными, длины чанков, дубликаты, примеры фрагментов и текущие
+        настройки) и выдаст оценку с конкретными рекомендациями по оптимизации контента, индексации и настройкам поиска.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="evalKb(false)">Оценить базу знаний</button>
+        <button class="act ghost" onclick="evalKb(true)">↻ Оценить заново</button>
+        <span id="evalkb_msg" class="note"></span>
+      </div>
+      <div id="evalkb_pbar" style="height:6px;background:var(--panel2);border-radius:4px;overflow:hidden;display:none;margin-top:10px"><i style="display:block;height:100%;width:0;background:var(--accent);transition:width .25s"></i></div>
+      <div id="evalkb_profile" class="cards" style="margin-top:12px"></div>
+      <div id="evalkb_result" style="margin-top:12px;white-space:pre-wrap;line-height:1.55"></div>
+    </div>
 
     <div class="box">
       <h3>Как это работает</h3>
@@ -1426,6 +1454,9 @@
 <script>
 const $ = s => document.querySelector(s);
 const fmtTime = ts => new Date(ts*1000).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+function ratingBadge(r){ return r===1?'<span class="tag ok">👍</span>':(r===-1?'<span class="tag no">👎</span>':'<span class="note">—</span>'); }
+function commentCell(c){ c=(c||'').trim(); if(!c) return '<span class="note">—</span>';
+  return `<span title="${escAttr(c)}">💬 ${esc(c.length>60?c.slice(0,60)+'…':c)}</span>`; }
 
 // ---- навигация ----
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
@@ -1499,9 +1530,23 @@ async function loadStats(){
     `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
   const r = await (await fetch('/api/logs?limit=8')).json();
   $('#dashrecent').innerHTML = r.map(x=>
-    `<tr><td>${fmtTime(x.ts)}</td><td>${esc(x.question)}</td>
+    `<tr><td>${fmtTime(x.ts)}</td><td style="max-width:320px">${esc(x.question)}</td>
      <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет</span>'}</td>
-     <td>${x.top_score||'—'}</td></tr>`).join('') || emptyRow(4);
+     <td>${ratingBadge(x.rating)}</td>
+     <td style="max-width:220px">${commentCell(x.comment)}</td></tr>`).join('') || emptyRow(5);
+  // последние запросы в Телеграм — отдельно
+  try{
+    const tr=await (await fetch('/api/telegram-recent?limit=8')).json();
+    const ti=(tr&&tr.items)||[];
+    $('#dashtgrecent').innerHTML = ti.length ? ti.map(x=>
+      `<tr><td>${fmtTime(x.ts)}</td>
+       <td>${x.username?('@'+esc(x.username)):esc(String(x.chat_id))}</td>
+       <td style="max-width:300px">${esc(x.question)}</td>
+       <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет</span>'}</td>
+       <td>${ratingBadge(x.rating)}</td>
+       <td style="max-width:200px">${commentCell(x.comment)}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="note">пока нет запросов из Телеграм</td></tr>';
+  }catch(e){}
 }
 
 // ---- схема работы (живая, по настройкам и статусам) ----
@@ -1631,16 +1676,19 @@ function schemaDemo(){
 }
 
 // ---- журнал ----
+function channelTag(ch){ return ch==='telegram'
+  ? '<span class="tag" style="background:#0088cc22;color:#4aa3e0">✈️ Телеграм</span>'
+  : '<span class="tag" style="background:#3b82f622;color:#7aa7f0">🌐 Веб</span>'; }
 async function loadLogs(){
-  const r = await (await fetch('/api/logs?limit=300')).json();
+  const r = await (await fetch('/api/journal?limit=400')).json();
   $('#logrows').innerHTML = r.map(x=>{
-    const src = (x.sources||[]).map(s=>s.source+(s.page?` с.${s.page}`:'')).join(', ');
-    return `<tr><td>${fmtTime(x.ts)}</td><td>${esc(x.question)}</td>
-      <td><span class="tag">${x.category||'—'}</span></td><td>${x.n_hits}</td>
-      <td>${x.top_score||'—'}</td><td>${x.latency_ms} мс</td>
+    const who = (x.channel==='telegram' && x.username) ? ('<div class="note">@'+esc(x.username)+'</div>') : '';
+    return `<tr><td>${fmtTime(x.ts)}</td><td>${channelTag(x.channel)}</td>
+      <td style="max-width:380px">${esc(x.question)}${who}</td>
       <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет данных</span>'}</td>
-      <td style="max-width:240px;color:#9aa3b2">${esc(src)||'—'}</td></tr>`;
-  }).join('') || emptyRow(8);
+      <td>${ratingBadge(x.rating)}</td>
+      <td style="max-width:240px">${commentCell(x.comment)}</td></tr>`;
+  }).join('') || emptyRow(6);
 }
 
 // ---- аналитика ----
@@ -2026,7 +2074,9 @@ async function loadTelegram(){
         <td>${x.username?('@'+esc(x.username)):esc(String(x.chat_id))}</td>
         <td style="max-width:240px">${esc(x.question)}</td>
         <td style="max-width:300px;color:var(--muted)">${esc((x.answer||'').slice(0,300))}</td>
-        <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет</span>'}</td></tr>`).join('')
+        <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет</span>'}</td>
+        <td>${ratingBadge(x.rating)}</td>
+        <td style="max-width:220px">${commentCell(x.comment)}</td></tr>`).join('')
     : emptyRow(5);
 }
 async function tgRestart(){ tgMsg('перезапуск бота…'); const r=await tgPost('/api/admin/telegram/restart'); tgMsg(r.msg||(r.ok?'ок':'ошибка'),r.ok!==false); setTimeout(loadTelegram,800); }
@@ -2037,7 +2087,7 @@ function tgVoiceFill(st){
   if(!st) return;
   const set=(id,v)=>{ const e=$('#'+id); if(e) e.checked=!!v; };
   set('tgv_in',st.voice_in); set('tgv_out',st.voice_out); set('tgv_files',st.files);
-  set('tgv_answer',st.show_answer); set('tgv_pipeline',st.pipeline);
+  set('tgv_answer',st.show_answer); set('tgv_pipeline',st.pipeline); set('tgv_feedback',st.feedback);
   if($('#tgv_engine')) $('#tgv_engine').value=st.tts_engine||'auto';
   if($('#tgv_voice')) $('#tgv_voice').value=st.tts_voice||'';
   tgVoiceLoadList();
@@ -2141,6 +2191,7 @@ async function tgVoiceSave(){
     TELEGRAM_FILES:$('#tgv_files').checked,
     TELEGRAM_SHOW_ANSWER:$('#tgv_answer').checked,
     TELEGRAM_PIPELINE:$('#tgv_pipeline').checked,
+    TELEGRAM_FEEDBACK:$('#tgv_feedback').checked,
     TTS_ENGINE:$('#tgv_engine').value,
     TTS_VOICE:$('#tgv_voice').value };
   const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':tok()},body:JSON.stringify(body)});
@@ -2808,6 +2859,39 @@ function calibSetMsg(t,ok=true){ const e=$('#calibsetmsg'); if(e){e.textContent=
 function calibMsg(t,ok=true){ const e=$('#calibmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 let calibCurMode='', calibCurEngine='';
 async function loadCalib(){ await calibLoad(); await calibLoadModes(); calibScheme(null); $('#calivecards').innerHTML=''; autoLoad(); msetsLoad(); }
+
+// ---- ИИ-оценка базы знаний ----
+let _evalKbPoll=null;
+function evalKbMsg(t,ok=true){ const e=$('#evalkb_msg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
+function evalKbBar(p){ const b=$('#evalkb_pbar'); if(!b)return; b.style.display='block';
+  b.querySelector('i').style.width=(p&&p.pct!=null?p.pct:5)+'%'; }
+function evalKbBarDone(){ const b=$('#evalkb_pbar'); if(b){ b.style.display='none'; b.querySelector('i').style.width='0'; } }
+async function evalKb(force){
+  if(_evalKbPoll){ clearInterval(_evalKbPoll); _evalKbPoll=null; }
+  evalKbMsg('запуск ИИ-оценки…'); evalKbBar({pct:5}); $('#evalkb_result').textContent=''; $('#evalkb_profile').innerHTML='';
+  let d=await adminPost('/api/admin/calib/eval-kb',{force:!!force});
+  const render=s=>{
+    evalKbBarDone();
+    if(!s){ evalKbMsg('ошибка',false); return; }
+    if(s.error && !s.assessment){ evalKbMsg('ошибка: '+esc(s.error),false); return; }
+    evalKbMsg(s.cached?('готово · из кэша'+(s.age_sec!=null?(' '+s.age_sec+' с'):'')):'готово', true);
+    const p=s.profile||{}; const cc=p.chunk_chars||{}; const mc=p.metadata_coverage_pct||{};
+    $('#evalkb_profile').innerHTML=[
+      ['Чанков',p.chunks||0],['Файлов',p.files||0],['Категорий',(p.categories||[]).length],
+      ['Дубликатов',p.duplicates||0],['Ср. длина чанка',(cc.avg||0)+' симв.'],
+      ['Покрытие категорией',(mc.category||0)+'%']
+    ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+    $('#evalkb_result').innerHTML='<div class="box" style="margin-top:0;background:var(--panel2)"><b>Заключение ИИ:</b>\n\n'+esc(s.assessment||'нет данных')+'</div>';
+  };
+  if(d && d.running){
+    _evalKbPoll=setInterval(async()=>{
+      let s; try{ s=await adminGet('/api/admin/calib/eval-kb/status'); }catch(e){ return; }
+      if(s && s.running){ const p=s.progress||{}; evalKbBar(p);
+        evalKbMsg(''+(s.stage||'работа')+(p.total?(' · '+p.scrolled+' / '+p.total+' чанков'):'')); }
+      else { clearInterval(_evalKbPoll); _evalKbPoll=null; render(s); }
+    },900);
+  } else render(d);
+}
 // ---- сохранённые наборы вопросов (ручной конструктор) ----
 function msetMsg(t,ok=true){ const e=$('#msetmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 async function msetsLoad(){
@@ -4826,12 +4910,33 @@ function addDebug(bot,info){
 }
 function addRating(bot,id){
   const w=document.createElement('div'); w.className='src';
-  w.style.display='flex'; w.style.gap='8px'; w.style.alignItems='center';
+  w.style.display='flex'; w.style.gap='8px'; w.style.alignItems='center'; w.style.flexWrap='wrap';
   w.innerHTML='<span>Оценка:</span>';
   const up=document.createElement('button'); up.className='dirbtn'; up.textContent='👍';
   const dn=document.createElement('button'); dn.className='dirbtn'; dn.textContent='👎';
+  const cm=document.createElement('button'); cm.className='dirbtn'; cm.textContent='💬 Комментировать';
   up.onclick=()=>rate(id,1,up,dn); dn.onclick=()=>rate(id,-1,up,dn);
-  w.appendChild(up); w.appendChild(dn); bot.appendChild(w);
+  cm.onclick=()=>toggleComment(w,id,cm);
+  w.appendChild(up); w.appendChild(dn); w.appendChild(cm); bot.appendChild(w);
+}
+function toggleComment(w,id,cm){
+  if(w._cbox){ w._cbox.remove(); w._cbox=null; return; }
+  const box=document.createElement('div');
+  box.style.display='flex'; box.style.gap='6px'; box.style.flexBasis='100%'; box.style.marginTop='4px';
+  const inp=document.createElement('input'); inp.placeholder='Ваш комментарий к ответу…';
+  inp.style.flex='1'; inp.style.background='var(--panel2)'; inp.style.color='var(--txt)';
+  inp.style.border='1px solid var(--line)'; inp.style.borderRadius='7px'; inp.style.padding='6px 8px';
+  const snd=document.createElement('button'); snd.className='dirbtn'; snd.textContent='Отправить';
+  const ok=()=>sendComment(id,inp.value,w,cm);
+  snd.onclick=ok; inp.onkeydown=e=>{ if(e.key==='Enter') ok(); };
+  box.appendChild(inp); box.appendChild(snd); w.appendChild(box); w._cbox=box; inp.focus();
+}
+async function sendComment(id,comment,w,cm){
+  comment=(comment||'').trim(); if(!comment) return;
+  try{ await fetch('/api/comment',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id,comment})}); }catch(e){}
+  if(w._cbox){ w._cbox.remove(); w._cbox=null; }
+  if(cm){ cm.textContent='💬 Комментарий отправлен'; cm.style.opacity='.7'; }
 }
 async function rate(id,val,up,dn){
   try{ await fetch('/api/rate',{method:'POST',headers:{'Content-Type':'application/json'},
