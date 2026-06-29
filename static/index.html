@@ -154,6 +154,7 @@
     <button data-t="bench">⚡ Бенчмарк</button>
     <button data-t="calib">🎛 Автокалибровка</button>
     <button data-t="admin">⚙️ Администратор</button>
+    <button data-t="org">🏢 Структура компании</button>
   </nav>
   <div class="spacer"></div>
   <div class="pill" style="display:flex;gap:6px;align-items:center">
@@ -490,6 +491,20 @@
         <table><thead><tr><th>PID</th><th>Процесс</th><th>Память</th><th>CPU %</th></tr></thead>
         <tbody id="srv_procs"></tbody></table>
       </div>
+    </div>
+
+    <div class="box"><h3>📈 Статистика загрузки (час · день · неделя · месяц · год)</h3>
+      <div class="note" id="srv_hist_note" style="margin-bottom:8px">Накопленные средние и пиковые значения по периодам. Сбор метрик идёт в фоне раз в минуту.</div>
+      <div style="overflow:auto">
+        <table id="srv_hist"><thead><tr>
+          <th>Метрика</th><th>Час</th><th>День</th><th>Неделя</th><th>Месяц</th><th>Год</th>
+        </tr></thead><tbody id="srv_hist_body"></tbody></table>
+      </div>
+    </div>
+
+    <div class="box"><h3>🧩 Рекомендации по железу</h3>
+      <div class="note" style="margin-bottom:8px">Автоматический анализ накопленной статистики: где есть запас, а где пора усиливать конфигурацию.</div>
+      <div id="srv_reco"></div>
     </div>
   </section>
 
@@ -1207,6 +1222,39 @@
       <div class="note">«Переустановить окружение» — пересоздаёт .venv и зависимости, данные сохраняются. «Полная переустановка» — DESTRUCTIVE: удаляет окружение и ВСЕ данные (индекс, граф, адаптер, журнал) и разворачивает заново; `.env` сохраняется, сервис будет недоступен во время процесса. Выбирайте кнопку под вашу платформу. На GPU нужен сервис, запущенный от пользователя с правами sudo.</div>
     </div>
   </section>
+
+  <!-- ===== СТРУКТУРА КОМПАНИИ ===== -->
+  <section id="org">
+    <h1>Структура компании</h1>
+    <div class="sub">Справочник сотрудников: автоматический парсинг контактов по URL раз в час
+      <button class="act ghost" onclick="loadOrg()">Обновить</button></div>
+
+    <div class="box"><h3>🔗 Источник</h3>
+      <div class="note" style="margin-bottom:8px">URL должен отдавать выгрузку в формате SpreadsheetML (Excel 2003 XML) с колонками: работает, работает до, фамилия, имя, отчество, должность, отдел, телефоны, электропочта, поставщики. При включённой синхронизации справочник обновляется автоматически раз в час.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="org_url" placeholder="https://…/employees.xml" style="flex:1;min-width:280px">
+        <label style="font-weight:400"><input type="checkbox" id="org_enabled"> ежечасная синхронизация</label>
+        <button class="act" onclick="orgSaveConfig()">Сохранить</button>
+        <button class="act ghost" onclick="orgSyncNow()">⟳ Синхронизировать сейчас</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="orgClear()">🗑 Очистить</button>
+      </div>
+      <div id="org_status" class="note" style="margin-top:8px"></div>
+    </div>
+
+    <div class="box"><h3>👥 Сотрудники <span id="org_count" class="tag"></span></h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <input id="org_search" placeholder="Поиск: ФИО, должность, телефон, e-mail, поставщик…" style="flex:1;min-width:240px" oninput="orgSearchDebounced()">
+        <select id="org_dept" onchange="orgRender()" style="min-width:220px;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:6px"></select>
+        <label style="font-weight:400"><input type="checkbox" id="org_active_only" onchange="orgRender()"> только работающие</label>
+      </div>
+      <div style="max-height:62vh;overflow:auto">
+        <table><thead><tr>
+          <th>ФИО</th><th>Должность</th><th>Отдел</th><th>Лок.</th>
+          <th>Раб.</th><th>Вн.</th><th>Моб.</th><th>E-mail</th><th>Поставщики</th>
+        </tr></thead><tbody id="org_rows"></tbody></table>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- модальный браузер папок -->
@@ -1234,7 +1282,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   b.classList.add('active'); $('#'+b.dataset.t).classList.add('active');
   if(b.dataset.t!=='server') stopSrvAuto();   // уходим с вкладки — гасим автообновление
   if(b.dataset.t!=='schema') clearInterval(schemaTimer);
-  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig}[b.dataset.t]||(()=>{}))();
+  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg}[b.dataset.t]||(()=>{}))();
 });
 
 // ---- дашборд ----
@@ -1928,6 +1976,42 @@ async function loadServer(){
   $('#srv_procs').innerHTML = pr.length
     ? pr.map(x=>`<tr><td>${x.pid}</td><td>${esc(x.name)}</td><td>${gb(x.rss)}</td><td>${(x.cpu||0).toFixed(0)}</td></tr>`).join('')
     : '<tr><td colspan="4" class="note">нет данных (нужен psutil)</td></tr>';
+  loadServerHistory();
+}
+function histCell(p,avgKey,maxKey){
+  if(!p || p.samples===0) return '<td class="note">—</td>';
+  const a=p[avgKey], m=p[maxKey];
+  if(a==null && m==null) return '<td class="note">—</td>';
+  const col=v=>v==null?'—':(v>=90?'<span style="color:#f87171">'+v+'%</span>':v>=75?'<span style="color:#f59e0b">'+v+'%</span>':v+'%');
+  if(avgKey===maxKey) return '<td>'+col(m)+'</td>';
+  return '<td><span style="color:var(--muted)">ср</span> '+col(a)+' · <span style="color:var(--muted)">пик</span> '+col(m)+'</td>';
+}
+let _srvHistTimer=null;
+async function loadServerHistory(){
+  let h; try{ h=await (await fetch('/api/server-history?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
+  const per=h.periods||{}, ord=['hour','day','week','month','year'];
+  const row=(label,avgKey,maxKey)=>'<tr><td><b>'+label+'</b></td>'+ord.map(k=>histCell(per[k],avgKey,maxKey)).join('')+'</tr>';
+  const samplesRow='<tr><td class="note">выборок</td>'+ord.map(k=>'<td class="note">'+((per[k]&&per[k].samples)||0)+'</td>').join('')+'</tr>';
+  $('#srv_hist_body').innerHTML =
+    row('CPU %','cpu_avg','cpu_max')+
+    row('Память %','mem_avg','mem_max')+
+    row('Swap % (пик)','swap_max','swap_max')+
+    row('GPU %','gpu_avg','gpu_max')+
+    row('Видеопамять %','gpu_mem_avg','gpu_mem_max')+
+    row('Диск % (пик)','disk_max','disk_max')+
+    samplesRow;
+  const total=h.samples_total||0;
+  $('#srv_hist_note').innerHTML='Накопленные средние и пиковые значения по периодам. Сбор метрик раз в минуту'
+    +(h.monitoring?'':' · <span style="color:#f59e0b">сбор не активен (нужен psutil)</span>')
+    +(total?(' · всего выборок за год: '+total):' · данные накапливаются');
+  // рекомендации
+  const rc=h.recommendations||[];
+  const ic={critical:'⛔',warn:'⚠️',ok:'✅',info:'ℹ️'};
+  const bc={critical:'#f87171',warn:'#f59e0b',ok:'#34d399',info:'var(--muted)'};
+  $('#srv_reco').innerHTML = rc.length
+    ? rc.map(r=>`<div style="margin:6px 0;padding:9px 12px;border:1px solid var(--line);border-left:3px solid ${bc[r.level]||'var(--line)'};border-radius:8px">
+        <b>${ic[r.level]||''}</b> ${esc(r.text)}</div>`).join('')
+    : '<div class="note">нет рекомендаций</div>';
 }
 function fcSize(b){ b=b||0; if(b<1024)return b+' Б'; if(b<1048576)return (b/1024).toFixed(0)+' КБ'; return (b/1048576).toFixed(1)+' МБ'; }
 function chkMsg(t,ok=true){ $('#chkmsg').textContent=t; $('#chkmsg').className=ok?'saved':'note'; }
@@ -3862,6 +3946,84 @@ async function adminGet(url){
   const r=await fetch(url+sep+'t='+Date.now(),
     {cache:'no-store',headers:{'X-Admin-Token':tok()}});
   return r.json().catch(()=>({}));
+}
+
+// ---- структура компании ----
+let ORG_EMP=[], _orgSearchT=null;
+function orgMsg(t,ok=true){ const e=$('#org_status'); if(e){ e.innerHTML=t; e.className=ok?'saved':'note'; } }
+async function loadOrg(){
+  const c=await adminGet('/api/admin/org/config');
+  if(c && c.config){
+    if($('#org_url')) $('#org_url').value=c.config.url||'';
+    if($('#org_enabled')) $('#org_enabled').checked=!!c.config.enabled;
+  }
+  orgShowStatus(c&&c.status, c&&c.meta);
+  await orgLoadList();
+}
+function orgShowStatus(st,meta){
+  st=st||{}; meta=meta||{};
+  let s='';
+  if(st.ts){ s='Последняя синхронизация: <b>'+fmtTime(st.ts)+'</b>'
+    +(st.ok? ' · загружено '+(st.count||0):' · <span style="color:#f87171">ошибка: '+esc(st.error||'')+'</span>'); }
+  else s='Синхронизаций ещё не было';
+  if(meta.count!=null) s+=' · в базе: <b>'+meta.count+'</b>';
+  orgMsg(s, st.ok!==false);
+}
+async function orgSaveConfig(){
+  const r=await adminPost('/api/admin/org/config',
+    {url:$('#org_url').value.trim(), enabled:$('#org_enabled').checked});
+  orgMsg(r&&r.ok?'настройки сохранены':'ошибка сохранения', !!(r&&r.ok));
+}
+async function orgSyncNow(){
+  orgMsg('синхронизация…');
+  const r=await adminPost('/api/admin/org/sync',{url:$('#org_url').value.trim()});
+  if(r && r.ok){ orgMsg('готово · загружено записей: '+(r.count||0), true); await orgLoadList(); }
+  else orgMsg('ошибка: '+esc((r&&r.error)||'неизвестно'), false);
+}
+async function orgClear(){
+  if(!confirm('Очистить весь справочник сотрудников?')) return;
+  const r=await adminPost('/api/admin/org/clear');
+  orgMsg('удалено записей: '+((r&&r.removed)||0), true); await orgLoadList();
+}
+async function orgLoadList(){
+  const d=await adminGet('/api/admin/org/list');
+  ORG_EMP=(d&&d.employees)||[];
+  // фильтр по отделам
+  const sel=$('#org_dept'); if(sel){
+    const cur=sel.value;
+    const opts=['<option value="">Все отделы ('+ORG_EMP.length+')</option>']
+      .concat(((d&&d.departments)||[]).map(x=>`<option value="${escAttr(x.department)}">${esc(x.department||'—')} (${x.n})</option>`));
+    sel.innerHTML=opts.join(''); sel.value=cur;
+  }
+  if(d&&d.meta) $('#org_count').textContent=d.meta.count!=null?(d.meta.count+' чел.'):'';
+  orgRender();
+}
+function orgSearchDebounced(){ clearTimeout(_orgSearchT); _orgSearchT=setTimeout(orgRender,200); }
+function orgRender(){
+  const q=($('#org_search').value||'').trim().toLowerCase();
+  const dept=$('#org_dept').value||'';
+  const activeOnly=$('#org_active_only').checked;
+  let rows=ORG_EMP;
+  if(dept) rows=rows.filter(r=>(r.department||'')===dept);
+  if(activeOnly) rows=rows.filter(r=>r.active);
+  if(q) rows=rows.filter(r=>[r.last_name,r.first_name,r.middle_name,r.position,r.department,
+    r.email,r.phone_work,r.phone_ext,r.phone_mobile,r.suppliers,r.location]
+    .map(x=>String(x||'').toLowerCase()).join(' ').includes(q));
+  $('#org_rows').innerHTML = rows.length ? rows.map(r=>{
+    const fio=[r.last_name,r.first_name,r.middle_name].filter(Boolean).join(' ');
+    const dim=r.active?'':' style="opacity:.5"';
+    const mail=r.email?`<a href="mailto:${escAttr(r.email)}">${esc(r.email)}</a>`:'—';
+    return `<tr${dim}>
+      <td><b>${esc(fio)}</b>${r.active?'':' <span class="tag no">уволен</span>'}</td>
+      <td>${esc(r.position||'')}</td>
+      <td>${esc(r.department||'')}</td>
+      <td>${esc(r.location||'')}</td>
+      <td>${esc(r.phone_work||'—')}</td>
+      <td>${esc(r.phone_ext||'—')}</td>
+      <td>${esc(r.phone_mobile||'—')}</td>
+      <td>${mail}</td>
+      <td>${esc(r.suppliers||'')}</td></tr>`;
+  }).join('') : '<tr><td colspan="9" class="note">нет данных. Укажите URL и нажмите «Синхронизировать сейчас».</td></tr>';
 }
 function opsMsg(t,ok=true){ $('#opsmsg').textContent=t; $('#opsmsg').className=ok?'saved':'note'; }
 let pollT=null;

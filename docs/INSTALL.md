@@ -357,6 +357,8 @@ python query_lightrag.py "вопрос" --mode mix
 | `TELEGRAM_FILES`  | Распознавать приложенные файлы (ответ по файлу) | `1` (вкл)                       |
 | `TELEGRAM_VOICE_OUT` | Отвечать голосом на голосовые (TTS)        | `0` (выкл)                         |
 | `TTS_ENGINE` / `TTS_VOICE` | Движок синтеза речи и голос/модель    | `auto` / пусто                     |
+| `MONITOR_INTERVAL` | Период выборки метрик загрузки хоста, сек    | `60`                               |
+| `MONITOR_PRUNE_DAYS` | Хранение истории загрузки, суток           | `400`                              |
 | `DB_BACKEND`      | БД журнала/настроек: `sqlite`/`mysql`/`postgresql` | `sqlite`                     |
 | `MYSQL_HOST` … `MYSQL_DB` | Подключение к MySQL/MariaDB (нужен PyMySQL) | пусто / `rag`                 |
 | `PG_HOST` … `PG_DB` | Подключение к PostgreSQL (нужен psycopg2)   | пусто / `rag`                      |

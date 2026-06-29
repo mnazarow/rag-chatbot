@@ -250,6 +250,17 @@ def _ddl(d: str) -> list[str]:
                 id BIGINT AUTO_INCREMENT PRIMARY KEY, ts DOUBLE, name VARCHAR(255),
                 kind VARCHAR(16), n_pairs INT, prompt MEDIUMTEXT, pairs LONGTEXT,
                 params MEDIUMTEXT) CHARACTER SET utf8mb4""",
+            """CREATE TABLE IF NOT EXISTS server_samples(
+                ts DOUBLE, cpu DOUBLE, mem DOUBLE, swap DOUBLE, disk DOUBLE,
+                gpu_util DOUBLE, gpu_mem DOUBLE, INDEX idx_ss_ts (ts))""",
+            """CREATE TABLE IF NOT EXISTS org_employees(
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                active INT, work_until VARCHAR(32),
+                last_name VARCHAR(255), first_name VARCHAR(255), middle_name VARCHAR(255),
+                job_title VARCHAR(512), department VARCHAR(512), location VARCHAR(64),
+                phone_work VARCHAR(64), phone_ext VARCHAR(32), phone_mobile VARCHAR(64),
+                email VARCHAR(255), suppliers MEDIUMTEXT, updated DOUBLE
+                ) CHARACTER SET utf8mb4""",
         ]
     if d == "postgresql":
         return [
@@ -281,6 +292,18 @@ def _ddl(d: str) -> list[str]:
             """CREATE TABLE IF NOT EXISTS calib_sets(
                 id BIGSERIAL PRIMARY KEY, ts DOUBLE PRECISION, name TEXT,
                 kind TEXT, n_pairs INTEGER, prompt TEXT, pairs TEXT, params TEXT)""",
+            """CREATE TABLE IF NOT EXISTS server_samples(
+                ts DOUBLE PRECISION, cpu DOUBLE PRECISION, mem DOUBLE PRECISION,
+                swap DOUBLE PRECISION, disk DOUBLE PRECISION,
+                gpu_util DOUBLE PRECISION, gpu_mem DOUBLE PRECISION)""",
+            """CREATE INDEX IF NOT EXISTS idx_ss_ts ON server_samples(ts)""",
+            """CREATE TABLE IF NOT EXISTS org_employees(
+                id BIGSERIAL PRIMARY KEY,
+                active INTEGER, work_until TEXT,
+                last_name TEXT, first_name TEXT, middle_name TEXT,
+                job_title TEXT, department TEXT, location TEXT,
+                phone_work TEXT, phone_ext TEXT, phone_mobile TEXT,
+                email TEXT, suppliers TEXT, updated DOUBLE PRECISION)""",
         ]
     # sqlite (по умолчанию)
     return [
@@ -311,6 +334,17 @@ def _ddl(d: str) -> list[str]:
         """CREATE TABLE IF NOT EXISTS calib_sets(
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, name TEXT,
             kind TEXT, n_pairs INTEGER, prompt TEXT, pairs TEXT, params TEXT)""",
+        """CREATE TABLE IF NOT EXISTS server_samples(
+            ts REAL, cpu REAL, mem REAL, swap REAL, disk REAL,
+            gpu_util REAL, gpu_mem REAL)""",
+        """CREATE INDEX IF NOT EXISTS idx_ss_ts ON server_samples(ts)""",
+        """CREATE TABLE IF NOT EXISTS org_employees(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            active INTEGER, work_until TEXT,
+            last_name TEXT, first_name TEXT, middle_name TEXT,
+            job_title TEXT, department TEXT, location TEXT,
+            phone_work TEXT, phone_ext TEXT, phone_mobile TEXT,
+            email TEXT, suppliers TEXT, updated REAL)""",
     ]
 
 
@@ -1388,3 +1422,158 @@ def catalog_text(rel_path: str, max_chars: int = 20000) -> dict | None:
     return {"text": t[:max_chars], "method": r.get("method"),
             "n_chars": r.get("n_chars") if r.get("n_chars") is not None else len(t),
             "truncated": len(t) > max_chars}
+
+
+# ===================== История загрузки сервера =====================
+
+# Окна агрегации (секунды)
+_LOAD_WINDOWS = {
+    "hour": 3600, "day": 86400, "week": 604800,
+    "month": 2592000, "year": 31536000,
+}
+
+
+def server_sample_save(cpu, mem, swap, disk, gpu_util, gpu_mem) -> None:
+    """Сохранить одну выборку метрик загрузки хоста."""
+    try:
+        _exec("INSERT INTO server_samples(ts,cpu,mem,swap,disk,gpu_util,gpu_mem) "
+              "VALUES(?,?,?,?,?,?,?)",
+              (datetime.now().timestamp(), _fn(cpu), _fn(mem), _fn(swap),
+               _fn(disk), _fn(gpu_util), _fn(gpu_mem)))
+    except Exception as e:
+        print(f"[db] server_sample_save: {e}")
+
+
+def server_prune(days: int = 400) -> int:
+    """Удалить выборки старше N суток (по умолчанию ~13 месяцев)."""
+    try:
+        return _exec("DELETE FROM server_samples WHERE ts<?",
+                     (datetime.now().timestamp() - days * 86400,))
+    except Exception as e:
+        print(f"[db] server_prune: {e}")
+        return 0
+
+
+def _round1(x):
+    return None if x is None else round(_f(x), 1)
+
+
+def server_load_stats() -> dict:
+    """Агрегаты загрузки по окнам час/день/неделя/месяц/год.
+
+    Для каждого окна: среднее и максимум по CPU/памяти/GPU-загрузке/видеопамяти,
+    максимум по swap и диску, число выборок и метка самой ранней выборки."""
+    now = datetime.now().timestamp()
+    out: dict = {}
+    cols = ("AVG(cpu) cpu_avg, MAX(cpu) cpu_max, AVG(mem) mem_avg, MAX(mem) mem_max, "
+            "MAX(swap) swap_max, MAX(disk) disk_max, AVG(gpu_util) gpu_avg, "
+            "MAX(gpu_util) gpu_max, AVG(gpu_mem) gpu_mem_avg, MAX(gpu_mem) gpu_mem_max, "
+            "COUNT(*) n, MIN(ts) since")
+    for name, sec in _LOAD_WINDOWS.items():
+        try:
+            r = _one(f"SELECT {cols} FROM server_samples WHERE ts>=?", (now - sec,))
+        except Exception as e:
+            print(f"[db] server_load_stats {name}: {e}")
+            r = None
+        r = r or {}
+        out[name] = {
+            "cpu_avg": _round1(r.get("cpu_avg")), "cpu_max": _round1(r.get("cpu_max")),
+            "mem_avg": _round1(r.get("mem_avg")), "mem_max": _round1(r.get("mem_max")),
+            "swap_max": _round1(r.get("swap_max")), "disk_max": _round1(r.get("disk_max")),
+            "gpu_avg": _round1(r.get("gpu_avg")), "gpu_max": _round1(r.get("gpu_max")),
+            "gpu_mem_avg": _round1(r.get("gpu_mem_avg")),
+            "gpu_mem_max": _round1(r.get("gpu_mem_max")),
+            "samples": int(r.get("n") or 0),
+            "since": r.get("since"),
+        }
+    return out
+
+
+# ===================== Структура компании (справочник) =====================
+
+_ORG_COLS = ("active", "work_until", "last_name", "first_name", "middle_name",
+             "job_title", "department", "location", "phone_work", "phone_ext",
+             "phone_mobile", "email", "suppliers")
+
+
+def org_replace(rows: list[dict]) -> int:
+    """Полная замена справочника сотрудников. Возвращает число записей."""
+    now = datetime.now().timestamp()
+    cols = ", ".join(_ORG_COLS) + ", updated"
+    ph = ", ".join("?" for _ in _ORG_COLS) + ", ?"
+    with _cursor() as (d, conn, cur):
+        cur.execute(_ph("DELETE FROM org_employees", d))
+        sql = _ph(f"INSERT INTO org_employees({cols}) VALUES({ph})", d)
+        n = 0
+        for r in rows:
+            # парсер отдаёт ключ "position"; в БД колонка job_title
+            params = []
+            for c in _ORG_COLS:
+                if c == "job_title":
+                    params.append(r.get("job_title") or r.get("position") or "")
+                else:
+                    params.append(r.get(c) if r.get(c) is not None else "")
+            params.append(now)
+            cur.execute(sql, tuple(params))
+            n += 1
+        if d == "sqlite":
+            conn.commit()
+    _bump()
+    return n
+
+
+def org_list(search: str = "", department: str = "", limit: int = 2000) -> list[dict]:
+    """Список сотрудников с фильтром по подстроке и/или отделу.
+    В выдаче job_title продублирован как position (для совместимости с UI)."""
+    where, params = [], []
+    if search:
+        s = f"%{search.strip().lower()}%"
+        where.append("(LOWER(last_name) LIKE ? OR LOWER(first_name) LIKE ? OR "
+                     "LOWER(middle_name) LIKE ? OR LOWER(job_title) LIKE ? OR "
+                     "LOWER(department) LIKE ? OR LOWER(email) LIKE ? OR "
+                     "phone_work LIKE ? OR phone_ext LIKE ? OR phone_mobile LIKE ? OR "
+                     "LOWER(suppliers) LIKE ?)")
+        params += [s] * 10
+    if department:
+        where.append("department = ?")
+        params.append(department)
+    sql = "SELECT * FROM org_employees"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY last_name, first_name LIMIT ?"
+    params.append(int(limit))
+    try:
+        rows = _all(sql, tuple(params))
+    except Exception as e:
+        print(f"[db] org_list: {e}")
+        return []
+    for r in rows:
+        r["position"] = r.get("job_title")
+    return rows
+
+
+def org_departments() -> list[dict]:
+    """Отделы со счётчиком сотрудников (для фильтра)."""
+    try:
+        return _all("SELECT department, COUNT(*) n FROM org_employees "
+                    "GROUP BY department ORDER BY department")
+    except Exception:
+        return []
+
+
+def org_meta() -> dict:
+    try:
+        r = _one("SELECT COUNT(*) n, MAX(updated) upd FROM org_employees") or {}
+    except Exception:
+        r = {}
+    return {"count": int(r.get("n") or 0), "updated": r.get("upd")}
+
+
+def org_clear() -> int:
+    try:
+        n = _exec("DELETE FROM org_employees")
+    except Exception as e:
+        print(f"[db] org_clear: {e}")
+        n = 0
+    _bump()
+    return n

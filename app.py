@@ -65,6 +65,18 @@ def _start_telegram():
         print(f"[telegram] не запущен: {e}")
 
 
+@app.on_event("startup")
+def _start_monitor():
+    """Фоновый сбор метрик загрузки хоста (история час/день/неделя/месяц/год)."""
+    try:
+        import monitor
+        r = monitor.start()
+        if r.get("ok"):
+            print(f"[monitor] {r.get('msg')}")
+    except Exception as e:
+        print(f"[monitor] не запущен: {e}")
+
+
 class ChatRequest(BaseModel):
     question: str
     history: list[dict] = []
@@ -470,6 +482,61 @@ def api_system():
 def api_server_load():
     """Текущая загрузка хоста: CPU, память, диски, GPU, сеть, аптайм."""
     return admin_ops.server_load()
+
+
+@app.get("/api/server-history")
+def api_server_history():
+    """История загрузки за час/день/неделю/месяц/год + рекомендации по железу."""
+    return admin_ops.server_history()
+
+
+# ===================== Структура компании =====================
+
+@app.get("/api/admin/org/config")
+def api_org_config(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import org_structure
+    return {"config": org_structure.get_config(),
+            "status": org_structure.get_status(),
+            "meta": db.org_meta()}
+
+
+@app.post("/api/admin/org/config")
+def api_org_config_save(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import org_structure
+    cfg = org_structure.set_config(url=payload.get("url"),
+                                   enabled=payload.get("enabled"))
+    return {"ok": True, "config": cfg}
+
+
+@app.post("/api/admin/org/sync")
+def api_org_sync(payload: dict = Body(default={}), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import org_structure
+    url = (payload or {}).get("url")
+    if url is not None:
+        org_structure.set_config(url=url)
+    r = org_structure.sync(url)
+    r["meta"] = db.org_meta()
+    return r
+
+
+@app.get("/api/admin/org/list")
+def api_org_list(search: str = "", department: str = "",
+                 x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import org_structure
+    return {"employees": db.org_list(search, department),
+            "departments": db.org_departments(),
+            "meta": db.org_meta(),
+            "status": org_structure.get_status()}
+
+
+@app.post("/api/admin/org/clear")
+def api_org_clear(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"ok": True, "removed": db.org_clear()}
 
 
 @app.post("/api/admin/selftest")

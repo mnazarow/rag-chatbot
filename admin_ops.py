@@ -1919,6 +1919,182 @@ def server_load() -> dict:
     return out
 
 
+_PERIOD_RU = {"hour": "час", "day": "день", "week": "неделя",
+              "month": "месяц", "year": "год"}
+
+
+def _hw_context() -> dict:
+    """Контекст железа для рекомендаций: ядра CPU, объём ОЗУ, GPU, бэкенд LLM."""
+    ctx = {"cpu_cores": None, "mem_total_gb": None, "gpu_vendor": "none",
+           "gpu_count": 0, "gpu_mem_total_gb": None, "backend": None, "device": None}
+    try:
+        import psutil
+        ctx["cpu_cores"] = psutil.cpu_count(logical=True)
+        ctx["mem_total_gb"] = round(psutil.virtual_memory().total / 1024**3, 1)
+    except Exception:
+        ctx["cpu_cores"] = os.cpu_count()
+    try:
+        g = _gpu_info()
+        ctx["gpu_vendor"] = g.get("vendor", "none")
+        devs = g.get("devices") or []
+        ctx["gpu_count"] = len(devs) if ctx["gpu_vendor"] in ("nvidia", "amd") else 0
+        mts = [d.get("mem_total") for d in devs if d.get("mem_total")]
+        if mts:
+            ctx["gpu_mem_total_gb"] = round(max(mts) / 1024, 1)   # МБ → ГБ
+    except Exception:
+        pass
+    try:
+        ctx["backend"] = settings.get("LLM_BACKEND")
+        ctx["device"] = settings.get("DEVICE")
+    except Exception:
+        pass
+    return ctx
+
+
+def _best_period(periods: dict) -> tuple[str, dict]:
+    """Самое длинное окно с достаточным числом выборок (>=30), иначе самое полное."""
+    order = ["year", "month", "week", "day", "hour"]
+    for name in order:
+        p = periods.get(name) or {}
+        if p.get("samples", 0) >= 30:
+            return name, p
+    # фолбэк — окно с максимумом выборок
+    best = max(periods.items(), key=lambda kv: kv[1].get("samples", 0),
+               default=("day", {}))
+    return best[0], best[1]
+
+
+def _hw_recommendations(periods: dict, ctx: dict) -> list[dict]:
+    """Рекомендации по железу на основе агрегатов загрузки. Уровни:
+    critical (срочно), warn (внимание), ok (запас), info (справка)."""
+    recs: list[dict] = []
+    pname, p = _best_period(periods)
+    win = _PERIOD_RU.get(pname, pname)
+    n = p.get("samples", 0)
+    if n < 10:
+        recs.append({"level": "info",
+                     "text": "Недостаточно данных для рекомендаций — статистика "
+                             "загрузки накапливается, зайдите позже."})
+        return recs
+
+    def g(k):
+        return p.get(k)
+
+    # ---- CPU ----
+    ca, cm = g("cpu_avg"), g("cpu_max")
+    cores = ctx.get("cpu_cores")
+    cores_s = f", ядер: {cores}" if cores else ""
+    if cm is not None and cm >= 95 and (ca or 0) >= 60:
+        recs.append({"level": "critical",
+                     "text": f"CPU постоянно перегружен (средн. {ca}%, пик {cm}% за {win}"
+                             f"{cores_s}). Возьмите процессор с большим числом ядер/частотой "
+                             "или вынесите эмбеддинг и LLM на отдельный сервер/GPU."})
+    elif cm is not None and cm >= 90:
+        recs.append({"level": "warn",
+                     "text": f"Бывают пики загрузки CPU до {cm}% (средн. {ca}% за {win}). "
+                             "Под пиковой индексацией поможет более мощный CPU; следите за "
+                             "временем ответа."})
+    elif ca is not None and ca < 20:
+        recs.append({"level": "ok",
+                     "text": f"CPU с большим запасом (средн. {ca}%, пик {cm}% за {win}) — "
+                             "апгрейд процессора не требуется."})
+
+    # ---- Память ----
+    ma, mm, sw = g("mem_avg"), g("mem_max"), g("swap_max")
+    ram_s = f", всего ОЗУ: {ctx['mem_total_gb']} ГБ" if ctx.get("mem_total_gb") else ""
+    if (mm is not None and mm >= 92) or (sw is not None and sw >= 25):
+        recs.append({"level": "critical",
+                     "text": f"Память на пределе (пик {mm}%, swap до {sw}% за {win}{ram_s}). "
+                             "Добавьте ОЗУ — нехватка вызывает своппинг и резко замедляет "
+                             "ответы; ориентир +50–100% к текущему объёму."})
+    elif mm is not None and mm >= 80:
+        recs.append({"level": "warn",
+                     "text": f"Память используется плотно (пик {mm}%, средн. {ma}% за {win}"
+                             f"{ram_s}). Стоит запланировать увеличение ОЗУ."})
+    elif ma is not None and ma < 40:
+        recs.append({"level": "ok",
+                     "text": f"Памяти достаточно (средн. {ma}%, пик {mm}% за {win}{ram_s})."})
+
+    # ---- GPU ----
+    has_gpu = ctx.get("gpu_vendor") in ("nvidia", "amd")
+    gmm, ga = g("gpu_mem_max"), g("gpu_avg")
+    vram_s = (f", VRAM: {ctx['gpu_mem_total_gb']} ГБ" if ctx.get("gpu_mem_total_gb") else "")
+    if has_gpu:
+        if gmm is not None and gmm >= 92:
+            recs.append({"level": "critical",
+                         "text": f"Видеопамять почти исчерпана (пик {gmm}% за {win}{vram_s}). "
+                                 "Возьмите GPU с большим объёмом VRAM, используйте меньшую/"
+                                 "квантованную модель (AWQ/Int4) или снизьте VLLM_MAX_LEN / "
+                                 "размер контекста."})
+        elif gmm is not None and gmm >= 80:
+            recs.append({"level": "warn",
+                         "text": f"Видеопамять заполняется (пик {gmm}% за {win}{vram_s}). "
+                                 "Следите за запасом при росте модели/контекста."})
+        elif ga is not None and ga < 15:
+            recs.append({"level": "ok",
+                         "text": f"GPU слабо загружен (средн. {ga}% за {win}) — есть запас "
+                                 "под более крупную модель или больший батч."})
+    else:
+        backend = (ctx.get("backend") or "").lower()
+        dev = (ctx.get("device") or "").lower()
+        if backend in ("vllm", "openai") or dev == "cuda":
+            recs.append({"level": "warn",
+                         "text": "Выбран GPU-бэкенд генерации (vLLM/CUDA), но видеокарта не "
+                                 "обнаружена. Для ускорения нужна NVIDIA GPU; иначе генерация "
+                                 "идёт на CPU и медленнее."})
+        elif (ca is not None and ca >= 60):
+            recs.append({"level": "info",
+                         "text": "GPU не обнаружен, а CPU нагружен. Видеокарта NVIDIA заметно "
+                                 "ускорит эмбеддинг, реранкинг и работу LLM."})
+
+    # ---- Диск ----
+    dm = g("disk_max")
+    if dm is not None and dm >= 90:
+        recs.append({"level": "critical",
+                     "text": f"Диск почти заполнен (пик {dm}% за {win}). Расширьте хранилище "
+                             "или очистите данные — нехватка места ломает индексацию и БД."})
+    elif dm is not None and dm >= 80:
+        recs.append({"level": "warn",
+                     "text": f"На диске остаётся мало места (пик {dm}% за {win}). "
+                             "Запланируйте расширение."})
+
+    if not recs:
+        recs.append({"level": "ok",
+                     "text": f"За период «{win}» ресурсы в норме — текущей конфигурации "
+                             "достаточно, апгрейд не требуется."})
+    return recs
+
+
+def server_history() -> dict:
+    """История загрузки по окнам + рекомендации по железу для раздела
+    «Загрузка сервера»."""
+    periods = db.server_load_stats()
+    ctx = _hw_context()
+    recs = _hw_recommendations(periods, ctx)
+    total = sum(p.get("samples", 0) for p in periods.values())
+    since = None
+    yr = periods.get("year") or {}
+    if yr.get("since"):
+        since = yr["since"]
+    return {
+        "periods": periods,
+        "period_labels": _PERIOD_RU,
+        "recommendations": recs,
+        "hardware": ctx,
+        "samples_total": (periods.get("year") or {}).get("samples", 0),
+        "since": since,
+        "monitoring": _monitor_running(),
+    }
+
+
+def _monitor_running() -> bool:
+    try:
+        import monitor
+        return monitor.running()
+    except Exception:
+        return False
+
+
 def component_analytics() -> dict:
     """Расширенная аналитика по компонентам: Qdrant, граф (LightRAG), дообучение."""
     coll = settings.get("QDRANT_COLLECTION")
