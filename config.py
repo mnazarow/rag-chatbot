@@ -108,6 +108,8 @@ TELEGRAM_VOICE_OUT = _bool("TELEGRAM_VOICE_OUT", False)  # отвечать го
 # Распознавать приложенные к сообщению файлы (документы/фото): извлечь текст и ответить
 # на подпись-вопрос по содержимому файла (без добавления в базу).
 TELEGRAM_FILES = _bool("TELEGRAM_FILES", True)
+# Показывать в ответе бота структуру формирования ответа (этапы конвейера, как в чате).
+TELEGRAM_PIPELINE = _bool("TELEGRAM_PIPELINE", True)
 # Движок синтеза речи: auto (пробует доступные) | piper | say (macOS) | espeak | off.
 TTS_ENGINE = os.getenv("TTS_ENGINE", "auto")
 # Голос/модель: для macOS `say` — имя голоса (напр. Milena/Yuri); для piper — путь к .onnx;

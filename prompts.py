@@ -39,9 +39,20 @@ def build_context(hits: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
+def _synonyms_block(question: str) -> str:
+    """Подсказка по синонимам, встретившимся в вопросе (или '')."""
+    try:
+        import synonyms
+        h = synonyms.hint(question)
+        return (h + "\n\n") if h else ""
+    except Exception:
+        return ""
+
+
 def build_user_message(question: str, context: str) -> str:
     return (
         f"КОНТЕКСТ:\n{context}\n\n"
+        f"{_synonyms_block(question)}"
         f"ВОПРОС СОТРУДНИКА:\n{question}\n\n"
         f"Дай ответ по правилам выше."
     )

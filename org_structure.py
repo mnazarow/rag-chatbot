@@ -179,15 +179,30 @@ def sync(url: str | None = None) -> dict:
     if not url:
         _set_status(False, 0, "URL не задан")
         return {"ok": False, "error": "URL не задан", "count": 0}
+    aid = None
+    try:
+        import activity
+        aid = activity.start("parse", "Структура компании", "загрузка по URL")
+    except Exception:
+        aid = None
     try:
         text = _fetch(url)
+        if aid is not None:
+            import activity
+            activity.update(aid, stage="разбор и сохранение")
         rows = parse_xml(text)
     except Exception as e:
         msg = str(e)[:300]
         _set_status(False, 0, msg)
+        if aid is not None:
+            import activity
+            activity.finish(aid, ok=False, stage="ошибка")
         return {"ok": False, "error": msg, "count": 0}
     n = db.org_replace(rows)
     _set_status(True, n, None)
+    if aid is not None:
+        import activity
+        activity.finish(aid, ok=True, stage=f"загружено {n}")
     return {"ok": True, "count": n, "error": None}
 
 

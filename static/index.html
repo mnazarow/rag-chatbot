@@ -118,6 +118,14 @@
   .ro div span{color:var(--muted)}
   .note{font-size:12px;color:var(--muted);margin-top:4px}
   .saved{color:#4ade80;font-size:13px;margin-left:10px}
+  /* живые запросы (дашборд) */
+  .actrow{display:flex;align-items:center;gap:12px;padding:8px 12px;margin:6px 0;
+    background:var(--panel2);border:1px solid var(--line);border-radius:10px;animation:fade .2s ease}
+  .actrow .actk{flex:0 0 150px;font-size:12px;color:var(--muted)}
+  .actrow .actlabel{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+  .actrow .actstage{flex:0 0 auto;font-size:12px;color:var(--txt)}
+  .actrow .actms{flex:0 0 70px;text-align:right;font-size:12px;color:var(--muted)}
+  .actspin{display:inline-block;animation:pglow 1s ease-in-out infinite}
   /* модальный браузер папок */
   .overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
   .overlay.open{display:flex}
@@ -155,6 +163,7 @@
     <button data-t="calib">🎛 Автокалибровка</button>
     <button data-t="admin">⚙️ Администратор</button>
     <button data-t="org">🏢 Структура компании</button>
+    <button data-t="syn">🔤 Синонимы</button>
   </nav>
   <div class="spacer"></div>
   <div class="pill" style="display:flex;gap:6px;align-items:center">
@@ -175,6 +184,12 @@
     <h1>Дашборд</h1>
     <div class="sub">Статистика работы ассистента <button class="act ghost" onclick="loadStats()">Обновить</button></div>
     <div class="cards" id="statcards"></div>
+    <div class="box">
+      <h3>⚡ Текущие запросы <span id="act_count" class="tag"></span>
+        <span class="note" style="font-weight:400;margin-left:8px">в реальном времени</span></h3>
+      <div class="note" style="margin-bottom:8px">Обработка запросов веб-чата и Телеграм, формирование ответов, разбор файлов, парсинг справочника и фоновые задачи (индексация, граф, бенчмарк и т. п.). Обновляется автоматически.</div>
+      <div id="act_list"></div>
+    </div>
     <div class="box">
       <h3>Последние запросы</h3>
       <table><thead><tr><th>Время</th><th>Вопрос</th><th>Ответ</th><th>Реленв.</th></tr></thead>
@@ -1255,6 +1270,39 @@
       </div>
     </div>
   </section>
+
+  <!-- ===== СИНОНИМЫ ===== -->
+  <section id="syn">
+    <h1>Синонимы</h1>
+    <div class="sub">Словарь синонимов для лучшего понимания вопросов и формирования ответов
+      <button class="act ghost" onclick="loadSyn()">Обновить</button></div>
+
+    <div class="box"><h3>⚙️ Состояние</h3>
+      <div class="note" style="margin-bottom:8px">Когда учёт синонимов включён: если в вопросе встречается слово из группы, остальные слова группы добавляются к поисковому запросу (полнее находятся документы), а модели передаётся подсказка о равнозначности слов (точнее ответ). Слова в группе считаются взаимозаменяемыми.</div>
+      <label style="font-weight:500"><input type="checkbox" id="syn_enabled" onchange="synToggle()"> учитывать синонимы при поиске и ответах</label>
+      <span id="syn_status" class="note" style="margin-left:12px"></span>
+    </div>
+
+    <div class="box"><h3>➕ Добавить слово</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input id="syn_term" placeholder="Слово (например: отпуск)" style="min-width:200px">
+        <input id="syn_syns" placeholder="Синонимы через запятую: отгул, каникулы, vacation" style="flex:1;min-width:280px">
+        <button class="act" onclick="synAdd()">Добавить</button>
+      </div>
+      <div id="syn_addmsg" class="note" style="margin-top:6px"></div>
+    </div>
+
+    <div class="box"><h3>📚 Словарь <span id="syn_count" class="tag"></span></h3>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <input id="syn_search" placeholder="Поиск по слову или синониму…" style="flex:1;min-width:240px" oninput="synRender()">
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="synClear()">🗑 Очистить всё</button>
+      </div>
+      <div style="overflow:auto">
+        <table><thead><tr><th style="width:220px">Слово</th><th>Синонимы (через запятую)</th><th style="width:150px">Действия</th></tr></thead>
+        <tbody id="syn_rows"></tbody></table>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- модальный браузер папок -->
@@ -1282,8 +1330,49 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   b.classList.add('active'); $('#'+b.dataset.t).classList.add('active');
   if(b.dataset.t!=='server') stopSrvAuto();   // уходим с вкладки — гасим автообновление
   if(b.dataset.t!=='schema') clearInterval(schemaTimer);
-  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg}[b.dataset.t]||(()=>{}))();
+  if(b.dataset.t!=='dash') clearInterval(actTimer);          // живые запросы — только на дашборде
+  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn}[b.dataset.t]||(()=>{}))();
+  if(b.dataset.t==='dash') startActivityPoll();
 });
+
+// ---- текущие запросы (живая активность) ----
+let actTimer=null;
+function startActivityPoll(){ clearInterval(actTimer); loadActivity(); actTimer=setInterval(loadActivity,1500); }
+const ACT_KIND={
+  chat:{icon:'💬',label:'Веб-чат'}, telegram:{icon:'✈️',label:'Телеграм'},
+  attach:{icon:'📎',label:'Документ в чате'}, parse:{icon:'🏢',label:'Парсинг'},
+  ingest:{icon:'🗂',label:'Индексация'}, job:{icon:'⚙️',label:'Задача'},
+};
+function actElapsed(ms){ ms=ms||0; if(ms<1000) return ms+' мс'; const s=ms/1000; if(s<60) return s.toFixed(1)+' с'; const m=Math.floor(s/60); return m+' м '+Math.round(s%60)+' с'; }
+async function loadActivity(){
+  let d; try{ d=await (await fetch('/api/activity?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
+  const live=d.live||[], jobs=d.jobs||[];
+  const rows=[];
+  for(const it of live){
+    const k=ACT_KIND[it.kind]||{icon:'•',label:it.kind};
+    const spin = it.done ? (it.ok===false?'✖':'✓') : '<span class="actspin">⏳</span>';
+    const col = it.done ? (it.ok===false?'#f87171':'#34d399') : 'var(--accent)';
+    const prog = (it.progress!=null) ? ` · ${it.progress}%` : '';
+    rows.push(`<div class="actrow" style="border-left:3px solid ${col}">
+      <span class="actk">${k.icon} ${k.label}</span>
+      <span class="actlabel">${esc(it.label||'')||'<span class=note>—</span>'}</span>
+      <span class="actstage">${spin} ${esc(it.stage||'')}${prog}</span>
+      <span class="actms">${actElapsed(it.elapsed_ms)}</span></div>`);
+  }
+  for(const j of jobs){
+    const spin = j.running ? '<span class="actspin">⏳</span>' : (j.ok===false?'✖':'✓');
+    const col = j.running ? '#f59e0b' : (j.ok===false?'#f87171':'#34d399');
+    rows.push(`<div class="actrow" style="border-left:3px solid ${col}">
+      <span class="actk">${j.icon||'⚙️'} Задача</span>
+      <span class="actlabel">${esc(j.label||'')}</span>
+      <span class="actstage">${spin} ${esc(j.stage||'')}</span>
+      <span class="actms">${actElapsed(j.elapsed_ms)}</span></div>`);
+  }
+  const n=d.active||0;
+  $('#act_count').textContent = n? (n+' активн.') : 'нет активных';
+  $('#act_list').innerHTML = rows.length ? rows.join('')
+    : '<div class="note">Сейчас нет активных запросов и задач. Здесь появятся обрабатываемые вопросы, генерация ответов, разбор файлов, парсинг и фоновые процессы.</div>';
+}
 
 // ---- дашборд ----
 async function loadStats(){
@@ -4025,6 +4114,63 @@ function orgRender(){
       <td>${esc(r.suppliers||'')}</td></tr>`;
   }).join('') : '<tr><td colspan="9" class="note">нет данных. Укажите URL и нажмите «Синхронизировать сейчас».</td></tr>';
 }
+
+// ---- синонимы ----
+let SYN_ITEMS=[];
+function synStatus(t,ok=true){ const e=$('#syn_status'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+function synAddMsg(t,ok=true){ const e=$('#syn_addmsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+async function loadSyn(){
+  const d=await adminGet('/api/admin/synonyms');
+  if($('#syn_enabled')) $('#syn_enabled').checked=!!(d&&d.enabled);
+  SYN_ITEMS=(d&&d.items)||[];
+  synStatus(d&&d.enabled?'учёт синонимов включён':'учёт синонимов выключен', !!(d&&d.enabled));
+  synRender();
+}
+async function synToggle(){
+  const r=await adminPost('/api/admin/synonyms/config',{enabled:$('#syn_enabled').checked});
+  synStatus(r&&r.enabled?'учёт синонимов включён':'учёт синонимов выключен', !!(r&&r.enabled));
+}
+function _synParse(s){ return (s||'').split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean); }
+async function synAdd(){
+  const term=$('#syn_term').value.trim();
+  const syns=_synParse($('#syn_syns').value);
+  if(!term){ synAddMsg('укажите слово',false); return; }
+  if(!syns.length){ synAddMsg('добавьте хотя бы один синоним',false); return; }
+  const r=await adminPost('/api/admin/synonyms/add',{term,syns});
+  if(r&&r.ok){ $('#syn_term').value=''; $('#syn_syns').value=''; synAddMsg('добавлено',true); await loadSyn(); }
+  else synAddMsg((r&&r.msg)||'ошибка',false);
+}
+async function synSave(id){
+  const term=$('#synt_'+id).value.trim();
+  const syns=_synParse($('#syns_'+id).value);
+  const r=await adminPost('/api/admin/synonyms/update',{id,term,syns});
+  synStatus(r&&r.ok?('сохранено: '+term):'ошибка сохранения', !!(r&&r.ok));
+  if(r&&r.ok) await loadSyn();
+}
+async function synDel(id){
+  if(!confirm('Удалить это слово и его синонимы?')) return;
+  const r=await adminPost('/api/admin/synonyms/delete',{id});
+  if(r&&r.ok) await loadSyn();
+}
+async function synClear(){
+  if(!confirm('Очистить весь словарь синонимов?')) return;
+  const r=await adminPost('/api/admin/synonyms/clear');
+  synStatus('удалено: '+((r&&r.removed)||0),true); await loadSyn();
+}
+function synRender(){
+  const q=($('#syn_search').value||'').trim().toLowerCase();
+  let rows=SYN_ITEMS;
+  if(q) rows=rows.filter(r=>([r.term].concat(r.syns||[]).join(' ').toLowerCase().includes(q)));
+  if($('#syn_count')) $('#syn_count').textContent=SYN_ITEMS.length?(SYN_ITEMS.length+' слов'):'';
+  $('#syn_rows').innerHTML = rows.length ? rows.map(r=>`<tr>
+    <td><input id="synt_${r.id}" value="${escAttr(r.term||'')}" style="width:100%"></td>
+    <td><input id="syns_${r.id}" value="${escAttr((r.syns||[]).join(', '))}" style="width:100%"></td>
+    <td style="white-space:nowrap">
+      <button class="dirbtn" onclick="synSave(${r.id})">💾</button>
+      <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="synDel(${r.id})">🗑</button>
+    </td></tr>`).join('')
+    : '<tr><td colspan="3" class="note">словарь пуст. Добавьте слово и синонимы выше.</td></tr>';
+}
 function opsMsg(t,ok=true){ $('#opsmsg').textContent=t; $('#opsmsg').className=ok?'saved':'note'; }
 let pollT=null;
 function pollJob(){ clearInterval(pollT); pollT=setInterval(loadOps,4000);
@@ -4378,7 +4524,7 @@ function setTheme(name){
 })();
 
 // старт
-loadStats(); loadMode();
+loadStats(); loadMode(); startActivityPoll();
 </script>
 </body>
 </html>

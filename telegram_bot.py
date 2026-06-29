@@ -152,9 +152,12 @@ def send_train_instructions(chat_id: int) -> bool:
     return True
 
 
-def _answer(question: str):
+def _answer(question: str, trace: list | None = None):
     """Синхронный RAG-ответ: поиск → контекст → LLM. Возвращает (text, sources, hits).
+    `trace` (если передан) наполняется этапами конвейера — как в веб-чате.
     При включённом ANSWER_CACHE одинаковые вопросы отдаются из Redis без вызова LLM."""
+    if trace is None:
+        trace = []
     ckey = None
     if settings.get("ANSWER_CACHE"):
         try:
@@ -166,6 +169,7 @@ def _answer(question: str):
                 str(settings.get("TEMPERATURE"))]).encode("utf-8")).hexdigest()
             c = cache.get_json(ckey, ns="index")
             if c:
+                trace.append({"key": "answer_cache", "ms": 0, "info": {"hit": True}})
                 hits = [{"score": c.get("top_score", 0.0)}] if c.get("answered") else []
                 return c.get("text", ""), c.get("sources", []), hits
         except Exception:
@@ -178,7 +182,7 @@ def _answer(question: str):
         if engine == "kag":
             import asyncio
             import kag
-            res = asyncio.run(kag.answer(question)) or {}
+            res = asyncio.run(kag.answer(question, trace=trace)) or {}
             hits = res.get("hits", [])
             text = res.get("text", "") or "В доступных документах нет точного ответа на этот вопрос."
             sources = [{"source": h["source"], "page": h.get("page"),
@@ -194,7 +198,11 @@ def _answer(question: str):
         if use_graph:
             import asyncio
             import graph_rag
+            t = time.time()
             text = asyncio.run(graph_rag.answer(question)) or ""
+            trace.append({"key": "engine", "ms": int((time.time() - t) * 1000),
+                          "info": {"engine": "граф знаний (LightRAG)",
+                                   "mode": settings.current_mode()}})
             if text.strip():
                 return text, [{"source": "граф знаний (LightRAG)", "page": None}], \
                     [{"score": 1.0}]
@@ -202,19 +210,27 @@ def _answer(question: str):
         print(f"[tg] движок {engine} недоступен, фолбэк на вектор: {e}")
 
     # Векторный путь + расширенный фолбэк (как в /chat)
-    hits = search(question)
+    hits = search(question, trace=trace)
     if not hits and settings.get("NO_ANSWER_FALLBACK"):
         try:
-            hits = retriever.no_answer_fallback(question) or []
+            hits = retriever.no_answer_fallback(question, trace=trace) or []
         except Exception as e:
             print(f"[tg] фолбэк-поиск не удался: {e}")
     if not hits:
         return "В доступных документах нет точного ответа на этот вопрос.", [], []
     context = prompts.build_context(hits)
+    trace.append({"key": "context", "ms": 0,
+                  "info": {"chunks": len(hits), "chars": len(context)}})
     messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")},
                 {"role": "user", "content": prompts.build_user_message(question, context)}]
+    t = time.time()
     text = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
                             model=settings.active_model())
+    trace.append({"key": "generate", "ms": int((time.time() - t) * 1000),
+                  "info": {"model": settings.active_model(),
+                           "backend": settings.get("LLM_BACKEND"),
+                           "temperature": settings.get("TEMPERATURE"),
+                           "chars": len(text or "")}})
     sources = [{"source": h["source"], "page": h.get("page"),
                 "score": round(h.get("score", 0), 3)} for h in hits]
     if ckey:
@@ -228,13 +244,111 @@ def _answer(question: str):
     return text, sources, hits
 
 
-def _answer_attachment(path: str, name: str, question: str):
+# Этапы конвейера → (иконка, подпись) — зеркало STAGE_META веб-чата.
+_STAGE_META = {
+    "cache": ("⚡", "Кэш поиска"), "answer_cache": ("⚡", "Кэш ответа"),
+    "embed": ("🧮", "Эмбеддинг запроса"), "filter": ("🧭", "Фильтр"),
+    "dense": ("🗄", "Векторный поиск (Qdrant)"), "bm25": ("🔤", "Лексика BM25"),
+    "rerank": ("🎯", "Реранк (cross-encoder)"),
+    "fb_lexical": ("🔎", "Доп. поиск (лексический)"),
+    "fb_deep": ("🕵️", "Глубокий поиск (по каталогу)"),
+    "attach": ("📎", "Разбор документа"), "context": ("📋", "Сборка контекста"),
+    "generate": ("🧠", "Генерация (LLM)"), "engine": ("🧩", "Движок"),
+    "kag_decompose": ("🪓", "KAG: декомпозиция вопроса"),
+    "kag_retrieve": ("🔗", "KAG: мультихоп-поиск"),
+    "kag_graph": ("🕸", "KAG: знания графа"), "kag_generate": ("🧠", "KAG: генерация"),
+}
+
+
+def _stage_params(key: str, info: dict) -> str:
+    info = info or {}
+    p: list[str] = []
+    if key == "embed":
+        if info.get("model"):
+            p.append(str(info["model"]))
+        if info.get("device"):
+            p.append(str(info["device"]))
+        if info.get("synonyms"):
+            p.append("+синонимы")
+    elif key == "filter":
+        p.append("тип: " + str(info.get("type", "нет")))
+    elif key == "dense":
+        p.append("top-k " + str(info.get("top_k", "—")))
+        p.append("кандидатов " + str(info.get("candidates", "—")))
+        if info.get("fallback"):
+            p.append("фолбэк без фильтра")
+    elif key == "bm25":
+        p.append("кандидатов " + str(info.get("candidates", "—")))
+    elif key == "rerank":
+        if info.get("model"):
+            p.append(str(info["model"]))
+        if info.get("min_score") is not None:
+            p.append("порог " + str(info["min_score"]))
+        p.append("оставлено " + str(info.get("kept", "—")) + "/" + str(info.get("candidates", "—")))
+    elif key == "attach":
+        if info.get("file"):
+            p.append(str(info["file"]))
+        p.append("фрагментов " + str(info.get("fragments", "—")))
+    elif key in ("fb_lexical", "fb_deep"):
+        p.append("найдено " + str(info.get("found", "—")))
+        if key == "fb_deep" and info.get("files"):
+            p.append("файлы: " + "; ".join(info["files"]))
+    elif key == "context":
+        p.append("фрагментов " + str(info.get("chunks", "—")))
+        if info.get("chars") is not None:
+            p.append(str(info["chars"]) + " симв.")
+    elif key == "generate":
+        if info.get("model"):
+            p.append(str(info["model"]))
+        if info.get("backend"):
+            p.append(str(info["backend"]))
+        if info.get("temperature") is not None:
+            p.append("t=" + str(info["temperature"]))
+        if info.get("chars") is not None:
+            p.append(str(info["chars"]) + " симв.")
+    elif key == "engine":
+        if info.get("engine"):
+            p.append(str(info["engine"]))
+        if info.get("mode"):
+            p.append("режим " + str(info["mode"]))
+    elif key == "kag_decompose":
+        p.append("под-вопросов " + str(info.get("hops", "—")))
+    elif key == "kag_retrieve":
+        p.append("шагов " + str(info.get("hops", "—")))
+        p.append("фрагментов " + str(info.get("chunks", "—")))
+    elif key == "kag_graph":
+        p.append(("+" + str(info["chars"]) + " симв. знаний") if info.get("chars")
+                 else "граф не дал знаний")
+    elif key in ("cache", "answer_cache"):
+        p.append("попадание" if info.get("hit") else "мимо")
+    return " · ".join(p)
+
+
+def _format_pipeline(trace: list) -> str:
+    """Текстовая «структура формирования ответа» по этапам (как конвейер в чате)."""
+    if not trace:
+        return ""
+    lines = ["⚙️ Структура формирования ответа:"]
+    for s in trace:
+        key = s.get("key", "")
+        icon, label = _STAGE_META.get(key, ("•", key))
+        params = _stage_params(key, s.get("info"))
+        ms = s.get("ms")
+        tail = f" · {ms} мс" if (ms is not None and ms > 0) else ""
+        lines.append(f"• {icon} {label}" + (f" — {params}" if params else "") + tail)
+    return "\n".join(lines)
+
+
+def _answer_attachment(path: str, name: str, question: str, trace: list | None = None):
     """Ответ по приложенному файлу: извлечь текст, при наличии вопроса — ответить по
     содержимому файла (реранк), иначе вернуть распознанный фрагмент. Возвращает
-    (text, sources, hits) как и _answer."""
+    (text, sources, hits) как и _answer; `trace` наполняется этапами."""
+    if trace is None:
+        trace = []
     import loaders
     from ingest import chunk_text
     items = []
+    t = time.time()
     try:
         for part in loaders.load_file(__import__("pathlib").Path(path)):
             for ch in chunk_text(part.get("text") or "", settings.get("CHUNK_SIZE"),
@@ -243,6 +357,8 @@ def _answer_attachment(path: str, name: str, question: str):
                     items.append({"text": ch, "source": name, "page": part.get("page")})
     except Exception as e:
         print(f"[tg] разбор файла {name}: {e}")
+    trace.append({"key": "attach", "ms": int((time.time() - t) * 1000),
+                  "info": {"file": name, "fragments": len(items)}})
     if not items:
         return "Не удалось извлечь текст из файла (пустой или неподдерживаемый формат).", [], []
     q = (question or "").strip()
@@ -250,14 +366,26 @@ def _answer_attachment(path: str, name: str, question: str):
         full = " ".join(i["text"] for i in items).strip()[:2500]
         return f"📄 Распознанный текст файла «{name}»:\n\n{full}\n\n" \
                f"Задайте вопрос по этому файлу в подписи к нему.", [], items[:1]
+    t = time.time()
     hits = retriever.rerank_texts(q, items)
+    trace.append({"key": "rerank", "ms": int((time.time() - t) * 1000),
+                  "info": {"model": settings.get("RERANK_MODEL"),
+                           "kept": len(hits), "candidates": len(items)}})
     if not hits:
         return "Не удалось найти ответ в приложенном файле.", [], []
     context = prompts.build_context(hits)
+    trace.append({"key": "context", "ms": 0,
+                  "info": {"chunks": len(hits), "chars": len(context)}})
     messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")},
                 {"role": "user", "content": prompts.build_user_message(q, context)}]
+    t = time.time()
     text = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
                             model=settings.active_model())
+    trace.append({"key": "generate", "ms": int((time.time() - t) * 1000),
+                  "info": {"model": settings.active_model(),
+                           "backend": settings.get("LLM_BACKEND"),
+                           "temperature": settings.get("TEMPERATURE"),
+                           "chars": len(text or "")}})
     sources = [{"source": h["source"], "page": h.get("page"),
                 "score": round(h.get("score", 0), 3)} for h in hits]
     return text, sources, hits
@@ -423,23 +551,38 @@ def _handle(msg: dict) -> None:
         return
 
     t0 = time.time()
+    trace: list = []
+    _aid = None
+    try:
+        import activity
+        _label = (attach_name or text or "").strip().replace("\n", " ")[:80]
+        _aid = activity.start("telegram", _label,
+                              "разбор файла" if attach_path else "обработка запроса")
+    except Exception:
+        _aid = None
     try:
         if attach_path:
             try:
-                ans, sources, hits = _answer_attachment(attach_path, attach_name, text)
+                ans, sources, hits = _answer_attachment(attach_path, attach_name, text, trace)
             finally:
                 try:
                     os.remove(attach_path)
                 except Exception:
                     pass
         else:
-            ans, sources, hits = _answer(text)
+            ans, sources, hits = _answer(text, trace)
         answered = bool(hits)
     except Exception as e:
         print(f"  ! telegram answer error: {e}")
         send(chat_id, "Произошла ошибка при обработке запроса. Попробуйте позже.")
         db.tg_log_request(chat_id, username, text, "", 0, 0.0,
                           int((time.time() - t0) * 1000), False, [])
+        if _aid is not None:
+            try:
+                import activity
+                activity.finish(_aid, ok=False, stage="ошибка")
+            except Exception:
+                pass
         return
 
     latency = int((time.time() - t0) * 1000)
@@ -448,6 +591,11 @@ def _handle(msg: dict) -> None:
         srctxt = "; ".join(s["source"] + (f", с.{s['page']}" if s.get("page") else "")
                            for s in sources[:6])
         out = f"{ans}\n\n📎 Источники: {srctxt}"
+    # структура формирования ответа (как конвейер в веб-чате), если включено
+    if settings.get("TELEGRAM_PIPELINE"):
+        pipe = _format_pipeline(trace)
+        if pipe:
+            out = f"{out}\n\n{pipe}"
     send(chat_id, out)
     # голосовой ответ на голосовой запрос (если включено и доступен TTS)
     if voice_in and settings.get("TELEGRAM_VOICE_OUT") and ans:
@@ -464,6 +612,12 @@ def _handle(msg: dict) -> None:
             print(f"[tg] голосовой ответ не сформирован: {e}")
     db.tg_log_request(chat_id, username, text or (attach_name or ""), ans, len(sources),
                       (hits[0].get("score", 0.0) if hits else 0.0), latency, answered, sources)
+    if _aid is not None:
+        try:
+            import activity
+            activity.finish(_aid, ok=answered, stage="ответ отправлен")
+        except Exception:
+            pass
 
 
 def _loop() -> None:

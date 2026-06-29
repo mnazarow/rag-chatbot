@@ -15,6 +15,9 @@ import tempfile
 from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
+
+import activity
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
@@ -119,9 +122,17 @@ def _stg(key: str, status: str = "done", info: dict | None = None, ms: int = 0) 
                        "ms": ms, "info": info or {}}, ensure_ascii=False) + "\n"
 
 
+def _ndjson(gen, aid: int | None = None):
+    """StreamingResponse с гарантированным завершением активности после отдачи."""
+    bg = BackgroundTask(activity.finish, aid) if aid is not None else None
+    return StreamingResponse(gen, media_type="application/x-ndjson", background=bg)
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest):
     t0 = time.time()
+    _preview = (req.question or "").strip().replace("\n", " ")[:80]
+    aid = activity.start("chat", _preview, "поиск")
 
     # Движок ответов: LightRAG целиком, либо граф только для сводных вопросов (hybrid)
     engine = settings.get("ENGINE")
@@ -165,7 +176,8 @@ async def chat(req: ChatRequest):
                                      retrieve_ms=0, gen_ms=lat, session_id=req.session_id)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
-            return StreamingResponse(kstream(), media_type="application/x-ndjson")
+            activity.update(aid, stage="KAG: генерация ответа")
+            return _ndjson(kstream(), aid)
         except Exception as e:
             print(f"KAG недоступен, фолбэк на вектор: {e}")
 
@@ -201,7 +213,8 @@ async def chat(req: ChatRequest):
                                      session_id=req.session_id)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
-            return StreamingResponse(gstream(), media_type="application/x-ndjson")
+            activity.update(aid, stage="генерация ответа (граф)")
+            return _ndjson(gstream(), aid)
         except Exception as e:
             print(f"LightRAG недоступен, фолбэк на вектор: {e}")
 
@@ -241,7 +254,8 @@ async def chat(req: ChatRequest):
                                      retrieve_ms=0, gen_ms=0, session_id=req.session_id)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
-            return StreamingResponse(cached_stream(), media_type="application/x-ndjson")
+            activity.update(aid, stage="ответ из кэша")
+            return _ndjson(cached_stream(), aid)
 
     t_ret = time.time()
     trace = []
@@ -270,7 +284,7 @@ async def chat(req: ChatRequest):
             yield json.dumps({"type": "sources", "items": []}, ensure_ascii=False) + "\n"
             yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
-        return StreamingResponse(empty(), media_type="application/x-ndjson")
+        return _ndjson(empty(), aid)
 
     context = prompts.build_context(hits)
     messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")}]
@@ -282,6 +296,7 @@ async def chat(req: ChatRequest):
                           t_start=h.get("t_start"), t_end=h.get("t_end"),
                           score=round(h["score"], 3), category=h.get("doc_category"))
                for h in hits]
+    activity.update(aid, stage="генерация ответа")
 
     async def stream():
         # анимация конвейера: этапы поиска (измерены), затем контекст и генерация
@@ -325,7 +340,7 @@ async def chat(req: ChatRequest):
                 pass
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
-    return StreamingResponse(stream(), media_type="application/x-ndjson")
+    return _ndjson(stream(), aid)
 
 
 @app.post("/api/rate")
@@ -355,6 +370,7 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
     t0 = time.time()
     name = os.path.basename(file.filename or "файл")
     ext = os.path.splitext(name)[1].lower()
+    aid = activity.start("attach", name, "разбор документа")
     try:
         hist = json.loads(history) if history else []
     except Exception:
@@ -365,7 +381,7 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
             msg = f"Тип файла {ext or '?'} не поддерживается."
             yield json.dumps({"type": "answer", "text": msg}, ensure_ascii=False) + "\n"
             yield json.dumps({"type": "sources", "items": []}, ensure_ascii=False) + "\n"
-        return StreamingResponse(bad(), media_type="application/x-ndjson")
+        return _ndjson(bad(), aid)
 
     # сохраняем во временный файл и парсим теми же загрузчиками
     tmp = Path(tempfile.gettempdir()) / f"rag_attach_{int(time.time())}_{name}"
@@ -388,7 +404,7 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
         db.log_request(question, "attached", 0, 0.0,
                        int((time.time() - t0) * 1000), 0, False, [],
                        session_id=session_id)
-        return StreamingResponse(empty(), media_type="application/x-ndjson")
+        return _ndjson(empty(), aid)
 
     context = prompts.build_context(hits)
     messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")}]
@@ -397,6 +413,7 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
                      "content": prompts.build_user_message(question, context)})
     sources = [{"source": h["source"], "page": h.get("page"),
                 "score": round(h["score"], 3)} for h in hits]
+    activity.update(aid, stage="генерация ответа")
 
     async def stream():
         yield _stg("attach", "done", {"file": name, "fragments": len(items)})
@@ -426,7 +443,7 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
                              session_id=session_id)
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
-    return StreamingResponse(stream(), media_type="application/x-ndjson")
+    return _ndjson(stream(), aid)
 
 
 @app.post("/api/transcribe")
@@ -490,6 +507,21 @@ def api_server_history():
     return admin_ops.server_history()
 
 
+@app.get("/api/activity")
+def api_activity():
+    """Текущие запросы и процессы чат-системы в реальном времени: обработка вопросов
+    (веб-чат и Телеграм), генерация ответов, разбор файлов, парсинг справочника, а
+    также идущие фоновые задачи (индексация, граф, бенчмарк и т. п.)."""
+    snap = activity.snapshot()
+    try:
+        jobs = admin_ops.active_jobs()
+    except Exception:
+        jobs = []
+    return {"live": snap["items"], "jobs": jobs,
+            "active": snap["active"] + sum(1 for j in jobs if j.get("running")),
+            "by_kind": snap["by_kind"]}
+
+
 # ===================== Структура компании =====================
 
 @app.get("/api/admin/org/config")
@@ -537,6 +569,60 @@ def api_org_list(search: str = "", department: str = "",
 def api_org_clear(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return {"ok": True, "removed": db.org_clear()}
+
+
+# ===================== Синонимы =====================
+
+@app.get("/api/admin/synonyms")
+def api_syn_list(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import synonyms
+    return {"enabled": synonyms.enabled(), "items": db.syn_list()}
+
+
+@app.post("/api/admin/synonyms/config")
+def api_syn_config(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import synonyms
+    synonyms.set_enabled(bool(payload.get("enabled")))
+    return {"ok": True, "enabled": synonyms.enabled()}
+
+
+@app.post("/api/admin/synonyms/add")
+def api_syn_add(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    term = (payload.get("term") or "").strip()
+    syns = payload.get("syns") or []
+    if isinstance(syns, str):
+        import re as _re
+        syns = [s.strip() for s in _re.split(r"[\n,;]+", syns) if s.strip()]
+    if not term:
+        return {"ok": False, "msg": "слово не задано"}
+    rid = db.syn_add(term, syns)
+    return {"ok": bool(rid), "id": rid}
+
+
+@app.post("/api/admin/synonyms/update")
+def api_syn_update(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    syns = payload.get("syns") or []
+    if isinstance(syns, str):
+        import re as _re
+        syns = [s.strip() for s in _re.split(r"[\n,;]+", syns) if s.strip()]
+    ok = db.syn_update(int(payload.get("id")), payload.get("term") or "", syns)
+    return {"ok": ok}
+
+
+@app.post("/api/admin/synonyms/delete")
+def api_syn_delete(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"ok": db.syn_delete(int(payload.get("id")))}
+
+
+@app.post("/api/admin/synonyms/clear")
+def api_syn_clear(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"ok": True, "removed": db.syn_clear()}
 
 
 @app.post("/api/admin/selftest")

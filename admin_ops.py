@@ -359,6 +359,50 @@ def status() -> dict:
     return out
 
 
+# Фоновые задачи для раздела «Текущие запросы» (только идущие + недавно завершённые)
+_JOB_META = [
+    ("index", "Индексация документов", "🗂"),
+    ("finetune", "Дообучение модели", "🎓"),
+    ("graph", "Построение графа знаний", "🕸"),
+    ("web", "Парсинг сайтов", "🌐"),
+    ("bench", "Бенчмарк", "⚡"),
+    ("test", "Самотестирование", "🧪"),
+    ("check", "Проверка данных", "🔍"),
+    ("backup", "Резервная копия", "💾"),
+    ("restore", "Восстановление", "♻️"),
+    ("pull", "Загрузка модели", "⬇️"),
+    ("dep", "Установка зависимостей", "📦"),
+]
+
+
+def active_jobs(recent_sec: float = 10.0) -> list[dict]:
+    """Идущие (и только что завершённые) фоновые задачи — для дашборда."""
+    jobs = {
+        "index": _job, "finetune": _ft_job, "graph": _graph_job, "web": _web_job,
+        "bench": _bench_job, "test": _test_job, "check": _check_job,
+        "backup": _backup_job, "restore": _restore_job, "pull": _pull_job,
+        "dep": _dep_job,
+    }
+    now = time.time()
+    out = []
+    for key, label, icon in _JOB_META:
+        jb = jobs.get(key) or {}
+        running = bool(jb.get("running"))
+        fin = jb.get("finished")
+        if not running and not (fin and (now - fin) < recent_sec):
+            continue
+        started = jb.get("started") or now
+        end = now if running else (fin or now)
+        summary = (jb.get("summary") or "").strip()
+        out.append({
+            "kind": "job", "job": key, "label": label, "icon": icon,
+            "running": running, "ok": jb.get("ok"),
+            "stage": summary[:140] or ("выполняется…" if running else "завершено"),
+            "elapsed_ms": int((end - started) * 1000),
+        })
+    return out
+
+
 # ============================ бенчмарк компонентов ============================
 def _bench_embed():
     from retriever import _embedder

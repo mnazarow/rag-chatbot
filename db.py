@@ -261,6 +261,10 @@ def _ddl(d: str) -> list[str]:
                 phone_work VARCHAR(64), phone_ext VARCHAR(32), phone_mobile VARCHAR(64),
                 email VARCHAR(255), suppliers MEDIUMTEXT, updated DOUBLE
                 ) CHARACTER SET utf8mb4""",
+            """CREATE TABLE IF NOT EXISTS synonyms(
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                term VARCHAR(255), syns MEDIUMTEXT, updated DOUBLE
+                ) CHARACTER SET utf8mb4""",
         ]
     if d == "postgresql":
         return [
@@ -304,6 +308,9 @@ def _ddl(d: str) -> list[str]:
                 job_title TEXT, department TEXT, location TEXT,
                 phone_work TEXT, phone_ext TEXT, phone_mobile TEXT,
                 email TEXT, suppliers TEXT, updated DOUBLE PRECISION)""",
+            """CREATE TABLE IF NOT EXISTS synonyms(
+                id BIGSERIAL PRIMARY KEY, term TEXT, syns TEXT,
+                updated DOUBLE PRECISION)""",
         ]
     # sqlite (по умолчанию)
     return [
@@ -345,6 +352,8 @@ def _ddl(d: str) -> list[str]:
             job_title TEXT, department TEXT, location TEXT,
             phone_work TEXT, phone_ext TEXT, phone_mobile TEXT,
             email TEXT, suppliers TEXT, updated REAL)""",
+        """CREATE TABLE IF NOT EXISTS synonyms(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, term TEXT, syns TEXT, updated REAL)""",
     ]
 
 
@@ -1574,6 +1583,68 @@ def org_clear() -> int:
         n = _exec("DELETE FROM org_employees")
     except Exception as e:
         print(f"[db] org_clear: {e}")
+        n = 0
+    _bump()
+    return n
+
+
+# ===================== Синонимы =====================
+
+def _syn_parse(raw) -> list[str]:
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+        if isinstance(v, list):
+            return [str(x) for x in v]
+    except Exception:
+        pass
+    # фолбэк: разделители — перевод строки / запятая / точка с запятой
+    import re as _re
+    return [p.strip() for p in _re.split(r"[\n,;]+", str(raw)) if p.strip()]
+
+
+def syn_list() -> list[dict]:
+    try:
+        rows = _all("SELECT id, term, syns, updated FROM synonyms ORDER BY term")
+    except Exception as e:
+        print(f"[db] syn_list: {e}")
+        return []
+    for r in rows:
+        r["syns"] = _syn_parse(r.get("syns"))
+    return rows
+
+
+def syn_add(term: str, syns: list[str]) -> int:
+    term = (term or "").strip()
+    if not term:
+        return 0
+    js = json.dumps([s.strip() for s in (syns or []) if s.strip()], ensure_ascii=False)
+    rid = _insert("INSERT INTO synonyms(term, syns, updated) VALUES(?,?,?)",
+                  (term, js, datetime.now().timestamp()))
+    _bump()
+    return rid
+
+
+def syn_update(syn_id: int, term: str, syns: list[str]) -> bool:
+    js = json.dumps([s.strip() for s in (syns or []) if s.strip()], ensure_ascii=False)
+    n = _exec("UPDATE synonyms SET term=?, syns=?, updated=? WHERE id=?",
+              ((term or "").strip(), js, datetime.now().timestamp(), int(syn_id)))
+    _bump()
+    return n > 0
+
+
+def syn_delete(syn_id: int) -> bool:
+    n = _exec("DELETE FROM synonyms WHERE id=?", (int(syn_id),))
+    _bump()
+    return n > 0
+
+
+def syn_clear() -> int:
+    try:
+        n = _exec("DELETE FROM synonyms")
+    except Exception as e:
+        print(f"[db] syn_clear: {e}")
         n = 0
     _bump()
     return n

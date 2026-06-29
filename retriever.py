@@ -37,6 +37,15 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in text.lower().split() if t]
 
 
+def _expand(question: str) -> str:
+    """Расширить запрос синонимами (если функция включена). Безопасно при сбое."""
+    try:
+        import synonyms
+        return synonyms.expand_query(question)
+    except Exception:
+        return question
+
+
 # слова в вопросе -> категория документа (мягкий интент-роутер)
 _INTENT = {
     "price": ["цена", "цены", "стоит", "стоимость", "прайс", "тариф", "сколько стоит",
@@ -107,11 +116,16 @@ def search(question: str, filters: dict | None = None,
     наполняется этапами конвейера {key, ms, info} для анимации в интерфейсе."""
     if auto_filter is None:
         auto_filter = settings.get("AUTO_FILTER")
+    try:
+        import synonyms
+        syn_sig = synonyms.signature()
+    except Exception:
+        syn_sig = ""
     keyparts = "|".join(str(x) for x in [
         question, filters, auto_filter,
         settings.get("EMBED_MODEL"), settings.get("RERANK_MODEL"),
         settings.get("TOP_K_RETRIEVE"), settings.get("TOP_K_RERANK"),
-        settings.get("MIN_SCORE"), settings.get("SMART_FILTER")])
+        settings.get("MIN_SCORE"), settings.get("SMART_FILTER"), syn_sig])
     ckey = "search:" + hashlib.sha1(keyparts.encode("utf-8")).hexdigest()
     try:
         import cache
@@ -137,9 +151,12 @@ def _search_raw(question: str, filters: dict | None = None,
     if auto_filter is None:
         auto_filter = settings.get("AUTO_FILTER")
 
+    qx = _expand(question)        # запрос с синонимами (для embed/BM25); ответ — по оригиналу
+
     t = time.time()
-    qvec = _embed_query(question)
-    rec("embed", t, {"model": settings.get("EMBED_MODEL"), "device": settings.device()})
+    qvec = _embed_query(qx)
+    rec("embed", t, {"model": settings.get("EMBED_MODEL"), "device": settings.device(),
+                     "synonyms": qx != question})
 
     # 1) определяем фильтр: явный > умный (LLM) > авто-угаданная категория (правила)
     t = time.time()
@@ -169,7 +186,7 @@ def _search_raw(question: str, filters: dict | None = None,
     # 2) лексический реранж по BM25 внутри кандидатов (дешёвый гибрид)
     t = time.time()
     bm25 = BM25Okapi([_tokenize(c["text"]) for c in cands])
-    bm_scores = bm25.get_scores(_tokenize(question))
+    bm_scores = bm25.get_scores(_tokenize(qx))
     for c, s in zip(cands, bm_scores):
         c["bm25"] = float(s)
     rec("bm25", t, {"candidates": len(cands)})
@@ -258,7 +275,7 @@ def _rerank_keep(question: str, cands: list, relaxed: bool = True) -> list:
         uniq.append(c)
     cands = uniq[:300]
     bm = BM25Okapi([_tokenize(c["text"]) for c in cands])
-    for c, s in zip(cands, bm.get_scores(_tokenize(question))):
+    for c, s in zip(cands, bm.get_scores(_tokenize(_expand(question)))):
         c["bm25"] = float(s)
     scores = _reranker().compute_score([[question, c["text"]] for c in cands], normalize=True)
     if not isinstance(scores, list):
