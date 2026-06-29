@@ -141,6 +141,21 @@ def _stg(key: str, status: str = "done", info: dict | None = None, ms: int = 0) 
                        "ms": ms, "info": info or {}}, ensure_ascii=False) + "\n"
 
 
+def _augment_api(question: str, hits: list, trace: list | None = None) -> list:
+    """Подмешать в начало контекста данные внешнего API-хука, если он сработал."""
+    try:
+        import api_tools
+        frag = api_tools.augment_hit(question)
+        if not frag:
+            return hits
+        if trace is not None:
+            trace.append({"key": "api", "ms": 0, "info": {"source": frag["source"]}})
+        return [frag] + hits
+    except Exception as e:
+        print(f"[api] augment: {e}")
+        return hits
+
+
 def _augment_price(question: str, hits: list, trace: list | None = None) -> list:
     """На ценовых вопросах добавить в начало контекста фрагменты из прайс-папки
     (без индексации). Дедуп по источнику+началу текста."""
@@ -311,6 +326,8 @@ async def chat(req: ChatRequest):
             print(f"  ! фолбэк-поиск не удался: {e}")
     # прайс-папка: на «ценовых» вопросах подмешиваем контекст из папки прайсов
     hits = _augment_price(req.question, hits, trace)
+    # внешние API-хуки: подмешиваем данные стороннего сервиса, если хук сработал
+    hits = _augment_api(req.question, hits, trace)
     retrieve_ms = int((time.time() - t_ret) * 1000)
     category = (req.filters or {}).get("doc_category") or infer_category(req.question)
 
@@ -582,6 +599,41 @@ def api_price_status(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     import price_folder
     return price_folder.status()
+
+
+# ===================== Внешние API-хуки =====================
+
+@app.get("/api/admin/api-hooks")
+def api_hooks_list(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"hooks": db.api_hooks_list()}
+
+
+@app.post("/api/admin/api-hooks/save")
+def api_hooks_save(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    if not (payload.get("name") or "").strip():
+        return {"ok": False, "msg": "укажите название"}
+    if not (payload.get("url") or "").strip():
+        return {"ok": False, "msg": "укажите URL"}
+    hid = db.api_hook_save(payload)
+    return {"ok": bool(hid), "id": hid}
+
+
+@app.post("/api/admin/api-hooks/delete")
+def api_hooks_delete(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return {"ok": db.api_hook_delete(int(payload.get("id")))}
+
+
+@app.post("/api/admin/api-hooks/test")
+def api_hooks_test(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    import api_tools
+    q = (payload.get("question") or "").strip()
+    if not q:
+        return {"matched": False, "msg": "введите тестовый вопрос"}
+    return api_tools.test(q)
 
 
 @app.get("/api/server-history")

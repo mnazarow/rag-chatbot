@@ -292,6 +292,15 @@ def _answer(question: str, trace: list | None = None):
                                    if (h.get("source"), (h.get("text") or "")[:60]) not in seen]
     except Exception as e:
         print(f"[tg] прайс-папка: {e}")
+    # внешние API-хуки
+    try:
+        import api_tools
+        frag = api_tools.augment_hit(question)
+        if frag:
+            trace.append({"key": "api", "ms": 0, "info": {"source": frag["source"]}})
+            hits = [frag] + hits
+    except Exception as e:
+        print(f"[tg] api-хук: {e}")
     if not hits:
         return "В доступных документах нет точного ответа на этот вопрос.", [], []
     context = prompts.build_context(hits)
@@ -327,6 +336,7 @@ _STAGE_META = {
     "dense": ("🗄", "Векторный поиск (Qdrant)"), "bm25": ("🔤", "Лексика BM25"),
     "rerank": ("🎯", "Реранк (cross-encoder)"),
     "price": ("💲", "Прайс-папка (без индексации)"),
+    "api": ("🔌", "Внешний API"),
     "fb_lexical": ("🔎", "Доп. поиск (лексический)"),
     "fb_deep": ("🕵️", "Глубокий поиск (по каталогу)"),
     "attach": ("📎", "Разбор документа"), "context": ("📋", "Сборка контекста"),
@@ -368,6 +378,9 @@ def _stage_params(key: str, info: dict) -> str:
         p.append("фрагментов " + str(info.get("fragments", "—")))
     elif key == "price":
         p.append("фрагментов " + str(info.get("found", "—")))
+    elif key == "api":
+        if info.get("source"):
+            p.append(str(info["source"]))
     elif key in ("fb_lexical", "fb_deep"):
         p.append("найдено " + str(info.get("found", "—")))
         if key == "fb_deep" and info.get("files"):

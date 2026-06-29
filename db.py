@@ -272,6 +272,13 @@ def _ddl(d: str) -> list[str]:
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 hostname VARCHAR(255), ip VARCHAR(64), updated DOUBLE
                 ) CHARACTER SET utf8mb4""",
+            """CREATE TABLE IF NOT EXISTS api_hooks(
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255), enabled INT DEFAULT 1, trigger_type VARCHAR(16),
+                trigger_val MEDIUMTEXT, param_spec MEDIUMTEXT, method VARCHAR(8),
+                url MEDIUMTEXT, headers MEDIUMTEXT, body MEDIUMTEXT,
+                resp_path VARCHAR(255), source_label VARCHAR(255), timeout INT,
+                updated DOUBLE) CHARACTER SET utf8mb4""",
         ]
     if d == "postgresql":
         return [
@@ -324,6 +331,11 @@ def _ddl(d: str) -> list[str]:
             """CREATE TABLE IF NOT EXISTS dns_hosts(
                 id BIGSERIAL PRIMARY KEY, hostname TEXT, ip TEXT,
                 updated DOUBLE PRECISION)""",
+            """CREATE TABLE IF NOT EXISTS api_hooks(
+                id BIGSERIAL PRIMARY KEY, name TEXT, enabled INTEGER DEFAULT 1,
+                trigger_type TEXT, trigger_val TEXT, param_spec TEXT, method TEXT,
+                url TEXT, headers TEXT, body TEXT, resp_path TEXT,
+                source_label TEXT, timeout INTEGER, updated DOUBLE PRECISION)""",
         ]
     # sqlite (по умолчанию)
     return [
@@ -372,6 +384,11 @@ def _ddl(d: str) -> list[str]:
             id INTEGER PRIMARY KEY AUTOINCREMENT, term TEXT, syns TEXT, updated REAL)""",
         """CREATE TABLE IF NOT EXISTS dns_hosts(
             id INTEGER PRIMARY KEY AUTOINCREMENT, hostname TEXT, ip TEXT, updated REAL)""",
+        """CREATE TABLE IF NOT EXISTS api_hooks(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, enabled INTEGER DEFAULT 1,
+            trigger_type TEXT, trigger_val TEXT, param_spec TEXT, method TEXT,
+            url TEXT, headers TEXT, body TEXT, resp_path TEXT, source_label TEXT,
+            timeout INTEGER, updated REAL)""",
     ]
 
 
@@ -1825,3 +1842,58 @@ def dns_clear() -> int:
     except Exception as e:
         print(f"[db] dns_clear: {e}")
         return 0
+
+
+# ===================== Внешние API-хуки =====================
+
+_HOOK_COLS = ("name", "enabled", "trigger_type", "trigger_val", "param_spec",
+              "method", "url", "headers", "body", "resp_path", "source_label",
+              "timeout")
+
+
+def api_hooks_list() -> list[dict]:
+    try:
+        return _all("SELECT id, name, enabled, trigger_type, trigger_val, param_spec, "
+                    "method, url, headers, body, resp_path, source_label, timeout "
+                    "FROM api_hooks ORDER BY id")
+    except Exception as e:
+        print(f"[db] api_hooks_list: {e}")
+        return []
+
+
+def api_hook_save(d: dict) -> int:
+    """Добавить (без id) или обновить (с id) хук. Возвращает id."""
+    vals = {
+        "name": (d.get("name") or "").strip()[:255],
+        "enabled": 1 if d.get("enabled") else 0,
+        "trigger_type": (d.get("trigger_type") or "keywords")[:16],
+        "trigger_val": d.get("trigger_val") or "",
+        "param_spec": d.get("param_spec") or "",
+        "method": (d.get("method") or "GET").upper()[:8],
+        "url": d.get("url") or "",
+        "headers": d.get("headers") or "",
+        "body": d.get("body") or "",
+        "resp_path": (d.get("resp_path") or "")[:255],
+        "source_label": (d.get("source_label") or "")[:255],
+        "timeout": int(d.get("timeout") or 15),
+    }
+    now = datetime.now().timestamp()
+    hid = d.get("id")
+    if hid:
+        sets = ", ".join(f"{c}=?" for c in _HOOK_COLS) + ", updated=?"
+        params = tuple(vals[c] for c in _HOOK_COLS) + (now, int(hid))
+        _exec(f"UPDATE api_hooks SET {sets} WHERE id=?", params)
+        _bump()
+        return int(hid)
+    cols = ", ".join(_HOOK_COLS) + ", updated"
+    ph = ", ".join("?" for _ in _HOOK_COLS) + ", ?"
+    rid = _insert(f"INSERT INTO api_hooks({cols}) VALUES({ph})",
+                  tuple(vals[c] for c in _HOOK_COLS) + (now,))
+    _bump()
+    return rid or 0
+
+
+def api_hook_delete(hook_id: int) -> bool:
+    n = _exec("DELETE FROM api_hooks WHERE id=?", (int(hook_id),))
+    _bump()
+    return n > 0

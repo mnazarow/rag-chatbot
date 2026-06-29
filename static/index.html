@@ -998,6 +998,49 @@
       </div>
     </div>
 
+    <!-- внешние API-хуки -->
+    <div class="box">
+      <h3>🔌 Внешние API (хуки) <span id="apih_count" class="tag"></span></h3>
+      <div class="note" style="line-height:1.5">Для определённых типов вопросов бот вызывает сторонний REST-сервис и подставляет его ответ в контекст (модель формулирует ответ по данным со ссылкой на источник). Триггер — ключевые слова, регэксп или ИИ-интент; параметры из вопроса подставляются в URL/тело шаблоном <code>{имя}</code> (и <code>{q}</code> — весь вопрос). Работает в чате и Телеграме; запросы идут с учётом DNS-записей.</div>
+      <div class="grid2" style="margin-top:10px">
+        <div class="field" style="margin:0"><label>Название</label><input id="apih_name" placeholder="Остатки склада"></div>
+        <div class="field" style="margin:0"><label>Метка источника (для ссылки)</label><input id="apih_label" placeholder="Складская система"></div>
+        <div class="field" style="margin:0"><label>Триггер</label>
+          <select id="apih_ttype" style="width:100%">
+            <option value="keywords">по ключевым словам</option>
+            <option value="regex">по регэкспу (с параметрами)</option>
+            <option value="intent">по ИИ-интенту</option>
+          </select></div>
+        <div class="field" style="margin:0"><label>Значение триггера</label><input id="apih_trig" placeholder="остаток, склад · или регэксп · или описание для ИИ"></div>
+        <div class="field" style="margin:0"><label>Параметры</label><input id="apih_pspec" placeholder="keywords/regex: регэксп с (?P<art>…) · intent: art, city"></div>
+        <div class="field" style="margin:0"><label>Метод</label>
+          <select id="apih_method" style="width:100%"><option>GET</option><option>POST</option></select></div>
+      </div>
+      <div class="field" style="margin:8px 0 0"><label>URL (шаблон)</label><input id="apih_url" placeholder="http://in.local/stock?art={art}" style="width:100%"></div>
+      <div class="grid2" style="margin-top:8px">
+        <div class="field" style="margin:0"><label>Заголовки (JSON)</label><input id="apih_headers" placeholder='{"X-API-Key":"…"}' style="width:100%"></div>
+        <div class="field" style="margin:0"><label>resp_path (путь в JSON-ответе)</label><input id="apih_rpath" placeholder="data.qty"></div>
+      </div>
+      <div class="field" style="margin:8px 0 0"><label>Тело (для POST, шаблон)</label><input id="apih_body" placeholder='{"article":"{art}"}' style="width:100%"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <label class="note" style="cursor:pointer"><input type="checkbox" id="apih_enabled" checked> включён</label>
+        <label class="note">таймаут, с <input id="apih_timeout" type="number" value="15" style="width:64px"></label>
+        <button class="act" onclick="apihSave()">Сохранить хук</button>
+        <button class="act ghost" onclick="apihReset()">Очистить форму</button>
+        <input type="hidden" id="apih_id" value="">
+        <span id="apih_msg" class="note"></span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <input id="apih_testq" placeholder="Тестовый вопрос (напр. «остаток 12345»)" style="flex:1;min-width:240px">
+        <button class="act ghost" onclick="apihTest()">Проверить</button>
+      </div>
+      <div id="apih_testres" class="note" style="margin-top:6px"></div>
+      <div style="overflow:auto;margin-top:10px">
+        <table><thead><tr><th>Вкл</th><th>Название</th><th>Триггер</th><th>URL</th><th>Действия</th></tr></thead>
+        <tbody id="apih_rows"></tbody></table>
+      </div>
+    </div>
+
     <!-- прайс-папка: статус -->
     <div class="box">
       <h3>💲 Прайс-папка <span id="price_badge" class="tag"></span></h3>
@@ -2894,7 +2937,7 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns(); loadPrice();
+  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns(); loadPrice(); apihLoad();
 }
 
 // ---- автокалибровка параметров ----
@@ -4347,6 +4390,60 @@ async function adminGet(url){
   return r.json().catch(()=>({}));
 }
 
+// ---- внешние API-хуки ----
+let APIH=[];
+function apihMsg(t,ok=true){ const e=$('#apih_msg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+function apihReset(){ ['name','label','trig','pspec','url','headers','rpath','body','testq'].forEach(k=>{const e=$('#apih_'+k); if(e)e.value='';});
+  $('#apih_id').value=''; $('#apih_ttype').value='keywords'; $('#apih_method').value='GET'; $('#apih_timeout').value='15'; $('#apih_enabled').checked=true; apihMsg(''); }
+async function apihLoad(){
+  if(!$('#apih_rows')) return;
+  const d=await adminGet('/api/admin/api-hooks'); APIH=(d&&d.hooks)||[];
+  if($('#apih_count')) $('#apih_count').textContent=APIH.length?(APIH.length+' хук(ов)'):'';
+  $('#apih_rows').innerHTML = APIH.length ? APIH.map(h=>`<tr>
+    <td>${h.enabled?'<span class="tag ok">да</span>':'<span class="note">нет</span>'}</td>
+    <td><b>${esc(h.name||'')}</b></td>
+    <td><span class="note">${esc(h.trigger_type||'')}:</span> ${esc((h.trigger_val||'').slice(0,40))}</td>
+    <td style="max-width:260px;word-break:break-all">${esc(h.url||'')}</td>
+    <td style="white-space:nowrap">
+      <button class="dirbtn" onclick="apihEdit(${h.id})">✏️</button>
+      <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="apihDel(${h.id})">🗑</button>
+    </td></tr>`).join('') : '<tr><td colspan="5" class="note">хуков нет. Заполните форму выше и сохраните.</td></tr>';
+}
+function apihEdit(id){
+  const h=APIH.find(x=>x.id===id); if(!h) return;
+  $('#apih_id').value=h.id; $('#apih_name').value=h.name||''; $('#apih_label').value=h.source_label||'';
+  $('#apih_ttype').value=h.trigger_type||'keywords'; $('#apih_trig').value=h.trigger_val||'';
+  $('#apih_pspec').value=h.param_spec||''; $('#apih_method').value=(h.method||'GET');
+  $('#apih_url').value=h.url||''; $('#apih_headers').value=h.headers||''; $('#apih_rpath').value=h.resp_path||'';
+  $('#apih_body').value=h.body||''; $('#apih_timeout').value=h.timeout||15; $('#apih_enabled').checked=!!h.enabled;
+  apihMsg('редактирование: '+(h.name||'')); window.scrollTo({top:$('#apih_name').getBoundingClientRect().top+window.scrollY-120,behavior:'smooth'});
+}
+async function apihSave(){
+  const body={ id:$('#apih_id').value||undefined, name:$('#apih_name').value.trim(),
+    source_label:$('#apih_label').value.trim(), trigger_type:$('#apih_ttype').value,
+    trigger_val:$('#apih_trig').value, param_spec:$('#apih_pspec').value,
+    method:$('#apih_method').value, url:$('#apih_url').value.trim(),
+    headers:$('#apih_headers').value.trim(), resp_path:$('#apih_rpath').value.trim(),
+    body:$('#apih_body').value, timeout:parseInt($('#apih_timeout').value)||15,
+    enabled:$('#apih_enabled').checked };
+  const r=await adminPost('/api/admin/api-hooks/save', body);
+  if(r&&r.ok){ apihMsg('сохранено',true); apihReset(); apihLoad(); }
+  else apihMsg((r&&r.msg)||'ошибка',false);
+}
+async function apihDel(id){
+  if(!confirm('Удалить этот API-хук?')) return;
+  const r=await adminPost('/api/admin/api-hooks/delete',{id}); if(r&&r.ok) apihLoad();
+}
+async function apihTest(){
+  const q=$('#apih_testq').value.trim(); if(!q){ $('#apih_testres').textContent='введите тестовый вопрос'; return; }
+  $('#apih_testres').textContent='проверка…';
+  const r=await adminPost('/api/admin/api-hooks/test',{question:q});
+  if(r && r.matched){
+    $('#apih_testres').innerHTML=`<span style="color:#34d399">✓ сработал хук «${esc(r.hook||'')}»</span> · параметры: ${esc(JSON.stringify(r.params||{}))}`
+      +`<div style="white-space:pre-wrap;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">${esc((r.text||'').slice(0,1500))}</div>`;
+  } else $('#apih_testres').innerHTML='<span class="note">'+esc(r.msg||'ни один хук не сработал')+'</span>';
+}
+
 // ---- прайс-папка: статус ----
 async function loadPrice(){
   if(!$('#price_status')) return;
@@ -4891,6 +4988,7 @@ const STAGE_META={
   bm25:{icon:'🔤',label:'Лексика BM25'},
   rerank:{icon:'🎯',label:'Реранк (cross-encoder)'},
   price:{icon:'💲',label:'Прайс-папка (без индексации)'},
+  api:{icon:'🔌',label:'Внешний API'},
   fb_lexical:{icon:'🔎',label:'Доп. поиск (лексический)'},
   fb_deep:{icon:'🕵️',label:'Глубокий поиск (по каталогу)'},
   attach:{icon:'📎',label:'Разбор документа'},
@@ -4912,6 +5010,7 @@ function stageParams(key,info){
     if(info.kept===0 && info.top && info.top.length) p.push('ближайшие: '+info.top.slice(0,3).map(t=>esc(short(t.source))+' '+t.score).join('; ')); }
   else if(key==='attach'){ if(info.file)p.push(esc(info.file)); p.push('фрагментов '+nz(info.fragments)); }
   else if(key==='price'){ p.push('фрагментов '+nz(info.found)); }
+  else if(key==='api'){ if(info.source)p.push(esc(info.source)); }
   else if(key==='fb_lexical'){ p.push('найдено '+nz(info.found)); }
   else if(key==='fb_deep'){ p.push('найдено '+nz(info.found)); if(info.files&&info.files.length)p.push('файлы: '+info.files.map(f=>esc(short(f))).join('; ')); }
   else if(key==='context'){ p.push('фрагментов '+nz(info.chunks)); if(info.chars!=null)p.push(info.chars+' симв.'); }
