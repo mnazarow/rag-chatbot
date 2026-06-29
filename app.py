@@ -77,6 +77,18 @@ def _start_dns():
 
 
 @app.on_event("startup")
+def _start_sip():
+    """Поднять голосовой мост к АТС (AudioSocket), если включён."""
+    try:
+        import sip_bridge
+        if settings.get("SIP_ENABLED"):
+            r = sip_bridge.start()
+            print(f"[sip] {r.get('msg')}")
+    except Exception as e:
+        print(f"[sip] не запущен: {e}")
+
+
+@app.on_event("startup")
 def _start_telegram():
     """Поднять Телеграм-бота, если задан токен (фоновый поток long-polling)."""
     try:
@@ -599,6 +611,22 @@ def api_price_status(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     import price_folder
     return price_folder.status()
+
+
+@app.get("/api/admin/sip/status")
+def api_sip_status(x_admin_token: str | None = Header(None)):
+    """Состояние голосового моста к АТС."""
+    _check_admin(x_admin_token)
+    import sip_bridge
+    return sip_bridge.status()
+
+
+@app.post("/api/admin/sip/restart")
+def api_sip_restart(x_admin_token: str | None = Header(None)):
+    """Перезапустить голосовой мост (после смены настроек)."""
+    _check_admin(x_admin_token)
+    import sip_bridge
+    return sip_bridge.restart()
 
 
 # ===================== Внешние API-хуки =====================

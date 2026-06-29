@@ -46,6 +46,17 @@ TOP_K_RETRIEVE = _int("TOP_K_RETRIEVE", 20)
 TOP_K_RERANK = _int("TOP_K_RERANK", 6)
 MIN_SCORE = _float("MIN_SCORE", 0.30)
 
+# Телефония: голосовой мост к АТС через Asterisk AudioSocket (STT→RAG→TTS).
+SIP_ENABLED = os.getenv("SIP_ENABLED", "0") not in ("0", "false", "")
+SIP_BRIDGE_HOST = os.getenv("SIP_BRIDGE_HOST", "0.0.0.0")
+SIP_BRIDGE_PORT = _int("SIP_BRIDGE_PORT", 8090)
+SIP_GREETING = os.getenv("SIP_GREETING",
+                         "Здравствуйте! Это голосовой ассистент компании. "
+                         "Задайте вопрос после сигнала.")
+SIP_SILENCE_MS = _int("SIP_SILENCE_MS", 700)     # пауза-тишина = конец реплики
+SIP_SILENCE_RMS = _int("SIP_SILENCE_RMS", 500)   # порог громкости (тишина ниже)
+SIP_MAX_UTTER_SEC = _int("SIP_MAX_UTTER_SEC", 15)
+
 # Прайс-папка: на «ценовых» вопросах брать контекст напрямую из указанной папки
 # (без индексации — файлы читаются по требованию и реранкуются под вопрос).
 PRICE_FOLDER = os.getenv("PRICE_FOLDER", "0") not in ("0", "false", "")  # включение

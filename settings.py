@@ -45,6 +45,31 @@ FIELDS: list[dict] = [
      "desc": "Степень «случайности» генерации. 0 — детерминированно и максимально точно (лучшее для фактов "
              "и прайсов), выше — разнообразнее, но растёт риск домыслов. Рекомендация: 0.0–0.2 для базы знаний "
              "(по умолчанию 0.1); 0.3–0.5 — только если нужны более естественные формулировки."},
+    {"key": "SIP_ENABLED", "label": "Голосовой бот по SIP/АТС (AudioSocket)", "group": "Телефония (SIP/АТС)",
+     "type": "bool", "scope": "restart", "default": config.SIP_ENABLED,
+     "desc": "Включает голосовой мост: Asterisk (или АТС поверх него) бриджит аудио звонка на этот сервис "
+             "(AudioSocket), бот распознаёт речь (Whisper), отвечает по базе знаний (как в чате) и озвучивает "
+             "ответ (TTS). Требуются Asterisk с приложением AudioSocket, ffmpeg, рабочие Whisper и TTS. "
+             "После изменения — перезапустить сервис (или «Перезапустить мост» в разделе «Телефония»)."},
+    {"key": "SIP_BRIDGE_HOST", "label": "Адрес моста (bind)", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": config.SIP_BRIDGE_HOST,
+     "desc": "На каком интерфейсе слушать AudioSocket. 0.0.0.0 — все интерфейсы. Должен быть доступен Asterisk."},
+    {"key": "SIP_BRIDGE_PORT", "label": "Порт моста", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": str(config.SIP_BRIDGE_PORT),
+     "desc": "TCP-порт AudioSocket. Этот host:port указывается в диалплане Asterisk: AudioSocket(<uuid>,host:port)."},
+    {"key": "SIP_GREETING", "label": "Приветствие", "group": "Телефония (SIP/АТС)",
+     "type": "textarea", "scope": "live", "default": config.SIP_GREETING,
+     "desc": "Фраза, которую бот произносит в начале звонка."},
+    {"key": "SIP_SILENCE_MS", "label": "Пауза-тишина = конец реплики, мс", "group": "Телефония (SIP/АТС)",
+     "type": "range", "scope": "live", "min": 300, "max": 2000, "step": 50, "default": config.SIP_SILENCE_MS,
+     "desc": "Сколько тишины после речи считать концом фразы абонента. Меньше — отзывчивее, но риск обрывать; "
+             "больше — надёжнее на медленной речи."},
+    {"key": "SIP_SILENCE_RMS", "label": "Порог тишины (громкость)", "group": "Телефония (SIP/АТС)",
+     "type": "range", "scope": "live", "min": 100, "max": 3000, "step": 50, "default": config.SIP_SILENCE_RMS,
+     "desc": "Громкость ниже этого значения считается тишиной. Поднимите, если фон/шум линии принимается за речь."},
+    {"key": "SIP_MAX_UTTER_SEC", "label": "Макс. длина реплики, с", "group": "Телефония (SIP/АТС)",
+     "type": "range", "scope": "live", "min": 5, "max": 60, "step": 1, "default": config.SIP_MAX_UTTER_SEC,
+     "desc": "Жёсткий предел длительности одной реплики абонента перед распознаванием."},
     {"key": "PRICE_FOLDER", "label": "Прайс-папка для ценовых вопросов", "group": "Поиск и генерация",
      "type": "bool", "scope": "live", "default": config.PRICE_FOLDER,
      "desc": "Если включено: на «ценовых» вопросах (цена, стоимость, прайс, тариф…) ответ дополняется "

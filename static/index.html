@@ -1048,6 +1048,21 @@
       <div id="price_status" class="note" style="margin-top:8px"></div>
     </div>
 
+    <!-- телефония: SIP/АТС -->
+    <div class="box">
+      <h3>📞 Телефония (SIP/АТС) <span id="sip_badge" class="tag"></span></h3>
+      <div class="note" style="line-height:1.5">Голосовой бот по телефону: Asterisk (или АТС поверх него) бриджит аудио звонка на этот сервис через <b>AudioSocket</b>, бот распознаёт речь (Whisper), отвечает по базе знаний (как в чате) и озвучивает ответ (TTS). Включение и параметры — в настройках выше (группа «Телефония (SIP/АТС)»). Нужны <b>Asterisk c AudioSocket</b>, <code>ffmpeg</code>, рабочие Whisper и TTS.</div>
+      <div id="sip_status" class="note" style="margin:8px 0"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="sipRestart()">↻ Перезапустить мост</button>
+        <button class="act ghost" onclick="loadSip()">Обновить статус</button>
+        <span id="sip_msg" class="note"></span>
+      </div>
+      <div class="note" style="margin-top:10px">Пример диалплана Asterisk (<code>extensions.conf</code>) — направить звонок боту:</div>
+      <pre id="sip_dialplan" style="background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap"></pre>
+      <div class="note" style="line-height:1.5">Если ваша АТС не умеет AudioSocket — заведите SIP-транк/пир в Asterisk, а дальше используйте AudioSocket. «Сырая» SIP-регистрация в самом приложении не используется (надёжнее через медиамост).</div>
+    </div>
+
     <!-- операции -->
     <div class="box">
       <h3>Состояние и операции</h3>
@@ -2937,7 +2952,7 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns(); loadPrice(); apihLoad();
+  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns(); loadPrice(); apihLoad(); loadSip();
 }
 
 // ---- автокалибровка параметров ----
@@ -4442,6 +4457,35 @@ async function apihTest(){
     $('#apih_testres').innerHTML=`<span style="color:#34d399">✓ сработал хук «${esc(r.hook||'')}»</span> · параметры: ${esc(JSON.stringify(r.params||{}))}`
       +`<div style="white-space:pre-wrap;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">${esc((r.text||'').slice(0,1500))}</div>`;
   } else $('#apih_testres').innerHTML='<span class="note">'+esc(r.msg||'ни один хук не сработал')+'</span>';
+}
+
+// ---- телефония: SIP/АТС ----
+async function loadSip(){
+  if(!$('#sip_status')) return;
+  let d; try{ d=await adminGet('/api/admin/sip/status'); }catch(e){ return; }
+  const b=$('#sip_badge');
+  if(b) b.textContent = !d.enabled ? 'выключена' : (d.running?'работает':'не запущен');
+  const ff=d.ffmpeg?'<span style="color:#34d399">ffmpeg ✓</span>':'<span style="color:#f87171">ffmpeg не найден</span>';
+  $('#sip_status').innerHTML = !d.enabled
+    ? 'Выключена. Включите «Голосовой бот по SIP/АТС» в настройках выше и перезапустите сервис.'
+    : `Статус: ${d.running?'<span style="color:#34d399">слушает</span>':'<span style="color:#f87171">не запущен</span>'}`
+      +` · ${esc(d.host)}:${d.port} · ${ff}`
+      +` · звонков: <b>${d.calls||0}</b> · активных: <b>${d.active||0}</b>`
+      +(d.error?` · <span style="color:#f87171">${esc(d.error)}</span>`:'')
+      +(d.audioop?'':' · <span style="color:#f59e0b">audioop недоступен (Python 3.13) — используется фолбэк</span>');
+  const host=d.host==='0.0.0.0'?'IP_сервера_RAG':d.host;
+  $('#sip_dialplan').textContent =
+`[from-internal]
+; набираете внутренний номер бота, напр. 700:
+exten => 700,1,Answer()
+ same => n,AudioSocket(${(crypto.randomUUID&&crypto.randomUUID())||'00000000-0000-0000-0000-000000000000'},${host}:${d.port})
+ same => n,Hangup()`;
+}
+async function sipRestart(){
+  const m=$('#sip_msg'); if(m){m.textContent='перезапуск…';m.className='note';}
+  const r=await adminPost('/api/admin/sip/restart');
+  if(m){ m.textContent=r&&r.msg?r.msg:(r&&r.ok?'ок':'ошибка'); m.className=(r&&r.ok!==false)?'saved':'note'; }
+  setTimeout(loadSip,400);
 }
 
 // ---- прайс-папка: статус ----
