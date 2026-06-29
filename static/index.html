@@ -156,6 +156,14 @@
   .stage.lit rect{stroke:var(--accent);stroke-width:2.5;filter:drop-shadow(0 0 10px var(--accent))}
   .flow{stroke-dasharray:6 8;animation:dash 1s linear infinite}
   @keyframes dash{to{stroke-dashoffset:-28}}
+  /* workflow-граф Телеграм-бота */
+  #tgwf svg{width:100%;height:auto;min-width:900px}
+  .tgwf-node rect{fill:var(--panel2);stroke:var(--line);stroke-width:1.5;transition:all .3s}
+  .tgwf-node text{fill:var(--txt);font-size:11px;pointer-events:none}
+  .tgwf-node.dim{opacity:.28}
+  .tgwf-node.on rect{stroke:var(--accent);fill:rgba(59,130,246,.18);filter:drop-shadow(0 0 8px var(--accent))}
+  .tgwf-edge{fill:none;stroke:var(--line);stroke-width:2}
+  .tgwf-edge.on{stroke:var(--accent2);stroke-dasharray:6 8;animation:dash 1s linear infinite}
   .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:10px}
   .legend b{color:var(--txt)}
 </style>
@@ -415,6 +423,12 @@
         <span id="tgmsg" class="note"></span>
       </div>
       <div class="note" style="margin-top:6px">Токен бота задаётся в «Администратор» → группа «Телеграм-бот» (получить у @BotFather). После смены токена нажмите «Перезапустить бота».</div>
+    </div>
+
+    <div class="box"><h3>🔀 Workflow бота
+      <button class="act ghost" style="margin-left:8px;padding:4px 9px" onclick="tgWorkflowToggle()" id="tgwf_btn">⏸ пауза</button></h3>
+      <div class="note" style="margin-bottom:8px">Путь обработки сообщения: приём → проверка доступа → тип (текст / голос → STT / файл → OCR / команда обучения) → RAG-ответ (с синонимами, прайс-папкой и внешними API) → отправка → озвучка → оценка → журнал. Неактивные ветки приглушены по текущим настройкам бота.</div>
+      <div id="tgwf" style="overflow:auto"></div>
     </div>
 
     <div class="box"><h3>🎙 Голосовые сообщения, ответы голосом и файлы</h3>
@@ -1543,6 +1557,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t!=='schema') clearInterval(schemaTimer);
   if(b.dataset.t!=='dash') clearInterval(actTimer);          // живые запросы — только на дашборде
   if(b.dataset.t!=='obsidian') obsStop();                    // граф — гасим анимацию вне вкладки
+  if(b.dataset.t!=='telegram') tgWorkflowStop();             // workflow-граф — гасим вне вкладки
   document.body.classList.toggle('obs-full', b.dataset.t==='obsidian');  // граф во всю ширину
   ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
   if(b.dataset.t==='dash') startActivityPoll();
@@ -2106,6 +2121,8 @@ async function loadTelegram(){
       +(st.error?`<div class="note" style="margin-top:6px;color:#f59e0b">Последняя ошибка: ${esc(st.error)}</div>`:'');
     if($('#tg_auto')) $('#tg_auto').checked=!!st.auto_approve;
     tgVoiceFill(st);
+    tgWorkflow({voice_in:st.voice_in, files:st.files, voice_out:st.voice_out, feedback:st.feedback});
+    tgWorkflowAnim();
   }
   tgTrainLoad();
   // запросы на доступ (pending)
@@ -2201,6 +2218,75 @@ function tgVoicePick(){
   if(sel.value){ $('#tgv_voice').value=sel.value; }
   tgVoiceSave();
 }
+// ---- workflow-граф бота ----
+const TGWF_NODES=[
+  {id:'in',x:20,y:165,w:140,h:54,t:'📩 Входящее'},
+  {id:'access',x:195,y:165,w:150,h:54,t:'🔐 Доступ ✓'},
+  {id:'type',x:380,y:165,w:150,h:54,t:'🧩 Тип запроса'},
+  {id:'train',x:150,y:300,w:160,h:50,t:'🎓 Обучение→индекс'},
+  {id:'stt',x:345,y:300,w:140,h:50,t:'🎙 STT (голос)',flag:'voice_in'},
+  {id:'ocr',x:500,y:300,w:140,h:50,t:'📎 Файл / OCR',flag:'files'},
+  {id:'syn',x:470,y:30,w:130,h:46,t:'🔤 Синонимы'},
+  {id:'price',x:615,y:30,w:140,h:46,t:'💲 Прайс-папка'},
+  {id:'api',x:775,y:30,w:140,h:46,t:'🔌 Внешний API'},
+  {id:'rag',x:600,y:160,w:200,h:64,t:'🧠 RAG: поиск·реранк·генерация'},
+  {id:'send',x:850,y:165,w:140,h:54,t:'📤 Отправка'},
+  {id:'tts',x:830,y:300,w:140,h:50,t:'🔊 Озвучка TTS',flag:'voice_out'},
+  {id:'fb',x:985,y:300,w:165,h:50,t:'👍/👎/💬 Оценка',flag:'feedback'},
+  {id:'log',x:1030,y:165,w:130,h:54,t:'🗄 Журнал'},
+];
+const TGWF_EDGES=[['in','access'],['access','type'],['type','rag'],['rag','send'],['send','log'],
+  ['access','train'],['type','stt'],['type','ocr'],['stt','rag'],['ocr','rag'],
+  ['syn','rag'],['price','rag'],['api','rag'],['send','tts'],['send','fb']];
+const TGWF_SWEEP=['in','access','type','stt','ocr','rag','send','tts','fb','log'];
+let _tgwfTimer=null,_tgwfI=0,_tgwfPaused=false;
+function _tgwfAnchor(a,b){
+  const acx=a.x+a.w/2, acy=a.y+a.h/2, bcx=b.x+b.w/2, bcy=b.y+b.h/2;
+  const dx=bcx-acx, dy=bcy-acy;
+  if(Math.abs(dx)>=Math.abs(dy)){
+    const sx=dx>0?a.x+a.w:a.x, ex=dx>0?b.x:b.x+b.w; return [sx,acy,ex,bcy];
+  } else {
+    const sy=dy>0?a.y+a.h:a.y, ey=dy>0?b.y:b.y+b.h; return [acx,sy,bcx,ey];
+  }
+}
+function tgWorkflow(flags){
+  const wrap=$('#tgwf'); if(!wrap) return;
+  flags=flags||{};
+  const map={}; TGWF_NODES.forEach(n=>map[n.id]=n);
+  let edges='';
+  for(const [f,t] of TGWF_EDGES){ const A=map[f],B=map[t]; if(!A||!B)continue;
+    const [x1,y1,x2,y2]=_tgwfAnchor(A,B);
+    edges+=`<line class="tgwf-edge" data-from="${f}" data-to="${t}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" marker-end="url(#tgwfArr)"/>`;
+  }
+  let nodes='';
+  for(const n of TGWF_NODES){
+    const dim = n.flag && flags[n.flag]===false ? ' dim':'';
+    nodes+=`<g class="tgwf-node${dim}" data-id="${n.id}">
+      <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="9"></rect>
+      <text x="${n.x+n.w/2}" y="${n.y+n.h/2+4}" text-anchor="middle">${esc(n.t)}</text></g>`;
+  }
+  wrap.innerHTML=`<svg viewBox="0 0 1180 380" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="tgwfArr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" style="fill:var(--line)"></path></marker></defs>
+    ${edges}${nodes}</svg>`;
+}
+function tgWorkflowStop(){ clearInterval(_tgwfTimer); _tgwfTimer=null; }
+function tgWorkflowAnim(){
+  tgWorkflowStop(); _tgwfI=0; if(_tgwfPaused) return;
+  _tgwfTimer=setInterval(()=>{
+    const svg=$('#tgwf svg'); if(!svg){ tgWorkflowStop(); return; }
+    svg.querySelectorAll('.tgwf-node.on').forEach(n=>n.classList.remove('on'));
+    svg.querySelectorAll('.tgwf-edge.on').forEach(e=>e.classList.remove('on'));
+    const id=TGWF_SWEEP[_tgwfI%TGWF_SWEEP.length];
+    const node=svg.querySelector(`.tgwf-node[data-id="${id}"]`); if(node) node.classList.add('on');
+    svg.querySelectorAll(`.tgwf-edge[data-to="${id}"]`).forEach(e=>e.classList.add('on'));
+    if(id==='rag') ['syn','price','api','stt','ocr'].forEach(s=>{ const e=svg.querySelector(`.tgwf-edge[data-from="${s}"][data-to="rag"]`); if(e)e.classList.add('on'); });
+    _tgwfI++;
+  },650);
+}
+function tgWorkflowToggle(){ _tgwfPaused=!_tgwfPaused; const b=$('#tgwf_btn');
+  if(_tgwfPaused){ tgWorkflowStop(); if(b)b.textContent='▶ играть'; }
+  else { if(b)b.textContent='⏸ пауза'; tgWorkflowAnim(); } }
 function tgTrainMsg(t,ok=true){ const e=$('#tgtrainmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 async function tgTrainLoad(){
   const el=$('#tgtrain_users'); if(!el) return;
