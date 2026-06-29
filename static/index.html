@@ -126,6 +126,20 @@
   .actrow .actstage{flex:0 0 auto;font-size:12px;color:var(--txt)}
   .actrow .actms{flex:0 0 70px;text-align:right;font-size:12px;color:var(--muted)}
   .actspin{display:inline-block;animation:pglow 1s ease-in-out infinite}
+  /* граф базы знаний (Obsidian) во всю ширину */
+  body.obs-full main{max-width:none}
+  #obs_wrap{margin:0 -32px}
+  #obs_graphwrap{position:relative;background:var(--panel2)}
+  #obs_canvas{display:block;width:100%;height:80vh;cursor:grab}
+  #obs_side{position:absolute;top:0;right:0;width:340px;height:100%;background:var(--panel);
+    border-left:1px solid var(--line);padding:14px;overflow:auto;box-shadow:-8px 0 24px rgba(0,0,0,.25);
+    transform:translateX(100%);transition:transform .2s ease}
+  #obs_side.open{transform:none}
+  #obs_pbar{height:6px;background:var(--panel2);border-radius:4px;overflow:hidden;display:none}
+  #obs_pbar.show{display:block}
+  #obs_pbar > i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s ease}
+  #obs_pbar.indet > i{width:35%;animation:obsindet 1.1s ease-in-out infinite}
+  @keyframes obsindet{0%{margin-left:-35%}100%{margin-left:100%}}
   /* модальный браузер папок */
   .overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
   .overlay.open{display:flex}
@@ -1347,21 +1361,28 @@
   <section id="obsidian">
     <h1>База знаний — граф (Obsidian)</h1>
     <div class="sub">Текущая проиндексированная база в виде графа: файлы и категории как узлы, связи — принадлежность
-      <button class="act ghost" onclick="loadObsidian()">Обновить</button></div>
+      <button class="act ghost" onclick="loadObsidian(false)">Обновить</button>
+      <button class="act ghost" onclick="loadObsidian(true)" title="Пересобрать граф из Qdrant заново">🔄 Пересобрать</button></div>
 
-    <div class="box" style="padding:0;overflow:hidden">
+    <div class="box" id="obs_wrap" style="padding:0;overflow:hidden">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line)">
         <input id="obs_search" placeholder="🔍 поиск по файлу или категории…" style="flex:1;min-width:220px" oninput="obsSearch()">
         <label class="note" style="cursor:pointer"><input type="checkbox" id="obs_labels" checked onchange="obsDraw()"> подписи</label>
         <span id="obs_stats" class="note"></span>
       </div>
-      <div style="display:flex;min-height:62vh">
-        <div style="flex:1;position:relative;background:var(--panel2)">
-          <canvas id="obs_canvas" style="display:block;width:100%;height:62vh;cursor:grab"></canvas>
-          <div id="obs_hint" class="note" style="position:absolute;left:12px;bottom:10px">колесо — масштаб · тащить узел/фон · клик — открыть</div>
-        </div>
-        <div id="obs_side" style="flex:0 0 320px;border-left:1px solid var(--line);padding:14px;overflow:auto;max-height:62vh">
-          <div class="note">Выберите узел в графе, чтобы увидеть детали и фрагмент текста.</div>
+      <div style="padding:8px 14px 0">
+        <div id="obs_pbar"><i></i></div>
+        <div id="obs_pmsg" class="note" style="min-height:14px"></div>
+      </div>
+      <div id="obs_graphwrap">
+        <canvas id="obs_canvas"></canvas>
+        <div id="obs_hint" class="note" style="position:absolute;left:12px;bottom:10px">колесо — масштаб · тащить узел/фон · клик — открыть</div>
+        <div id="obs_side">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <b style="font-size:13px">Детали</b>
+            <button class="dirbtn" onclick="obsCloseSide()" title="Закрыть">✕</button>
+          </div>
+          <div id="obs_side_body"><div class="note">Выберите узел в графе, чтобы увидеть детали и фрагмент текста.</div></div>
         </div>
       </div>
     </div>
@@ -1395,6 +1416,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t!=='schema') clearInterval(schemaTimer);
   if(b.dataset.t!=='dash') clearInterval(actTimer);          // живые запросы — только на дашборде
   if(b.dataset.t!=='obsidian') obsStop();                    // граф — гасим анимацию вне вкладки
+  document.body.classList.toggle('obs-full', b.dataset.t==='obsidian');  // граф во всю ширину
   ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
   if(b.dataset.t==='dash') startActivityPoll();
 });
@@ -4151,15 +4173,37 @@ function obsUnbind(o){ if(!o) return; if(o._mm) window.removeEventListener('mous
   if(o._mu) window.removeEventListener('mouseup',o._mu); if(o._rs) window.removeEventListener('resize',o._rs); }
 function obsColor(s){ s=String(s||''); let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))%360; return `hsl(${h},62%,60%)`; }
 function obsShort(s,m){ s=String(s||''); return s.length>m? s.slice(0,m-1)+'…':s; }
-async function loadObsidian(){
+let _obsPoll=null;
+function obsProgress(p, msg){
+  const bar=$('#obs_pbar'); if(!bar) return;
+  bar.classList.add('show');
+  if(p && p.pct!=null){ bar.classList.remove('indet'); bar.querySelector('i').style.width=p.pct+'%'; }
+  else { bar.classList.add('indet'); }
+  $('#obs_pmsg').textContent=msg||'';
+}
+function obsProgressDone(){ const bar=$('#obs_pbar'); if(bar){ bar.classList.remove('show','indet'); bar.querySelector('i').style.width='0'; } $('#obs_pmsg').textContent=''; }
+async function loadObsidian(force){
   const cv=$('#obs_canvas'); if(!cv) return;
-  obsUnbind(OBS); obsStop();
-  $('#obs_side').innerHTML='<div class="note">Загрузка графа базы знаний…</div>';
-  const d=await adminGet('/api/admin/kb-graph');
-  if(!d||!d.nodes){ $('#obs_stats').textContent='ошибка загрузки'; return; }
+  if(_obsPoll){ clearInterval(_obsPoll); _obsPoll=null; }
+  obsProgress({pct:null}, 'Загрузка графа базы знаний…');
+  let d=await adminGet('/api/admin/kb-graph'+(force?'?force=1':''));
+  if(d && d.building){
+    d=await new Promise(resolve=>{
+      _obsPoll=setInterval(async()=>{
+        let s; try{ s=await adminGet('/api/admin/kb-graph/status'); }catch(e){ return; }
+        if(s && s.building){ const p=s.progress||{}; obsProgress(p, `Сборка графа: ${p.stage||''} ${p.total?(p.scrolled+' / '+p.total+' фрагментов'):(p.scrolled+' фрагментов')}`); }
+        else if(s && (s.done||s.nodes)){ clearInterval(_obsPoll); _obsPoll=null; resolve(s); }
+      }, 700);
+    });
+  }
+  obsProgressDone();
+  if(!d||!d.nodes){ $('#obs_stats').textContent='ошибка загрузки'+(d&&d.error?(': '+esc(d.error)):''); return; }
   const st=d.stats||{};
-  $('#obs_stats').textContent=`файлов: ${st.shown_files||0}${st.truncated?(' из '+st.files):''} · категорий: ${st.categories||0} · фрагментов: ${st.chunks||0}`+(d.online?'':' · ⚠ Qdrant недоступен');
-  if(!d.nodes.length){ $('#obs_side').innerHTML='<div class="note">База пуста — нет проиндексированных документов.</div>'; return; }
+  $('#obs_stats').innerHTML=`файлов: <b>${st.shown_files||0}</b>${st.truncated?(' из '+st.files):''} · категорий: <b>${st.categories||0}</b> · фрагментов: <b>${st.chunks||0}</b>`
+    +(d.online?'':' · <span style="color:#f87171">⚠ Qdrant недоступен</span>')
+    +(d.cached?(' · <span style="color:#34d399">из кэша'+(d.age_sec!=null?(' '+d.age_sec+' с'):'')+'</span>'):'');
+  obsUnbind(OBS); obsStop();
+  if(!d.nodes.length){ obsCloseSide(); $('#obs_side_body').innerHTML='<div class="note">База пуста — нет проиндексированных документов.</div>'; return; }
   const W=cv.clientWidth||800, H=cv.clientHeight||500, byId={};
   const nodes=d.nodes.map(n=>{ const o=Object.assign({},n,{
     x:W/2+(Math.random()-.5)*W*0.6, y:H/2+(Math.random()-.5)*H*0.6, vx:0, vy:0,
@@ -4234,15 +4278,17 @@ function obsBind(){
   window.addEventListener('mousemove',o._mm); window.addEventListener('mouseup',o._mu); window.addEventListener('resize',o._rs);
 }
 function obsSearch(){ if(!OBS) return; OBS.term=($('#obs_search').value||'').trim().toLowerCase(); obsDraw(); }
+function obsCloseSide(){ const s=$('#obs_side'); if(s) s.classList.remove('open'); if(OBS){ OBS.sel=null; obsDraw(); } }
 async function obsShowNode(n){
-  const side=$('#obs_side');
+  const side=$('#obs_side'), body=$('#obs_side_body');
+  if(side) side.classList.add('open');
   if(n.type==='category'){
-    side.innerHTML=`<h3 style="margin-top:0">🗂 ${esc(n.label)}</h3>
+    body.innerHTML=`<h3 style="margin-top:0">🗂 ${esc(n.label)}</h3>
       <div class="note">Категория · файлов: <b>${n.files||0}</b></div>
       <div class="note" style="margin-top:8px">Вокруг — файлы этой категории. Кликните файл, чтобы увидеть текст.</div>`;
     return;
   }
-  side.innerHTML=`<h3 style="margin-top:0;word-break:break-word">📄 ${esc(n.label)}</h3>
+  body.innerHTML=`<h3 style="margin-top:0;word-break:break-word">📄 ${esc(n.label)}</h3>
     <div class="note">Категория: <b>${esc(n.category||'—')}</b> · фрагментов: <b>${n.chunks||0}</b>${n.pages?(' · страниц: '+n.pages):''}</div>
     <div class="note" style="margin:8px 0;word-break:break-all">${esc(n.source||'')}</div>
     <div id="obs_preview" class="note">загрузка текста…</div>`;

@@ -2872,74 +2872,140 @@ def _qdrant_text_by_source(cap_per_file: int) -> dict:
     return {s: "\n\n".join(v[1])[:cap_per_file] for s, v in acc.items()}
 
 
-def kb_graph(max_nodes: int = 400) -> dict:
-    """Граф проиндексированной базы знаний (в стиле Obsidian): узлы — файлы и
-    категории, связи — принадлежность файла категории. Данные берём одним проходом
-    scroll по Qdrant (без повторного парсинга). Файлы ограничиваем `max_nodes` по
-    числу фрагментов; предпросмотр текста подгружается по клику (file-text)."""
+# Сборка графа базы знаний: фоновая задача с прогрессом + кэш результата.
+_KB_JOB = {"running": False, "scrolled": 0, "total": 0, "stage": "",
+           "ok": None, "error": None, "result": None, "ts": 0.0, "max_nodes": 400}
+_KB_TTL = 300.0   # сек жизни кэша
+
+
+def _kb_total_points() -> int:
+    try:
+        base = settings.get("QDRANT_URL")
+        coll = settings.get("QDRANT_COLLECTION")
+        r = httpx.get(f"{base}/collections/{coll}", timeout=4)
+        if r.status_code == 200:
+            return int((r.json().get("result", {}) or {}).get("points_count", 0) or 0)
+    except Exception:
+        pass
+    return 0
+
+
+def _kb_build(max_nodes: int) -> None:
+    """Один проход scroll по Qdrant с обновлением прогресса; кладёт результат в кэш."""
+    j = _KB_JOB
     base = settings.get("QDRANT_URL")
     coll = settings.get("QDRANT_COLLECTION")
-    files: dict = {}          # source -> {chunks, category, pages:set, chars}
+    files: dict = {}
     total_points = 0
     next_off = None
     online = True
-    for _ in range(200000):
-        body = {"limit": 512, "with_payload": ["source", "doc_category", "page"],
-                "with_vector": False}
-        if next_off is not None:
-            body["offset"] = next_off
-        try:
-            r = httpx.post(f"{base}/collections/{coll}/points/scroll", json=body, timeout=60)
-        except Exception:
-            online = False
-            break
-        if r.status_code != 200:
-            online = False
-            break
-        res = r.json().get("result", {}) or {}
-        for p in res.get("points", []):
-            pl = p.get("payload") or {}
-            src = pl.get("source")
-            if not src:
-                continue
-            total_points += 1
-            f = files.get(src)
-            if f is None:
-                f = {"chunks": 0, "category": pl.get("doc_category") or "без категории",
-                     "pages": set(), "chars": 0}
-                files[src] = f
-            f["chunks"] += 1
-            if pl.get("page") is not None:
-                f["pages"].add(pl.get("page"))
-            if pl.get("doc_category") and f["category"] == "без категории":
-                f["category"] = pl.get("doc_category")
-        next_off = res.get("next_page_offset")
-        if next_off is None:
-            break
+    j.update(running=True, scrolled=0, total=_kb_total_points(), stage="чтение индекса",
+             ok=None, error=None)
+    try:
+        for _ in range(200000):
+            body = {"limit": 512, "with_payload": ["source", "doc_category", "page"],
+                    "with_vector": False}
+            if next_off is not None:
+                body["offset"] = next_off
+            try:
+                r = httpx.post(f"{base}/collections/{coll}/points/scroll",
+                               json=body, timeout=60)
+            except Exception as e:
+                online = False
+                j["error"] = str(e)[:160]
+                break
+            if r.status_code != 200:
+                online = False
+                j["error"] = f"Qdrant HTTP {r.status_code}"
+                break
+            res = r.json().get("result", {}) or {}
+            for p in res.get("points", []):
+                pl = p.get("payload") or {}
+                src = pl.get("source")
+                if not src:
+                    continue
+                total_points += 1
+                f = files.get(src)
+                if f is None:
+                    f = {"chunks": 0, "category": pl.get("doc_category") or "без категории",
+                         "pages": set()}
+                    files[src] = f
+                f["chunks"] += 1
+                if pl.get("page") is not None:
+                    f["pages"].add(pl.get("page"))
+                if pl.get("doc_category") and f["category"] == "без категории":
+                    f["category"] = pl.get("doc_category")
+            j["scrolled"] = total_points
+            next_off = res.get("next_page_offset")
+            if next_off is None:
+                break
 
-    cats: dict = {}
-    for f in files.values():
-        cats[f["category"]] = cats.get(f["category"], 0) + 1
+        j["stage"] = "построение графа"
+        cats: dict = {}
+        for f in files.values():
+            cats[f["category"]] = cats.get(f["category"], 0) + 1
+        items = sorted(files.items(), key=lambda kv: kv[1]["chunks"], reverse=True)
+        truncated = len(items) > max_nodes
+        items = items[:max_nodes]
+        nodes, links, used_cats = [], [], set()
+        for src, f in items:
+            nodes.append({"id": "f:" + src, "label": os.path.basename(src) or src,
+                          "type": "file", "category": f["category"], "chunks": f["chunks"],
+                          "pages": len(f["pages"]), "source": src})
+            links.append({"source": "c:" + f["category"], "target": "f:" + src})
+            used_cats.add(f["category"])
+        for c in used_cats:
+            nodes.append({"id": "c:" + c, "label": c, "type": "category",
+                          "files": cats.get(c, 0)})
+        j["result"] = {"online": online, "nodes": nodes, "links": links,
+                       "stats": {"files": len(files), "shown_files": len(items),
+                                 "categories": len(cats), "chunks": total_points,
+                                 "truncated": truncated, "max_nodes": max_nodes}}
+        j["ts"] = time.time()
+        j["ok"] = online
+    except Exception as e:
+        j["ok"] = False
+        j["error"] = str(e)[:200]
+    finally:
+        j["running"] = False
+        j["stage"] = ""
 
-    items = sorted(files.items(), key=lambda kv: kv[1]["chunks"], reverse=True)
-    truncated = len(items) > max_nodes
-    items = items[:max_nodes]
 
-    nodes, links, used_cats = [], [], set()
-    for src, f in items:
-        nodes.append({"id": "f:" + src, "label": os.path.basename(src) or src,
-                      "type": "file", "category": f["category"], "chunks": f["chunks"],
-                      "pages": len(f["pages"]), "source": src})
-        links.append({"source": "c:" + f["category"], "target": "f:" + src})
-        used_cats.add(f["category"])
-    for c in used_cats:
-        nodes.append({"id": "c:" + c, "label": c, "type": "category",
-                      "files": cats.get(c, 0)})
+def kb_graph(max_nodes: int = 400, force: bool = False) -> dict:
+    """Вернуть граф базы знаний. Если есть свежий кэш — отдаём сразу; иначе запускаем
+    фоновую сборку и возвращаем {building:true} с прогрессом (клиент опрашивает
+    kb_graph_status). force=True игнорирует кэш."""
+    j = _KB_JOB
+    now = time.time()
+    if j["running"]:
+        return {"building": True, "progress": _kb_progress()}
+    fresh = (j["result"] and j["max_nodes"] == max_nodes and (now - j["ts"]) < _KB_TTL)
+    if fresh and not force:
+        return {"building": False, "cached": True,
+                "age_sec": int(now - j["ts"]), **j["result"]}
+    j["max_nodes"] = max_nodes
+    threading.Thread(target=_kb_build, args=(max_nodes,), daemon=True).start()
+    return {"building": True, "progress": {"scrolled": 0, "total": _KB_JOB.get("total", 0),
+                                           "stage": "запуск"}}
 
-    return {"online": online, "nodes": nodes, "links": links,
-            "stats": {"files": len(files), "shown_files": len(items),
-                      "categories": len(cats), "chunks": total_points,
-                      "truncated": truncated, "max_nodes": max_nodes}}
+
+def _kb_progress() -> dict:
+    j = _KB_JOB
+    tot = j.get("total", 0)
+    pct = round(j["scrolled"] * 100.0 / tot, 1) if tot else None
+    return {"scrolled": j.get("scrolled", 0), "total": tot, "pct": pct,
+            "stage": j.get("stage", "")}
+
+
+def kb_graph_status() -> dict:
+    """Состояние сборки графа + результат, когда готов."""
+    j = _KB_JOB
+    if j["running"]:
+        return {"building": True, "progress": _kb_progress()}
+    if j["result"]:
+        return {"building": False, "done": True, "ok": j["ok"], "error": j.get("error"),
+                "cached": True, "age_sec": int(time.time() - j["ts"]), **j["result"]}
+    return {"building": False, "done": False, "ok": j.get("ok"), "error": j.get("error")}
 
 
 def catalog_load() -> dict:

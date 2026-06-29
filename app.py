@@ -803,10 +803,19 @@ def admin_files_catalog(limit: int = 100, offset: int = 0, q: str = "",
 
 
 @app.get("/api/admin/kb-graph")
-def admin_kb_graph(max_nodes: int = 400, x_admin_token: str | None = Header(None)):
-    """Граф проиндексированной базы знаний (Obsidian-вид): файлы и категории."""
+def admin_kb_graph(max_nodes: int = 400, force: bool = False,
+                   x_admin_token: str | None = Header(None)):
+    """Граф проиндексированной базы знаний (Obsidian-вид): файлы и категории.
+    Кэшируется; при отсутствии свежего кэша запускает фоновую сборку с прогрессом."""
     _check_admin(x_admin_token)
-    return admin_ops.kb_graph(max_nodes=min(max(max_nodes, 10), 2000))
+    return admin_ops.kb_graph(max_nodes=min(max(max_nodes, 10), 2000), force=force)
+
+
+@app.get("/api/admin/kb-graph/status")
+def admin_kb_graph_status(x_admin_token: str | None = Header(None)):
+    """Прогресс сборки графа базы знаний и результат, когда готов."""
+    _check_admin(x_admin_token)
+    return admin_ops.kb_graph_status()
 
 
 @app.get("/api/admin/file-text")
