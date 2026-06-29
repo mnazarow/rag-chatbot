@@ -68,6 +68,56 @@ def send(chat_id: int, text: str, reply_markup: dict | None = None) -> None:
         _call("sendMessage", **params)
 
 
+def _send_ok(chat_id: int, text: str) -> bool:
+    """Отправить сообщение (с разбивкой на 4096) и вернуть успех доставки."""
+    ok = True
+    for i in range(0, len(text), 4096):
+        r = _call("sendMessage", chat_id=chat_id, text=text[i:i + 4096],
+                  disable_web_page_preview=True)
+        ok = ok and bool(r and r.get("ok"))
+    return ok
+
+
+def broadcast(chat_ids, text: str) -> dict:
+    """Отправить текст списку пользователей. Возвращает {ok, sent, failed, total}.
+    Между сообщениями небольшая пауза — не упираться в лимиты Telegram."""
+    text = (text or "").strip()
+    ids = [int(c) for c in (chat_ids or [])]
+    if not text:
+        return {"ok": False, "sent": 0, "failed": 0, "total": 0, "msg": "пустое сообщение"}
+    if not _token():
+        return {"ok": False, "sent": 0, "failed": 0, "total": 0, "msg": "не задан токен бота"}
+    sent = failed = 0
+    aid = None
+    try:
+        import activity
+        aid = activity.start("telegram", f"рассылка {len(ids)} польз.", "отправка")
+    except Exception:
+        aid = None
+    for n, cid in enumerate(ids, 1):
+        try:
+            if _send_ok(cid, text):
+                sent += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+        if aid is not None and n % 10 == 0:
+            try:
+                import activity
+                activity.update(aid, detail=f"{n}/{len(ids)}")
+            except Exception:
+                pass
+        time.sleep(0.04)
+    if aid is not None:
+        try:
+            import activity
+            activity.finish(aid, ok=True, stage=f"отправлено {sent}/{len(ids)}")
+        except Exception:
+            pass
+    return {"ok": True, "sent": sent, "failed": failed, "total": len(ids)}
+
+
 def _feedback_kb(rid: int) -> dict:
     """Инлайн-клавиатура оценки ответа: 👍 / 👎 / 💬 Комментарий."""
     return {"inline_keyboard": [[

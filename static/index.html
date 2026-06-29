@@ -512,6 +512,17 @@
       <div id="tg_pending"></div>
     </div>
 
+    <div class="box"><h3>✉️ Отправить сообщение пользователям</h3>
+      <div class="note" style="margin-bottom:8px">Отправка сообщения из веб-интерфейса: <b>выбранным</b> (отметьте галочками в таблице ниже), <b>всем подтверждённым</b> или <b>всем</b> пользователям. Сообщение придёт от имени бота.</div>
+      <textarea id="tgmsg_text" rows="3" placeholder="Текст сообщения…" style="width:100%;background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:9px;padding:8px;font:inherit"></textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <button class="act" onclick="tgSendSelected()">Отправить выбранным (<span id="tgmsg_selcount">0</span>)</button>
+        <button class="act ghost" onclick="tgSendScope('approved')">Всем подтверждённым</button>
+        <button class="act ghost" style="border-color:#f59e0b;color:#f59e0b" onclick="tgSendScope('all')">Всем</button>
+        <span id="tgmsg_status" class="note"></span>
+      </div>
+    </div>
+
     <div class="box"><h3>👥 Пользователи</h3>
       <div id="tg_users"></div>
     </div>
@@ -2047,7 +2058,7 @@ async function loadTelegram(){
   const us=await tgGet('/api/admin/telegram/users');
   const ul=(us&&us.users)||[];
   $('#tg_users').innerHTML = ul.length
-    ? '<table><thead><tr><th>Имя</th><th>Username</th><th>ID</th><th>Статус</th><th>Сотрудник</th><th>Запросов</th><th></th></tr></thead><tbody>'
+    ? '<table><thead><tr><th><input type="checkbox" id="tgsel_all" onchange="tgSelAll(this.checked)" title="Выбрать всех"></th><th>Имя</th><th>Username</th><th>ID</th><th>Статус</th><th>Сотрудник</th><th>Запросов</th><th></th></tr></thead><tbody>'
       +ul.map(u=>{ const badge=u.status==='approved'?'<span class="tag ok">подтверждён</span>':(u.status==='blocked'?'<span class="tag no">заблокирован</span>':'<span class="tag">ожидает</span>');
         const act=u.status==='approved'?`<button class="dirbtn" title="Заблокировать" onclick="tgBlock(${u.chat_id})">⛔</button>`
           :(u.status==='blocked'?`<button class="dirbtn" title="Разблокировать" onclick="tgUnblock(${u.chat_id})">✅</button>`
@@ -2057,7 +2068,8 @@ async function loadTelegram(){
                <button class="dirbtn" title="Изменить" onclick="tgEmpPick(${u.chat_id})">✏️</button>
                <button class="dirbtn" style="border-color:#ef4444;color:#f87171" title="Снять привязку" onclick="tgEmpClear(${u.chat_id})">✕</button></div>`
           : `<button class="dirbtn" onclick="tgEmpPick(${u.chat_id})">🔗 Сопоставить</button>`;
-        return `<tr><td>${esc(u.first_name||'—')}</td><td>${u.username?('@'+esc(u.username)):'—'}</td>
+        return `<tr><td><input type="checkbox" class="tgselbox" value="${u.chat_id}" onchange="tgSelCount()"></td>
+          <td>${esc(u.first_name||'—')}</td><td>${u.username?('@'+esc(u.username)):'—'}</td>
           <td>${u.chat_id}</td><td>${badge}</td><td>${emp}</td><td>${nz(u.n_requests)}</td><td>${act}</td></tr>`; }).join('')
       +'</tbody></table>'
     : '<div class="note">Пользователей пока нет.</div>';
@@ -2235,6 +2247,30 @@ async function tgEmpClear(chatId){
   if(!confirm('Снять привязку к сотруднику?')) return;
   await adminPost('/api/admin/telegram/map-employee',{chat_id:chatId, email:'', name:'', info:''});
   loadTelegram();
+}
+// ---- рассылка / сообщение пользователям ----
+function tgSelectedIds(){ return [...document.querySelectorAll('.tgselbox:checked')].map(c=>parseInt(c.value)); }
+function tgSelCount(){ const n=tgSelectedIds().length; const e=$('#tgmsg_selcount'); if(e) e.textContent=n; }
+function tgSelAll(on){ document.querySelectorAll('.tgselbox').forEach(c=>c.checked=on); tgSelCount(); }
+function tgMsgStatus(t,ok=true){ const e=$('#tgmsg_status'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+function _tgMsgText(){ return ($('#tgmsg_text')&&$('#tgmsg_text').value||'').trim(); }
+async function _tgSend(body, label){
+  tgMsgStatus('отправка…');
+  const r=await tgPost('/api/admin/telegram/send', body);
+  if(r && r.ok){ tgMsgStatus(`✅ ${label}: доставлено ${r.sent}/${r.total}`+(r.failed?(' · не доставлено '+r.failed):''), true); }
+  else tgMsgStatus('ошибка: '+esc((r&&r.msg)||'не удалось'), false);
+}
+async function tgSendSelected(){
+  const text=_tgMsgText(); if(!text){ tgMsgStatus('введите текст сообщения',false); return; }
+  const ids=tgSelectedIds(); if(!ids.length){ tgMsgStatus('отметьте получателей галочками',false); return; }
+  if(!confirm(`Отправить сообщение ${ids.length} выбранным пользователям?`)) return;
+  await _tgSend({text, chat_ids:ids}, 'выбранным');
+}
+async function tgSendScope(scope){
+  const text=_tgMsgText(); if(!text){ tgMsgStatus('введите текст сообщения',false); return; }
+  const what = scope==='all' ? 'ВСЕМ пользователям' : 'всем подтверждённым';
+  if(!confirm(`Отправить сообщение ${what}? Это массовая рассылка.`)) return;
+  await _tgSend({text, scope}, what);
 }
 async function tgApprove(id){ await tgPost('/api/admin/telegram/approve',{chat_id:id}); loadTelegram(); }
 async function tgBlock(id){ await tgPost('/api/admin/telegram/block',{chat_id:id}); loadTelegram(); }

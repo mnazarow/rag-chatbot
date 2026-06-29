@@ -983,6 +983,30 @@ def admin_tg_users(status: str = "", x_admin_token: str | None = Header(None)):
     return {"users": db.tg_users(status or None)}
 
 
+@app.post("/api/admin/telegram/send")
+def admin_tg_send(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    """Отправить сообщение пользователям из веб-интерфейса.
+    payload: {text, chat_ids?: [...], scope?: 'all'|'approved'}.
+    chat_ids имеет приоритет; иначе по scope (all — все, кроме заблокированных)."""
+    _check_admin(x_admin_token)
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "msg": "пустое сообщение"}
+    chat_ids = payload.get("chat_ids") or []
+    if not chat_ids:
+        scope = (payload.get("scope") or "").strip()
+        if scope == "approved":
+            chat_ids = [u["chat_id"] for u in db.tg_users("approved")]
+        elif scope == "all":
+            chat_ids = [u["chat_id"] for u in db.tg_users()
+                        if u.get("status") != "blocked"]
+        else:
+            return {"ok": False, "msg": "не выбраны получатели"}
+    if not chat_ids:
+        return {"ok": False, "msg": "нет получателей"}
+    return telegram_bot.broadcast(chat_ids, text)
+
+
 @app.post("/api/admin/telegram/map-employee")
 def admin_tg_map_employee(payload: dict = Body(...),
                           x_admin_token: str | None = Header(None)):
