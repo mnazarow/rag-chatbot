@@ -575,6 +575,17 @@ def _analytics_raw() -> dict:
             if len(w) > 3 and w not in _STOPWORDS:
                 kw[w] += 1
 
+    # частые слова в вопросах Телеграм — отдельно
+    tg_kw = Counter()
+    try:
+        for r in _all("SELECT question FROM tg_requests"):
+            for w in (r["question"] or "").lower().split():
+                w = w.strip("?.,!:;()\"'«»—-")
+                if len(w) > 3 and w not in _STOPWORDS:
+                    tg_kw[w] += 1
+    except Exception:
+        pass
+
     buckets = {"<1с": 0, "1–3с": 0, "3–6с": 0, ">6с": 0}
     for r in lat_rows:
         ms = r["latency_ms"] or 0
@@ -592,6 +603,7 @@ def _analytics_raw() -> dict:
         "per_category": [{"cat": r["cat"], "n": r["n"]} for r in per_cat],
         "top_sources": [{"source": s, "n": n} for s, n in src.most_common(10)],
         "top_keywords": [{"word": w, "n": n} for w, n in kw.most_common(15)],
+        "tg_top_keywords": [{"word": w, "n": n} for w, n in tg_kw.most_common(20)],
         "latency_buckets": buckets,
         "ratings": rating_stats(),
         "timings": {"retrieve": round(_f(tm["rt"])), "gen": round(_f(tm["gn"])),

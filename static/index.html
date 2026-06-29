@@ -310,7 +310,9 @@
       <div class="box"><h3>Тайминги этапов (ср., мс)</h3><canvas id="ch_tm" height="170"></canvas></div>
     </div>
     <div class="box"><h3>Оценки ответов</h3><div class="cards" id="ratecards"></div></div>
-    <div class="box"><h3>Частые слова в вопросах</h3><div id="kwcloud" style="display:flex;flex-wrap:wrap;gap:8px"></div></div>
+    <div class="box"><h3>Частые слова в вопросах (веб-чат)</h3><div id="kwcloud" style="display:flex;flex-wrap:wrap;gap:8px"></div></div>
+    <div class="box"><h3>✈️ Частые слова в вопросах Телеграм <span id="tgkw_count" class="tag"></span></h3>
+      <div id="tgkwcloud" style="display:flex;flex-wrap:wrap;gap:8px"></div></div>
   </section>
 
   <!-- ===== СИСТЕМА ===== -->
@@ -1659,6 +1661,11 @@ async function loadAnalytics(){
   const max=Math.max(1,...a.top_keywords.map(k=>k.n));
   $('#kwcloud').innerHTML=a.top_keywords.map(k=>
     `<span class="tag" style="font-size:${12+18*k.n/max}px">${esc(k.word)} <b style="color:#3b82f6">${k.n}</b></span>`).join('')||'<span class="note">пока нет данных</span>';
+  const tgkw=a.tg_top_keywords||[];
+  const tmax=Math.max(1,...tgkw.map(k=>k.n));
+  if($('#tgkw_count')) $('#tgkw_count').textContent=tgkw.length?(tgkw.length+' слов'):'';
+  $('#tgkwcloud').innerHTML=tgkw.map(k=>
+    `<span class="tag" style="font-size:${12+18*k.n/tmax}px">${esc(k.word)} <b style="color:#34d399">${k.n}</b></span>`).join('')||'<span class="note">пока нет вопросов из Телеграм</span>';
   const rt=a.ratings||{};
   $('#ratecards').innerHTML=[
     ['👍 Хорошо',rt.good||0],['👎 Плохо',rt.bad||0],
