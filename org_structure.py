@@ -151,6 +151,43 @@ def parse_xml(text: str) -> list[dict]:
     return out
 
 
+def _host_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        return urlparse(url).hostname or url
+    except Exception:
+        return url
+
+
+def _friendly_error(e: Exception, url: str) -> str:
+    """Понятное сообщение для частых сетевых ошибок (DNS, отказ, таймаут, TLS)."""
+    s = str(e)
+    low = s.lower()
+    host = _host_of(url)
+    dns = ("errno 8" in low or "nodename nor servname" in low
+           or "name or service not known" in low or "getaddrinfo" in low
+           or "temporary failure in name resolution" in low
+           or "no address associated" in low or "name does not resolve" in low)
+    if dns:
+        return (f"Не удалось разрешить имя хоста «{host}» (DNS). Сервер, где запущен RAG, "
+                f"не видит этот адрес. Проверьте, что он во внутренней сети компании и имеет "
+                f"доступ к внутреннему DNS. Если RAG в Docker — пропишите внутренний DNS "
+                f"в docker-compose (раздел dns:) или используйте IP-адрес вместо имени.")
+    if "connection refused" in low or "errno 111" in low:
+        return (f"Соединение с «{host}» отклонено. Проверьте адрес и порт, а также что сервис "
+                f"выгрузки запущен и доступен из сети сервера RAG.")
+    if "timed out" in low or "timeout" in low:
+        return (f"Таймаут подключения к «{host}». Хост недоступен из текущей сети "
+                f"(брандмауэр/VPN/маршрутизация) либо отвечает слишком долго.")
+    if "ssl" in low or "certificate" in low or "tls" in low:
+        return f"Ошибка TLS/сертификата при обращении к «{host}»: {s[:160]}"
+    if " 404" in low or "not found" in low:
+        return f"Сервер «{host}» вернул 404 (страница не найдена) — проверьте путь URL."
+    if " 401" in low or " 403" in low or "unauthorized" in low or "forbidden" in low:
+        return f"Доступ к «{host}» запрещён (401/403) — требуется авторизация/права к выгрузке."
+    return s[:300]
+
+
 def _fetch(url: str, timeout: int = 30) -> str:
     """Скачать XML по URL. httpx (как в проекте), иначе urllib. cp1251-фолбэк."""
     data: bytes
@@ -192,7 +229,7 @@ def sync(url: str | None = None) -> dict:
             activity.update(aid, stage="разбор и сохранение")
         rows = parse_xml(text)
     except Exception as e:
-        msg = str(e)[:300]
+        msg = _friendly_error(e, url)
         _set_status(False, 0, msg)
         if aid is not None:
             import activity

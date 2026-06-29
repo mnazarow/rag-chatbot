@@ -429,6 +429,24 @@
         </div>
 
         <div class="field" style="margin:0">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="tgv_answer" onchange="tgVoiceSave()"> <b>Выводить ответ LLM</b></label>
+          <div class="note" style="line-height:1.5">Бот присылает <b>текст ответа модели</b>. Выключите,
+            чтобы отправлять только источники и/или структуру формирования ответа без самого текста (например,
+            для отладки поиска). Если выключены ответ, источники и структура — бот пришлёт короткую отметку
+            об обработке. При выключенном ответе голосовой ответ не отправляется.</div>
+        </div>
+
+        <div class="field" style="margin:0">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="tgv_pipeline" onchange="tgVoiceSave()"> <b>Показывать структуру формирования ответа</b></label>
+          <div class="note" style="line-height:1.5">К ответу добавляется «структура формирования ответа» —
+            этапы конвейера (эмбеддинг → фильтр → поиск → BM25 → реранк → контекст → генерация, либо шаги KAG)
+            с параметрами и временем. Полезно для прозрачности и отладки; <b>выключите</b>, чтобы бот присылал
+            только ответ и источники.</div>
+        </div>
+
+        <div class="field" style="margin:0">
           <label>Движок синтеза речи (TTS)</label>
           <select id="tgv_engine" onchange="tgVoiceSave()" style="max-width:280px">
             <option value="auto">auto — выбрать доступный</option>
@@ -1381,6 +1399,7 @@ async function loadStats(){
   const cards = [
     ['Всего запросов', s.total],
     ['Сегодня', s.today],
+    ['✈️ Запросов в Телеграм', (s.tg_total||0)+'<small> · сегодня '+(s.tg_today||0)+'</small>'],
     ['Доля ответов', s.answer_rate+'<small>%</small>'],
     ['Ср. релевантность', s.avg_top_score],
     ['Ср. задержка', s.avg_latency_ms+'<small> мс</small>'],
@@ -1920,6 +1939,7 @@ function tgVoiceFill(st){
   if(!st) return;
   const set=(id,v)=>{ const e=$('#'+id); if(e) e.checked=!!v; };
   set('tgv_in',st.voice_in); set('tgv_out',st.voice_out); set('tgv_files',st.files);
+  set('tgv_answer',st.show_answer); set('tgv_pipeline',st.pipeline);
   if($('#tgv_engine')) $('#tgv_engine').value=st.tts_engine||'auto';
   if($('#tgv_voice')) $('#tgv_voice').value=st.tts_voice||'';
   const t=st.tts||{}, el=$('#tg_voice_status');
@@ -1996,6 +2016,8 @@ async function tgVoiceSave(){
     TELEGRAM_VOICE_IN:$('#tgv_in').checked,
     TELEGRAM_VOICE_OUT:$('#tgv_out').checked,
     TELEGRAM_FILES:$('#tgv_files').checked,
+    TELEGRAM_SHOW_ANSWER:$('#tgv_answer').checked,
+    TELEGRAM_PIPELINE:$('#tgv_pipeline').checked,
     TTS_ENGINE:$('#tgv_engine').value,
     TTS_VOICE:$('#tgv_voice').value };
   const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':tok()},body:JSON.stringify(body)});

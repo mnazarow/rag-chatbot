@@ -110,6 +110,9 @@ TELEGRAM_VOICE_OUT = _bool("TELEGRAM_VOICE_OUT", False)  # отвечать го
 TELEGRAM_FILES = _bool("TELEGRAM_FILES", True)
 # Показывать в ответе бота структуру формирования ответа (этапы конвейера, как в чате).
 TELEGRAM_PIPELINE = _bool("TELEGRAM_PIPELINE", True)
+# Выводить в ответе бота сам текст ответа LLM (можно отключить, оставив только
+# источники и/или структуру формирования ответа).
+TELEGRAM_SHOW_ANSWER = _bool("TELEGRAM_SHOW_ANSWER", True)
 # Движок синтеза речи: auto (пробует доступные) | piper | say (macOS) | espeak | off.
 TTS_ENGINE = os.getenv("TTS_ENGINE", "auto")
 # Голос/модель: для macOS `say` — имя голоса (напр. Milena/Yuri); для piper — путь к .onnx;

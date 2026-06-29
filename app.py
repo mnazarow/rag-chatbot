@@ -477,6 +477,13 @@ def api_stats():
     s["finetuned"] = bool(settings.get("USE_FINETUNED"))
     s["backend"] = settings.get("LLM_BACKEND")
     s["device"] = settings.get("DEVICE")
+    # счётчики Телеграм для дашборда (кэшируются ~60с)
+    try:
+        tg = db.tg_stats()
+        s["tg_total"] = tg.get("total", 0)
+        s["tg_today"] = tg.get("today", 0)
+    except Exception:
+        s["tg_total"] = s["tg_today"] = 0
     return s
 
 

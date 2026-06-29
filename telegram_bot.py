@@ -586,19 +586,23 @@ def _handle(msg: dict) -> None:
         return
 
     latency = int((time.time() - t0) * 1000)
-    out = ans
+    show_answer = settings.get("TELEGRAM_SHOW_ANSWER")
+    parts = []
+    if show_answer and ans:
+        parts.append(ans)
     if sources:
         srctxt = "; ".join(s["source"] + (f", с.{s['page']}" if s.get("page") else "")
                            for s in sources[:6])
-        out = f"{ans}\n\n📎 Источники: {srctxt}"
+        parts.append(f"📎 Источники: {srctxt}")
     # структура формирования ответа (как конвейер в веб-чате), если включено
     if settings.get("TELEGRAM_PIPELINE"):
         pipe = _format_pipeline(trace)
         if pipe:
-            out = f"{out}\n\n{pipe}"
+            parts.append(pipe)
+    out = "\n\n".join(parts) if parts else "✓ Запрос обработан."
     send(chat_id, out)
-    # голосовой ответ на голосовой запрос (если включено и доступен TTS)
-    if voice_in and settings.get("TELEGRAM_VOICE_OUT") and ans:
+    # голосовой ответ на голосовой запрос (если включено, доступен TTS и вывод ответа не отключён)
+    if show_answer and voice_in and settings.get("TELEGRAM_VOICE_OUT") and ans:
         try:
             import tts
             ogg = tempfile.mktemp(suffix=".ogg")
@@ -705,6 +709,8 @@ def status() -> dict:
             "voice_in": bool(settings.get("TELEGRAM_VOICE_IN")),
             "voice_out": bool(settings.get("TELEGRAM_VOICE_OUT")),
             "files": bool(settings.get("TELEGRAM_FILES")),
+            "pipeline": bool(settings.get("TELEGRAM_PIPELINE")),
+            "show_answer": bool(settings.get("TELEGRAM_SHOW_ANSWER")),
             "tts_engine": settings.get("TTS_ENGINE"),
             "tts_voice": settings.get("TTS_VOICE") or "",
             "tts": tts_info,
