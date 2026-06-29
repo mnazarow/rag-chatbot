@@ -164,6 +164,7 @@
     <button data-t="admin">⚙️ Администратор</button>
     <button data-t="org">🏢 Структура компании</button>
     <button data-t="syn">🔤 Синонимы</button>
+    <button data-t="obsidian">🔮 База знаний (Obsidian)</button>
   </nav>
   <div class="spacer"></div>
   <div class="pill" style="display:flex;gap:6px;align-items:center">
@@ -1341,6 +1342,30 @@
       </div>
     </div>
   </section>
+
+  <!-- ===== БАЗА ЗНАНИЙ (OBSIDIAN) ===== -->
+  <section id="obsidian">
+    <h1>База знаний — граф (Obsidian)</h1>
+    <div class="sub">Текущая проиндексированная база в виде графа: файлы и категории как узлы, связи — принадлежность
+      <button class="act ghost" onclick="loadObsidian()">Обновить</button></div>
+
+    <div class="box" style="padding:0;overflow:hidden">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line)">
+        <input id="obs_search" placeholder="🔍 поиск по файлу или категории…" style="flex:1;min-width:220px" oninput="obsSearch()">
+        <label class="note" style="cursor:pointer"><input type="checkbox" id="obs_labels" checked onchange="obsDraw()"> подписи</label>
+        <span id="obs_stats" class="note"></span>
+      </div>
+      <div style="display:flex;min-height:62vh">
+        <div style="flex:1;position:relative;background:var(--panel2)">
+          <canvas id="obs_canvas" style="display:block;width:100%;height:62vh;cursor:grab"></canvas>
+          <div id="obs_hint" class="note" style="position:absolute;left:12px;bottom:10px">колесо — масштаб · тащить узел/фон · клик — открыть</div>
+        </div>
+        <div id="obs_side" style="flex:0 0 320px;border-left:1px solid var(--line);padding:14px;overflow:auto;max-height:62vh">
+          <div class="note">Выберите узел в графе, чтобы увидеть детали и фрагмент текста.</div>
+        </div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- модальный браузер папок -->
@@ -1369,7 +1394,8 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t!=='server') stopSrvAuto();   // уходим с вкладки — гасим автообновление
   if(b.dataset.t!=='schema') clearInterval(schemaTimer);
   if(b.dataset.t!=='dash') clearInterval(actTimer);          // живые запросы — только на дашборде
-  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn}[b.dataset.t]||(()=>{}))();
+  if(b.dataset.t!=='obsidian') obsStop();                    // граф — гасим анимацию вне вкладки
+  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
   if(b.dataset.t==='dash') startActivityPoll();
 });
 
@@ -4116,6 +4142,117 @@ async function dnsDel(id){
 async function dnsClear(){
   if(!confirm('Удалить все DNS-записи?')) return;
   const r=await adminPost('/api/admin/dns/clear'); dnsMsg('удалено: '+((r&&r.removed)||0),true); loadDns();
+}
+
+// ---- база знаний: граф (Obsidian) ----
+let OBS=null;
+function obsStop(){ if(OBS&&OBS.raf){ cancelAnimationFrame(OBS.raf); OBS.raf=null; } }
+function obsUnbind(o){ if(!o) return; if(o._mm) window.removeEventListener('mousemove',o._mm);
+  if(o._mu) window.removeEventListener('mouseup',o._mu); if(o._rs) window.removeEventListener('resize',o._rs); }
+function obsColor(s){ s=String(s||''); let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))%360; return `hsl(${h},62%,60%)`; }
+function obsShort(s,m){ s=String(s||''); return s.length>m? s.slice(0,m-1)+'…':s; }
+async function loadObsidian(){
+  const cv=$('#obs_canvas'); if(!cv) return;
+  obsUnbind(OBS); obsStop();
+  $('#obs_side').innerHTML='<div class="note">Загрузка графа базы знаний…</div>';
+  const d=await adminGet('/api/admin/kb-graph');
+  if(!d||!d.nodes){ $('#obs_stats').textContent='ошибка загрузки'; return; }
+  const st=d.stats||{};
+  $('#obs_stats').textContent=`файлов: ${st.shown_files||0}${st.truncated?(' из '+st.files):''} · категорий: ${st.categories||0} · фрагментов: ${st.chunks||0}`+(d.online?'':' · ⚠ Qdrant недоступен');
+  if(!d.nodes.length){ $('#obs_side').innerHTML='<div class="note">База пуста — нет проиндексированных документов.</div>'; return; }
+  const W=cv.clientWidth||800, H=cv.clientHeight||500, byId={};
+  const nodes=d.nodes.map(n=>{ const o=Object.assign({},n,{
+    x:W/2+(Math.random()-.5)*W*0.6, y:H/2+(Math.random()-.5)*H*0.6, vx:0, vy:0,
+    r: n.type==='category' ? Math.min(24, 9+Math.sqrt(n.files||1)*2.4) : Math.min(15, 4+Math.sqrt(n.chunks||1)*1.3),
+    col: n.type==='category' ? obsColor(n.label) : obsColor(n.category)}); byId[o.id]=o; return o; });
+  const links=(d.links||[]).map(l=>({s:byId[l.source], t:byId[l.target]})).filter(l=>l.s&&l.t);
+  OBS={cv, ctx:cv.getContext('2d'), nodes, links, byId, tr:{x:0,y:0,k:1}, alpha:1,
+       sel:null, hover:null, drag:null, pan:null, term:'', raf:null,
+       dpr:Math.min(2,window.devicePixelRatio||1)};
+  obsResize(); obsBind(); obsRun();
+}
+function obsResize(){ const o=OBS; if(!o) return; const cv=o.cv, w=cv.clientWidth, h=cv.clientHeight;
+  cv.width=w*o.dpr; cv.height=h*o.dpr; o.W=w; o.H=h; obsDraw(); }
+function obsRun(){ const o=OBS; if(!o) return; obsStop(); o.alpha=Math.max(o.alpha,0.9);
+  const step=()=>{ obsTick(); obsDraw(); o.raf = o.alpha>0.02 ? requestAnimationFrame(step) : null; };
+  o.raf=requestAnimationFrame(step);
+}
+function obsTick(){
+  const o=OBS, ns=o.nodes, a=o.alpha;
+  for(let i=0;i<ns.length;i++){ const A=ns[i];
+    for(let j=i+1;j<ns.length;j++){ const B=ns[j];
+      let dx=A.x-B.x, dy=A.y-B.y, d2=dx*dx+dy*dy||0.01; if(d2>90000) continue;
+      const d=Math.sqrt(d2), f=1700/d2, fx=dx/d*f, fy=dy/d*f;
+      A.vx+=fx; A.vy+=fy; B.vx-=fx; B.vy-=fy; } }
+  for(const l of o.links){ const dx=l.t.x-l.s.x, dy=l.t.y-l.s.y, d=Math.sqrt(dx*dx+dy*dy)||0.01;
+    const f=(d-78)*0.02, fx=dx/d*f, fy=dy/d*f; l.s.vx+=fx; l.s.vy+=fy; l.t.vx-=fx; l.t.vy-=fy; }
+  for(const n of ns){ if(n===o.drag) continue; n.vx+=(o.W/2-n.x)*0.0022; n.vy+=(o.H/2-n.y)*0.0022;
+    n.vx*=0.85; n.vy*=0.85; n.x+=n.vx*a; n.y+=n.vy*a; }
+  o.alpha*=0.985;
+}
+function obsDraw(){
+  const o=OBS; if(!o) return; const ctx=o.ctx;
+  ctx.setTransform(o.dpr,0,0,o.dpr,0,0); ctx.clearRect(0,0,o.W,o.H);
+  ctx.translate(o.tr.x,o.tr.y); ctx.scale(o.tr.k,o.tr.k);
+  const term=o.term, hl=n=> term && (String(n.label).toLowerCase().includes(term)||String(n.category||'').toLowerCase().includes(term));
+  const neigh=new Set(); if(o.sel){ neigh.add(o.sel.id); for(const l of o.links){ if(l.s===o.sel) neigh.add(l.t.id); if(l.t===o.sel) neigh.add(l.s.id); } }
+  ctx.lineWidth=1/o.tr.k;
+  for(const l of o.links){ const act=o.sel&&neigh.has(l.s.id)&&neigh.has(l.t.id);
+    ctx.strokeStyle=act?'rgba(120,170,255,0.85)':'rgba(150,150,170,0.16)';
+    ctx.beginPath(); ctx.moveTo(l.s.x,l.s.y); ctx.lineTo(l.t.x,l.t.y); ctx.stroke(); }
+  for(const n of o.nodes){ const dim=(o.sel&&!neigh.has(n.id))||(term&&!hl(n));
+    ctx.globalAlpha=dim?0.22:1; ctx.fillStyle=n.col;
+    ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,7); ctx.fill();
+    if(n.type==='category'||n===o.sel||n===o.hover){ ctx.strokeStyle=n.type==='category'?'#fff':'rgba(255,255,255,0.7)';
+      ctx.lineWidth=(n===o.sel?3:1.4)/o.tr.k; ctx.stroke(); } }
+  ctx.globalAlpha=1;
+  const lbl=$('#obs_labels')&&$('#obs_labels').checked;
+  for(const n of o.nodes){ const big=n.type==='category';
+    const want=big||n===o.sel||n===o.hover||(term&&hl(n))||(lbl&&o.tr.k>1.25);
+    if(!want) continue; const fs=(big?13:11)/o.tr.k; ctx.font=fs+'px system-ui,Arial';
+    ctx.fillStyle=big?'#eaeaf2':'#c8c8d4'; ctx.textAlign='center';
+    ctx.fillText(obsShort(n.label,big?26:22), n.x, n.y-n.r-3/o.tr.k); }
+  ctx.setTransform(o.dpr,0,0,o.dpr,0,0);
+}
+function obsBind(){
+  const o=OBS, cv=o.cv;
+  const pos=e=>{ const r=cv.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; };
+  const toW=p=>({x:(p.x-o.tr.x)/o.tr.k, y:(p.y-o.tr.y)/o.tr.k});
+  const pick=p=>{ const w=toW(p); let best=null,bd=1e9; for(const n of o.nodes){ const dx=n.x-w.x,dy=n.y-w.y,d=dx*dx+dy*dy,rr=(n.r+4)*(n.r+4); if(d<rr&&d<bd){bd=d;best=n;} } return best; };
+  cv.onwheel=e=>{ e.preventDefault(); const p=pos(e), kk=Math.max(0.2,Math.min(5,o.tr.k*(e.deltaY<0?1.1:0.9)));
+    o.tr.x=p.x-(p.x-o.tr.x)*(kk/o.tr.k); o.tr.y=p.y-(p.y-o.tr.y)*(kk/o.tr.k); o.tr.k=kk; obsDraw(); };
+  cv.onmousedown=e=>{ const p=pos(e), n=pick(p); o._moved=false; o._down=p;
+    if(n){ o.drag=n; } else { o.pan={x:p.x-o.tr.x,y:p.y-o.tr.y}; } cv.style.cursor='grabbing'; };
+  o._mm=e=>{ if(!OBS) return; const p=pos(e);
+    if(o._down && (Math.abs(p.x-o._down.x)+Math.abs(p.y-o._down.y))>3) o._moved=true;
+    if(o.drag){ const w=toW(p); o.drag.x=w.x; o.drag.y=w.y; o.drag.vx=0; o.drag.vy=0; o.alpha=Math.max(o.alpha,0.25); if(!o.raf) obsRun(); }
+    else if(o.pan){ o.tr.x=p.x-o.pan.x; o.tr.y=p.y-o.pan.y; obsDraw(); }
+    else { const h=pick(p); if(h!==o.hover){ o.hover=h; cv.style.cursor=h?'pointer':'grab'; obsDraw(); } } };
+  o._mu=e=>{ if(!OBS) return; const wasMoved=o._moved; if(o.drag) o.drag=null; o.pan=null; o._down=null; cv.style.cursor='grab';
+    if(!wasMoved){ const n=pick(pos(e)); if(n){ o.sel=n; obsShowNode(n); obsDraw(); } } };
+  o._rs=()=>obsResize();
+  window.addEventListener('mousemove',o._mm); window.addEventListener('mouseup',o._mu); window.addEventListener('resize',o._rs);
+}
+function obsSearch(){ if(!OBS) return; OBS.term=($('#obs_search').value||'').trim().toLowerCase(); obsDraw(); }
+async function obsShowNode(n){
+  const side=$('#obs_side');
+  if(n.type==='category'){
+    side.innerHTML=`<h3 style="margin-top:0">🗂 ${esc(n.label)}</h3>
+      <div class="note">Категория · файлов: <b>${n.files||0}</b></div>
+      <div class="note" style="margin-top:8px">Вокруг — файлы этой категории. Кликните файл, чтобы увидеть текст.</div>`;
+    return;
+  }
+  side.innerHTML=`<h3 style="margin-top:0;word-break:break-word">📄 ${esc(n.label)}</h3>
+    <div class="note">Категория: <b>${esc(n.category||'—')}</b> · фрагментов: <b>${n.chunks||0}</b>${n.pages?(' · страниц: '+n.pages):''}</div>
+    <div class="note" style="margin:8px 0;word-break:break-all">${esc(n.source||'')}</div>
+    <div id="obs_preview" class="note">загрузка текста…</div>`;
+  try{
+    const r=await adminGet('/api/admin/file-text?source='+encodeURIComponent(n.source));
+    const t=(r&&r.text)||'';
+    $('#obs_preview').innerHTML = t
+      ? '<div style="white-space:pre-wrap;font-size:12px;line-height:1.5;max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">'+esc(t.slice(0,4000))+(t.length>4000?'…':'')+'</div>'
+      : '<span class="note">текст недоступен</span>';
+  }catch(e){ $('#obs_preview').textContent='не удалось загрузить текст'; }
 }
 
 // ---- структура компании ----

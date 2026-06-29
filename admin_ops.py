@@ -2872,6 +2872,76 @@ def _qdrant_text_by_source(cap_per_file: int) -> dict:
     return {s: "\n\n".join(v[1])[:cap_per_file] for s, v in acc.items()}
 
 
+def kb_graph(max_nodes: int = 400) -> dict:
+    """Граф проиндексированной базы знаний (в стиле Obsidian): узлы — файлы и
+    категории, связи — принадлежность файла категории. Данные берём одним проходом
+    scroll по Qdrant (без повторного парсинга). Файлы ограничиваем `max_nodes` по
+    числу фрагментов; предпросмотр текста подгружается по клику (file-text)."""
+    base = settings.get("QDRANT_URL")
+    coll = settings.get("QDRANT_COLLECTION")
+    files: dict = {}          # source -> {chunks, category, pages:set, chars}
+    total_points = 0
+    next_off = None
+    online = True
+    for _ in range(200000):
+        body = {"limit": 512, "with_payload": ["source", "doc_category", "page"],
+                "with_vector": False}
+        if next_off is not None:
+            body["offset"] = next_off
+        try:
+            r = httpx.post(f"{base}/collections/{coll}/points/scroll", json=body, timeout=60)
+        except Exception:
+            online = False
+            break
+        if r.status_code != 200:
+            online = False
+            break
+        res = r.json().get("result", {}) or {}
+        for p in res.get("points", []):
+            pl = p.get("payload") or {}
+            src = pl.get("source")
+            if not src:
+                continue
+            total_points += 1
+            f = files.get(src)
+            if f is None:
+                f = {"chunks": 0, "category": pl.get("doc_category") or "без категории",
+                     "pages": set(), "chars": 0}
+                files[src] = f
+            f["chunks"] += 1
+            if pl.get("page") is not None:
+                f["pages"].add(pl.get("page"))
+            if pl.get("doc_category") and f["category"] == "без категории":
+                f["category"] = pl.get("doc_category")
+        next_off = res.get("next_page_offset")
+        if next_off is None:
+            break
+
+    cats: dict = {}
+    for f in files.values():
+        cats[f["category"]] = cats.get(f["category"], 0) + 1
+
+    items = sorted(files.items(), key=lambda kv: kv[1]["chunks"], reverse=True)
+    truncated = len(items) > max_nodes
+    items = items[:max_nodes]
+
+    nodes, links, used_cats = [], [], set()
+    for src, f in items:
+        nodes.append({"id": "f:" + src, "label": os.path.basename(src) or src,
+                      "type": "file", "category": f["category"], "chunks": f["chunks"],
+                      "pages": len(f["pages"]), "source": src})
+        links.append({"source": "c:" + f["category"], "target": "f:" + src})
+        used_cats.add(f["category"])
+    for c in used_cats:
+        nodes.append({"id": "c:" + c, "label": c, "type": "category",
+                      "files": cats.get(c, 0)})
+
+    return {"online": online, "nodes": nodes, "links": links,
+            "stats": {"files": len(files), "shown_files": len(items),
+                      "categories": len(cats), "chunks": total_points,
+                      "truncated": truncated, "max_nodes": max_nodes}}
+
+
 def catalog_load() -> dict:
     """Загрузить каталог документов в таблицу doc_catalog активной PostgreSQL — быстро.
 

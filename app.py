@@ -802,6 +802,13 @@ def admin_files_catalog(limit: int = 100, offset: int = 0, q: str = "",
                                    method=method)
 
 
+@app.get("/api/admin/kb-graph")
+def admin_kb_graph(max_nodes: int = 400, x_admin_token: str | None = Header(None)):
+    """Граф проиндексированной базы знаний (Obsidian-вид): файлы и категории."""
+    _check_admin(x_admin_token)
+    return admin_ops.kb_graph(max_nodes=min(max(max_nodes, 10), 2000))
+
+
 @app.get("/api/admin/file-text")
 def admin_file_text(source: str, x_admin_token: str | None = Header(None)):
     """Извлечённый текст файла (для просмотра транскрипции/распознанного в каталоге)."""
