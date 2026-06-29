@@ -1808,6 +1808,7 @@ async function tgTrainLoad(){
         <td>${u.mode==='train'?'<span class="tag ok">обучение</span>':'<span class="note">вопросы</span>'}</td>
         <td>${nz(u.files)}</td>
         <td style="white-space:nowrap">
+          <button class="dirbtn" onclick="tgTrainInstruct(${u.chat_id})" title="Отправить пользователю инструкцию по обучению">📨 Инструкция</button>
           <button class="dirbtn" onclick="tgTrainFiles(${u.chat_id})" title="Показать файлы">📁 Файлы</button>
           <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="tgTrainDelUser(${u.chat_id})" title="Удалить все документы пользователя">🗑</button>
         </td></tr>`).join('') + '</tbody></table></div>'
@@ -1815,7 +1816,12 @@ async function tgTrainLoad(){
 }
 async function tgTrainAllow(id,allow){
   const r=await tgPost('/api/admin/telegram/train-allow',{chat_id:id,allow});
-  tgTrainMsg(r&&r.ok?('обучение '+(allow?'разрешено':'запрещено')+' для '+id):'ошибка',!!(r&&r.ok));
+  const base='обучение '+(allow?'разрешено':'запрещено')+' для '+id;
+  tgTrainMsg(r&&r.ok?(base+(allow?(r.instructions_sent?' · инструкция отправлена':' · бот выключен — инструкция не отправлена'):'')):'ошибка',!!(r&&r.ok));
+}
+async function tgTrainInstruct(id){
+  const r=await tgPost('/api/admin/telegram/train-instruction',{chat_id:id});
+  tgTrainMsg(r.msg||(r.ok?'инструкция отправлена':'не удалось отправить'),r.ok!==false);
 }
 async function tgTrainFiles(id){
   let r; try{ r=await tgGet('/api/admin/telegram/train-files?chat_id='+id); }catch(e){ return; }

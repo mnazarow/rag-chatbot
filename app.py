@@ -742,8 +742,25 @@ def admin_tg_train_users(x_admin_token: str | None = Header(None)):
 def admin_tg_train_allow(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     cid = int(payload.get("chat_id"))
-    ok = db.tg_set_train(cid, bool(payload.get("allow")))
-    return {"ok": ok}
+    allow = bool(payload.get("allow"))
+    ok = db.tg_set_train(cid, allow)
+    sent = False
+    if ok and allow:                       # при выдаче доступа — шлём инструкцию
+        try:
+            sent = telegram_bot.send_train_instructions(cid)
+        except Exception as e:
+            print(f"[tg] инструкция не отправлена: {e}")
+    return {"ok": ok, "instructions_sent": sent}
+
+
+@app.post("/api/admin/telegram/train-instruction")
+def admin_tg_train_instruction(payload: dict = Body(...),
+                               x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    cid = int(payload.get("chat_id"))
+    sent = telegram_bot.send_train_instructions(cid)
+    return {"ok": sent, "msg": "инструкция отправлена" if sent
+            else "не удалось отправить (бот выключен или нет токена)"}
 
 
 @app.get("/api/admin/telegram/train-files")
