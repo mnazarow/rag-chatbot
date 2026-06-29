@@ -943,6 +943,17 @@ def admin_tg_restart(x_admin_token: str | None = Header(None)):
     return telegram_bot.restart()
 
 
+@app.get("/api/admin/tts/voices")
+def admin_tts_voices(engine: str = "", x_admin_token: str | None = Header(None)):
+    """Список доступных голосов TTS для выбора движка (или текущего)."""
+    _check_admin(x_admin_token)
+    import tts
+    eng = (engine or "").strip().lower()
+    if not eng or eng == "auto":
+        eng = (tts.available().get("engine") or "")
+    return {"engine": eng, "voices": tts.voices(eng)}
+
+
 @app.get("/api/admin/telegram/users")
 def admin_tg_users(status: str = "", x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

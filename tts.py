@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 import os
+import re
 import shutil
 import subprocess
 
@@ -20,6 +21,72 @@ import settings
 
 def _which(x):
     return shutil.which(x)
+
+
+# Варианты голоса espeak-ng (один язык → разные тембры) — даёт «много голосов»
+# на Linux-сервере без дополнительных моделей.
+_ESPEAK_VARIANTS = [
+    ("", "обычный"), ("+m1", "муж. 1"), ("+m2", "муж. 2"), ("+m3", "муж. 3"),
+    ("+m4", "муж. 4"), ("+m5", "муж. 5"), ("+m6", "муж. 6"), ("+m7", "муж. 7"),
+    ("+f1", "жен. 1"), ("+f2", "жен. 2"), ("+f3", "жен. 3"), ("+f4", "жен. 4"),
+    ("+f5", "жен. 5"), ("+croak", "хриплый"), ("+whisper", "шёпот"),
+]
+
+
+def voices(engine: str | None = None) -> list[dict]:
+    """Список доступных голосов для движка [{id, label}]. id кладётся в TTS_VOICE."""
+    eng = (engine or available().get("engine") or "").strip().lower()
+    out: list[dict] = []
+    try:
+        if eng == "say" and _which("say"):
+            r = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=8)
+            for line in (r.stdout or "").splitlines():
+                m = re.match(r"^(.+?)\s{2,}([A-Za-z]{2}[_\-][A-Za-z]{2})", line)
+                if m:
+                    name = m.group(1).strip()
+                    out.append({"id": name, "label": f"{name} · {m.group(2)}"})
+        elif eng == "espeak":
+            ex = _which("espeak-ng") or _which("espeak")
+            # русский с разными тембрами — в начало
+            for v, lbl in _ESPEAK_VARIANTS:
+                out.append({"id": "ru" + v, "label": f"Русский · {lbl}"})
+            # затем прочие языки из --voices (по одному на язык)
+            seen = {"ru"}
+            if ex:
+                r = subprocess.run([ex, "--voices"], capture_output=True, text=True, timeout=8)
+                for line in (r.stdout or "").splitlines()[1:]:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        code = parts[1]
+                        base = code.split("-")[0]
+                        if base in seen:
+                            continue
+                        seen.add(base)
+                        out.append({"id": code, "label": f"{parts[3]} ({code})"})
+        elif eng == "piper":
+            import glob as _glob
+            dirs = []
+            cur = (settings.get("TTS_VOICE") or "").strip()
+            if cur:
+                dirs.append(os.path.dirname(cur))
+            docs = settings.get("DOCS_DIR")
+            if docs:
+                dirs.append(os.path.join(os.path.expanduser(docs), "piper"))
+            dirs += [os.path.expanduser("~/piper"),
+                     os.path.expanduser("~/.local/share/piper"),
+                     "/opt/piper", "/usr/share/piper", "/models/piper"]
+            seen = set()
+            for d in dirs:
+                if not d or not os.path.isdir(d):
+                    continue
+                for f in sorted(_glob.glob(os.path.join(d, "*.onnx"))):
+                    if f in seen:
+                        continue
+                    seen.add(f)
+                    out.append({"id": f, "label": os.path.basename(f)})
+    except Exception as e:
+        print(f"[tts] перечисление голосов: {e}")
+    return out
 
 
 def available() -> dict:

@@ -358,7 +358,7 @@ python query_lightrag.py "вопрос" --mode mix
 | `TELEGRAM_VOICE_OUT` | Отвечать голосом на голосовые (TTS)        | `0` (выкл)                         |
 | `TELEGRAM_PIPELINE` | Показывать в ответе структуру формирования ответа (этапы) | `1` (вкл)            |
 | `TELEGRAM_SHOW_ANSWER` | Выводить текст ответа LLM в Телеграм (можно отключить) | `1` (вкл)             |
-| `TTS_ENGINE` / `TTS_VOICE` | Движок синтеза речи и голос/модель    | `auto` / пусто                     |
+| `TTS_ENGINE` / `TTS_VOICE` | Движок синтеза речи и голос/модель (выбор из списка доступных в UI) | `auto` / пусто        |
 | `MONITOR_INTERVAL` | Период выборки метрик загрузки хоста, сек    | `60`                               |
 | `MONITOR_PRUNE_DAYS` | Хранение истории загрузки, суток           | `400`                              |
 | `DB_BACKEND`      | БД журнала/настроек: `sqlite`/`mysql`/`postgresql` | `sqlite`                     |

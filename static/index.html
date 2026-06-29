@@ -465,7 +465,7 @@
 
         <div class="field" style="margin:0">
           <label>Движок синтеза речи (TTS)</label>
-          <select id="tgv_engine" onchange="tgVoiceSave()" style="max-width:280px">
+          <select id="tgv_engine" onchange="tgVoiceSave();tgVoiceLoadList(true)" style="max-width:280px">
             <option value="auto">auto — выбрать доступный</option>
             <option value="piper">piper — нейросетевой (.onnx)</option>
             <option value="say">say — встроенный в macOS</option>
@@ -480,10 +480,15 @@
 
         <div class="field" style="margin:0">
           <label>Голос / модель TTS</label>
-          <input type="text" id="tgv_voice" placeholder="say: Milena · piper: /путь/model.onnx · espeak: ru" onchange="tgVoiceSave()" style="max-width:420px">
-          <div class="note" style="line-height:1.5">Для <code>say</code> — имя голоса (для русского — <code>Milena</code>
-            или <code>Yuri</code>); для <code>piper</code> — путь к файлу модели <code>.onnx</code>; для
-            <code>espeak</code> — код языка (<code>ru</code>). Пусто = значение по умолчанию движка.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <select id="tgv_voice_sel" onchange="tgVoicePick()" style="max-width:320px"></select>
+            <button class="act ghost" type="button" onclick="tgVoiceLoadList(true)">↻ Обновить список</button>
+          </div>
+          <input type="text" id="tgv_voice" placeholder="или вручную — say: Milena · piper: /путь/model.onnx · espeak: ru+m3" onchange="tgVoiceSave()" style="max-width:420px;margin-top:6px">
+          <div class="note" style="line-height:1.5">Выберите голос из списка доступных для текущего движка или впишите вручную.
+            Для <code>espeak</code> доступно много тембров (мужские <code>+m1…+m7</code>, женские <code>+f1…+f5</code>, шёпот);
+            для <code>say</code> (macOS) — системные голоса (русские <code>Milena</code>/<code>Yuri</code>); для
+            <code>piper</code> — модели <code>.onnx</code> из папок (DOCS_DIR/piper, ~/piper, /opt/piper). Пусто = по умолчанию.</div>
         </div>
 
         <span id="tgvmsg" class="note"></span>
@@ -2035,6 +2040,7 @@ function tgVoiceFill(st){
   set('tgv_answer',st.show_answer); set('tgv_pipeline',st.pipeline);
   if($('#tgv_engine')) $('#tgv_engine').value=st.tts_engine||'auto';
   if($('#tgv_voice')) $('#tgv_voice').value=st.tts_voice||'';
+  tgVoiceLoadList();
   const t=st.tts||{}, el=$('#tg_voice_status');
   if(el){
     const ff=t.ffmpeg?'<span style="color:#4ade80">ffmpeg ✓</span>':'<span style="color:#f87171">ffmpeg не найден</span>';
@@ -2043,6 +2049,30 @@ function tgVoiceFill(st){
       +(t.candidates&&t.candidates.length?(' · найдены движки: '+t.candidates.map(esc).join(', ')):'')
       +((!t.ok&&st.voice_out)?' — для голосовых ответов установите TTS-движок (piper/say/espeak) и ffmpeg':'');
   }
+}
+let _ttsVoicesEng=null;
+async function tgVoiceLoadList(force){
+  const sel=$('#tgv_voice_sel'); if(!sel) return;
+  const eng=($('#tgv_engine')&&$('#tgv_engine').value)||'auto';
+  if(!force && _ttsVoicesEng===eng && sel.options.length) { tgVoiceSyncSel(); return; }
+  _ttsVoicesEng=eng;
+  let d; try{ d=await adminGet('/api/admin/tts/voices?engine='+encodeURIComponent(eng)); }catch(e){ return; }
+  const vs=(d&&d.voices)||[];
+  sel.innerHTML='<option value="">— по умолчанию —</option>'
+    +vs.map(v=>`<option value="${escAttr(v.id)}">${esc(v.label)}</option>`).join('')
+    +(vs.length?'':'<option value="" disabled>(голоса не найдены — впишите вручную)</option>');
+  tgVoiceSyncSel();
+}
+function tgVoiceSyncSel(){
+  const sel=$('#tgv_voice_sel'), cur=($('#tgv_voice')&&$('#tgv_voice').value)||'';
+  if(!sel) return;
+  const has=[...sel.options].some(o=>o.value===cur);
+  sel.value = has ? cur : '';
+}
+function tgVoicePick(){
+  const sel=$('#tgv_voice_sel'); if(!sel) return;
+  if(sel.value){ $('#tgv_voice').value=sel.value; }
+  tgVoiceSave();
 }
 function tgTrainMsg(t,ok=true){ const e=$('#tgtrainmsg'); if(e){e.textContent=t;e.className=ok?'saved':'note';} }
 async function tgTrainLoad(){
