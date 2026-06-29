@@ -594,7 +594,13 @@ def api_org_list(search: str = "", department: str = "",
 @app.post("/api/admin/org/clear")
 def api_org_clear(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
-    return {"ok": True, "removed": db.org_clear()}
+    n = db.org_clear()
+    try:
+        import org_index
+        org_index.clear()
+    except Exception as e:
+        print(f"[org] очистка индекса сотрудников: {e}")
+    return {"ok": True, "removed": n}
 
 
 # ===================== Синонимы =====================

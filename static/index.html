@@ -4386,7 +4386,11 @@ async function orgSaveConfig(){
 async function orgSyncNow(){
   orgMsg('синхронизация…');
   const r=await adminPost('/api/admin/org/sync',{url:$('#org_url').value.trim()});
-  if(r && r.ok){ orgMsg('готово · загружено записей: '+(r.count||0), true); await orgLoadList(); }
+  if(r && r.ok){
+    let m='готово · загружено записей: '+(r.count||0);
+    if(r.index) m+=` · база знаний: +${r.index.added} обновлено ${r.index.updated} удалено ${r.index.removed}`;
+    orgMsg(m, true); await orgLoadList();
+  }
   else orgMsg('ошибка: '+esc((r&&r.error)||'неизвестно'), false);
 }
 async function orgClear(){

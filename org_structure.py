@@ -236,11 +236,24 @@ def sync(url: str | None = None) -> dict:
             activity.finish(aid, ok=False, stage="ошибка")
         return {"ok": False, "error": msg, "count": 0}
     n = db.org_replace(rows)
+    # индексация карточек сотрудников в базу знаний (инкрементально)
+    idx = None
+    try:
+        if aid is not None:
+            import activity
+            activity.update(aid, stage="индексация в базу знаний")
+        import org_index
+        idx = org_index.sync_index(rows)
+    except Exception as e:
+        print(f"[org] индексация в базу знаний не удалась: {e}")
     _set_status(True, n, None)
     if aid is not None:
         import activity
-        activity.finish(aid, ok=True, stage=f"загружено {n}")
-    return {"ok": True, "count": n, "error": None}
+        st = f"загружено {n}"
+        if idx:
+            st += f" · индекс +{idx['added']}/~{idx['updated']}/-{idx['removed']}"
+        activity.finish(aid, ok=True, stage=st)
+    return {"ok": True, "count": n, "error": None, "index": idx}
 
 
 def due_for_sync(interval: int = 3600) -> bool:
