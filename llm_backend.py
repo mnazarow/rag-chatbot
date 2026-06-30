@@ -66,7 +66,7 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
     # очередь к LLM: ждём свободный слот (не блокируя event loop)
     import asyncio
     import llm_queue
-    await asyncio.get_event_loop().run_in_executor(None, llm_queue.acquire)
+    _qtok = await asyncio.get_event_loop().run_in_executor(None, llm_queue.acquire)
     cid = _act_begin(kind, model, label or _label_from_messages(messages))
     nchars = 0
     ok = True
@@ -114,7 +114,7 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
     finally:
         _act_end(cid, ok=ok, chars=nchars, error=err)
         try:
-            llm_queue.release()
+            llm_queue.release(_qtok)
         except Exception:
             pass
 
@@ -124,7 +124,7 @@ def chat(messages: list[dict], temperature: float = 0.1,
     """Синхронный полный ответ (для скриптов/сравнения)."""
     model = model or settings.get("LLM_MODEL")
     import llm_queue
-    llm_queue.acquire()
+    _qtok = llm_queue.acquire()
     cid = _act_begin(kind, model, label or _label_from_messages(messages))
     try:
         if settings.get("LLM_BACKEND") == "openai":
@@ -149,7 +149,7 @@ def chat(messages: list[dict], temperature: float = 0.1,
         raise
     finally:
         try:
-            llm_queue.release()
+            llm_queue.release(_qtok)
         except Exception:
             pass
 
@@ -195,7 +195,7 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
     import llm_queue
     last_err = None
     for attempt in range(1, attempts + 1):
-        llm_queue.acquire()
+        _qtok = llm_queue.acquire()
         cid = _act_begin("vision", model,
                          "описание изображения" + (f" (попытка {attempt})" if attempt > 1 else ""))
         try:
@@ -228,7 +228,7 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
                 continue
         finally:
             try:
-                llm_queue.release()
+                llm_queue.release(_qtok)
             except Exception:
                 pass
     print(f"[vision] описание изображения не удалось (model={model}, "

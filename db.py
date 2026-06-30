@@ -666,6 +666,30 @@ def _analytics_raw() -> dict:
     except Exception:
         pass
 
+    # комментарии (веб + Телеграм): частые слова и частые тексты — отдельно
+    cmt_rows = []
+    try:
+        cmt_rows += [r["comment"] for r in
+                     _all("SELECT comment FROM requests WHERE comment IS NOT NULL AND comment<>''")]
+    except Exception:
+        pass
+    try:
+        cmt_rows += [r["comment"] for r in
+                     _all("SELECT comment FROM tg_requests WHERE comment IS NOT NULL AND comment<>''")]
+    except Exception:
+        pass
+    cmt_kw = Counter()
+    cmt_full = Counter()
+    for cmt in cmt_rows:
+        c = (cmt or "").strip()
+        if not c:
+            continue
+        cmt_full[c[:200]] += 1                       # частые комментарии целиком
+        for w in c.lower().split():
+            w = w.strip("?.,!:;()\"'«»—-")
+            if len(w) > 3 and w not in _STOPWORDS:
+                cmt_kw[w] += 1
+
     buckets = {"<1с": 0, "1–3с": 0, "3–6с": 0, ">6с": 0}
     for r in lat_rows:
         ms = r["latency_ms"] or 0
@@ -684,6 +708,9 @@ def _analytics_raw() -> dict:
         "top_sources": [{"source": s, "n": n} for s, n in src.most_common(10)],
         "top_keywords": [{"word": w, "n": n} for w, n in kw.most_common(15)],
         "tg_top_keywords": [{"word": w, "n": n} for w, n in tg_kw.most_common(20)],
+        "comment_keywords": [{"word": w, "n": n} for w, n in cmt_kw.most_common(20)],
+        "top_comments": [{"text": t, "n": n} for t, n in cmt_full.most_common(10)],
+        "comments_total": sum(cmt_full.values()),
         "latency_buckets": buckets,
         "ratings": rating_stats(),
         "timings": {"retrieve": round(_f(tm["rt"])), "gen": round(_f(tm["gn"])),

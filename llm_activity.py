@@ -5,62 +5,87 @@ vision-моделью, служебные вызовы — фильтр запр
 регистрируется здесь: что за вызов, модель, бэкенд, статус, объём вывода и время.
 Дашборд опрашивает снимок и показывает «живые» и недавно завершённые запросы.
 
-Хранилище — в памяти процесса, потокобезопасное. Выполняющиеся показываются всегда,
-завершённые — ещё `FINISHED_TTL` секунд (но не меньше `KEEP_RECENT` последних).
+ВАЖНО — общий реестр между процессами. Индексация запускается отдельным процессом
+(`ingest.py`), и описание картинок vision-моделью идёт именно там. Чтобы такие
+вызовы были видны на дашборде (его обслуживает процесс веб-приложения), реестр
+хранится в Redis, если он включён. Без Redis — в памяти текущего процесса (тогда
+видны только вызовы самого веб-приложения).
 """
 from __future__ import annotations
 import itertools
+import os
 import threading
 import time
 
 FINISHED_TTL = 30.0     # сек показывать завершённые
-KEEP_RECENT = 25        # минимум последних завершённых в снимке
+RUNNING_TTL = 1800      # сек авто-уборки «зависших» выполняющихся (Redis safety)
+KEEP_RECENT = 25        # минимум последних завершённых в снимке (память)
 MAX_ITEMS = 400
 
+_PREFIX = "rag:llmact:"   # ключи Redis: rag:llmact:i:<id>, rag:llmact:calls/errors
+
 _lock = threading.Lock()
-_items: dict[int, dict] = {}
+_items: dict[str, dict] = {}
 _counter = itertools.count(1)
 _totals = {"calls": 0, "errors": 0}
+_pid = os.getpid()
 
 
-def _gc_locked() -> None:
+def _redis():
+    try:
+        import cache
+        return cache.client()
+    except Exception:
+        return None
+
+
+def _new_id() -> str:
+    return f"{_pid}-{next(_counter)}"
+
+
+# --------------------------------------------------------------------------- #
+#  Запись                                                                      #
+# --------------------------------------------------------------------------- #
+def begin(kind: str, model: str = "", backend: str = "", label: str = "") -> str:
+    cid = _new_id()
     now = time.time()
-    done = [v for v in _items.values() if v.get("done")]
-    # сортируем завершённые по времени окончания (новые в конце)
-    done.sort(key=lambda x: x.get("finished", 0))
-    keep_done = set(id(v) for v in done[-KEEP_RECENT:])
-    drop = []
-    for k, v in _items.items():
-        if v.get("done") and id(v) not in keep_done \
-                and now - v.get("finished", now) > FINISHED_TTL:
-            drop.append(k)
-    for k in drop:
-        _items.pop(k, None)
-    if len(_items) > MAX_ITEMS:
-        order = sorted(_items.values(),
-                       key=lambda x: (not x.get("done"), x.get("updated", 0)))
-        for v in order[: len(_items) - MAX_ITEMS]:
-            _items.pop(v["id"], None)
-
-
-def begin(kind: str, model: str = "", backend: str = "", label: str = "") -> int:
-    """Зарегистрировать начало вызова LLM. Возвращает id для tokens()/end()."""
+    rec = {"id": cid, "kind": kind or "llm", "model": model or "",
+           "backend": backend or "", "label": (label or "")[:160],
+           "started": now, "updated": now, "finished": None,
+           "done": False, "ok": None, "chars": 0, "error": None}
+    c = _redis()
+    if c is not None:
+        try:
+            import json
+            c.setex(_PREFIX + "i:" + cid, RUNNING_TTL,
+                    json.dumps(rec, ensure_ascii=False))
+            c.incr(_PREFIX + "calls")
+            return cid
+        except Exception:
+            pass
     with _lock:
-        cid = next(_counter)
-        now = time.time()
-        _items[cid] = {
-            "id": cid, "kind": kind or "llm", "model": model or "",
-            "backend": backend or "", "label": (label or "")[:160],
-            "started": now, "updated": now, "finished": None,
-            "done": False, "ok": None, "chars": 0, "error": None,
-        }
+        _items[cid] = rec
         _totals["calls"] += 1
         _gc_locked()
-        return cid
+    return cid
 
 
-def tokens(cid: int, chars: int) -> None:
-    """Обновить объём уже сгенерированного вывода (символы)."""
+def tokens(cid, chars: int) -> None:
+    c = _redis()
+    if c is not None:
+        try:
+            import json
+            k = _PREFIX + "i:" + str(cid)
+            raw = c.get(k)
+            if raw:
+                rec = json.loads(raw)
+                if not rec.get("done"):
+                    rec["chars"] = int(chars)
+                    rec["updated"] = time.time()
+                    c.setex(k, RUNNING_TTL, json.dumps(rec, ensure_ascii=False))
+            return
+        except Exception:
+            pass
     with _lock:
         it = _items.get(cid)
         if it and not it.get("done"):
@@ -68,8 +93,31 @@ def tokens(cid: int, chars: int) -> None:
             it["updated"] = time.time()
 
 
-def end(cid: int, ok: bool = True, chars: int | None = None,
+def end(cid, ok: bool = True, chars: int | None = None,
         error: str | None = None) -> None:
+    c = _redis()
+    if c is not None:
+        try:
+            import json
+            k = _PREFIX + "i:" + str(cid)
+            raw = c.get(k)
+            rec = json.loads(raw) if raw else {"id": str(cid), "kind": "llm",
+                                               "model": "", "backend": "", "label": "",
+                                               "started": time.time(), "chars": 0}
+            rec["done"] = True
+            rec["ok"] = bool(ok)
+            rec["finished"] = time.time()
+            rec["updated"] = rec["finished"]
+            if chars is not None:
+                rec["chars"] = int(chars)
+            if error:
+                rec["error"] = str(error)[:200]
+            c.setex(k, int(FINISHED_TTL), json.dumps(rec, ensure_ascii=False))
+            if not ok:
+                c.incr(_PREFIX + "errors")
+            return
+        except Exception:
+            pass
     with _lock:
         it = _items.get(cid)
         if not it:
@@ -86,26 +134,69 @@ def end(cid: int, ok: bool = True, chars: int | None = None,
             _totals["errors"] += 1
 
 
+# --------------------------------------------------------------------------- #
+#  Чтение                                                                      #
+# --------------------------------------------------------------------------- #
+def _gc_locked() -> None:
+    now = time.time()
+    done = [v for v in _items.values() if v.get("done")]
+    done.sort(key=lambda x: x.get("finished", 0))
+    keep_done = set(id(v) for v in done[-KEEP_RECENT:])
+    drop = []
+    for k, v in _items.items():
+        if v.get("done") and id(v) not in keep_done \
+                and now - v.get("finished", now) > FINISHED_TTL:
+            drop.append(k)
+    for k in drop:
+        _items.pop(k, None)
+    if len(_items) > MAX_ITEMS:
+        order = sorted(_items.values(),
+                       key=lambda x: (not x.get("done"), x.get("updated", 0)))
+        for v in order[: len(_items) - MAX_ITEMS]:
+            _items.pop(v["id"], None)
+
+
 def _view(it: dict) -> dict:
     end_t = it.get("finished") if it.get("done") else time.time()
     return {
-        "id": it["id"], "kind": it["kind"], "model": it["model"],
-        "backend": it["backend"], "label": it["label"],
-        "done": it["done"], "ok": it["ok"], "error": it.get("error"),
+        "id": it["id"], "kind": it.get("kind", "llm"), "model": it.get("model", ""),
+        "backend": it.get("backend", ""), "label": it.get("label", ""),
+        "done": it.get("done", False), "ok": it.get("ok"), "error": it.get("error"),
         "chars": it.get("chars", 0),
-        "elapsed_ms": int((end_t - it["started"]) * 1000),
+        "elapsed_ms": int((end_t - it.get("started", end_t)) * 1000),
     }
 
 
 def snapshot(limit: int = 60) -> dict:
+    c = _redis()
+    if c is not None:
+        try:
+            import json
+            items = []
+            for k in c.scan_iter(_PREFIX + "i:*", count=200):
+                raw = c.get(k)
+                if raw:
+                    try:
+                        items.append(json.loads(raw))
+                    except Exception:
+                        pass
+            calls = int(c.get(_PREFIX + "calls") or 0)
+            errors = int(c.get(_PREFIX + "errors") or 0)
+            return _assemble(items, limit, calls, errors)
+        except Exception:
+            pass
     with _lock:
         _gc_locked()
         items = list(_items.values())
         totals = dict(_totals)
+    return _assemble(items, limit, totals["calls"], totals["errors"])
+
+
+def _assemble(items: list[dict], limit: int, calls: int, errors: int) -> dict:
     running = [v for v in items if not v.get("done")]
     finished = [v for v in items if v.get("done")]
-    running.sort(key=lambda x: x.get("started", 0))                 # старые сверху
-    finished.sort(key=lambda x: x.get("finished", 0), reverse=True)  # свежие сверху
+    running.sort(key=lambda x: x.get("started", 0))
+    finished.sort(key=lambda x: x.get("finished", 0), reverse=True)
     views = [_view(v) for v in running] + [_view(v) for v in finished[:limit]]
     return {"items": views, "running": len(running),
-            "total_calls": totals["calls"], "total_errors": totals["errors"]}
+            "total_calls": calls, "total_errors": errors}

@@ -45,64 +45,6 @@ FIELDS: list[dict] = [
      "desc": "Степень «случайности» генерации. 0 — детерминированно и максимально точно (лучшее для фактов "
              "и прайсов), выше — разнообразнее, но растёт риск домыслов. Рекомендация: 0.0–0.2 для базы знаний "
              "(по умолчанию 0.1); 0.3–0.5 — только если нужны более естественные формулировки."},
-    {"key": "SIP_ENABLED", "label": "Голосовой бот по SIP/АТС (AudioSocket)", "group": "Телефония (SIP/АТС)",
-     "type": "bool", "scope": "restart", "default": config.SIP_ENABLED,
-     "desc": "Включает голосовой мост: Asterisk (или АТС поверх него) бриджит аудио звонка на этот сервис "
-             "(AudioSocket), бот распознаёт речь (Whisper), отвечает по базе знаний (как в чате) и озвучивает "
-             "ответ (TTS). Требуются Asterisk с приложением AudioSocket, ffmpeg, рабочие Whisper и TTS. "
-             "После изменения — перезапустить сервис (или «Перезапустить мост» в разделе «Телефония»)."},
-    {"key": "SIP_BRIDGE_HOST", "label": "Адрес моста (bind)", "group": "Телефония (SIP/АТС)",
-     "type": "text", "scope": "restart", "default": config.SIP_BRIDGE_HOST,
-     "desc": "На каком интерфейсе слушать AudioSocket. 0.0.0.0 — все интерфейсы. Должен быть доступен Asterisk."},
-    {"key": "SIP_BRIDGE_PORT", "label": "Порт моста", "group": "Телефония (SIP/АТС)",
-     "type": "text", "scope": "restart", "default": str(config.SIP_BRIDGE_PORT),
-     "desc": "TCP-порт AudioSocket. Этот host:port указывается в диалплане Asterisk: AudioSocket(<uuid>,host:port)."},
-    {"key": "SIP_GREETING", "label": "Приветствие", "group": "Телефония (SIP/АТС)",
-     "type": "textarea", "scope": "live", "default": config.SIP_GREETING,
-     "desc": "Фраза, которую бот произносит в начале звонка."},
-    {"key": "SIP_SILENCE_MS", "label": "Пауза-тишина = конец реплики, мс", "group": "Телефония (SIP/АТС)",
-     "type": "range", "scope": "live", "min": 300, "max": 2000, "step": 50, "default": config.SIP_SILENCE_MS,
-     "desc": "Сколько тишины после речи считать концом фразы абонента. Меньше — отзывчивее, но риск обрывать; "
-             "больше — надёжнее на медленной речи."},
-    {"key": "SIP_SILENCE_RMS", "label": "Порог тишины (громкость)", "group": "Телефония (SIP/АТС)",
-     "type": "range", "scope": "live", "min": 100, "max": 3000, "step": 50, "default": config.SIP_SILENCE_RMS,
-     "desc": "Громкость ниже этого значения считается тишиной. Поднимите, если фон/шум линии принимается за речь."},
-    {"key": "SIP_MAX_UTTER_SEC", "label": "Макс. длина реплики, с", "group": "Телефония (SIP/АТС)",
-     "type": "range", "scope": "live", "min": 5, "max": 60, "step": 1, "default": config.SIP_MAX_UTTER_SEC,
-     "desc": "Жёсткий предел длительности одной реплики абонента перед распознаванием."},
-    {"key": "SIP_REGISTER_ENABLED", "label": "Нативная SIP-регистрация (без AudioSocket)",
-     "group": "Телефония (SIP/АТС)", "type": "bool", "scope": "restart",
-     "default": config.SIP_REGISTER_ENABLED,
-     "desc": "Альтернатива AudioSocket: бот сам <b>регистрируется как SIP-аккаунт</b> на АТС/провайдере "
-             "(логин/пароль) и принимает звонки напрямую — диалплан и модули AudioSocket не нужны. "
-             "Аудио RTP обрабатывается библиотекой pyVoIP. Требуются установленный пакет pyVoIP, ffmpeg, "
-             "рабочие Whisper и TTS, открытые SIP-порт (5060/UDP) и диапазон RTP-портов. После изменения — "
-             "перезапустить сервис (или «Перерегистрировать» в разделе «Телефония»)."},
-    {"key": "SIP_SERVER", "label": "SIP-сервер (АТС/провайдер)", "group": "Телефония (SIP/АТС)",
-     "type": "text", "scope": "restart", "default": config.SIP_SERVER,
-     "desc": "Хост/домен SIP-сервера, где регистрируется бот (напр. sip.provider.ru или IP вашей Asterisk)."},
-    {"key": "SIP_PORT", "label": "Порт SIP-сервера", "group": "Телефония (SIP/АТС)",
-     "type": "text", "scope": "restart", "default": str(config.SIP_PORT),
-     "desc": "Порт SIP-сервера (обычно 5060)."},
-    {"key": "SIP_USERNAME", "label": "SIP-логин (аккаунт/номер)", "group": "Телефония (SIP/АТС)",
-     "type": "text", "scope": "restart", "default": config.SIP_USERNAME,
-     "desc": "Имя SIP-аккаунта (внутренний номер/логин), под которым регистрируется бот."},
-    {"key": "SIP_PASSWORD", "label": "SIP-пароль", "group": "Телефония (SIP/АТС)",
-     "type": "secret", "scope": "restart", "default": config.SIP_PASSWORD,
-     "desc": "Пароль SIP-аккаунта. Хранится как секрет (в ответах маскируется)."},
-    {"key": "SIP_LOCAL_IP", "label": "Локальный IP для SDP", "group": "Телефония (SIP/АТС)",
-     "type": "text", "scope": "restart", "default": config.SIP_LOCAL_IP,
-     "desc": "IP, который бот указывает в SDP для приёма RTP. Пусто — определить автоматически. "
-             "За NAT/в Docker укажите внешний адрес, доступный АТС."},
-    {"key": "SIP_LOCAL_PORT", "label": "Локальный SIP-порт", "group": "Телефония (SIP/АТС)",
-     "type": "text", "scope": "restart", "default": str(config.SIP_LOCAL_PORT),
-     "desc": "Локальный UDP-порт для SIP-сигнализации (обычно 5060)."},
-    {"key": "SIP_RTP_PORT_LOW", "label": "RTP-порт: нижний", "group": "Телефония (SIP/АТС)",
-     "type": "text", "scope": "restart", "default": str(config.SIP_RTP_PORT_LOW),
-     "desc": "Нижняя граница диапазона UDP-портов для RTP-аудио. Диапазон должен быть открыт/проброшен."},
-    {"key": "SIP_RTP_PORT_HIGH", "label": "RTP-порт: верхний", "group": "Телефония (SIP/АТС)",
-     "type": "text", "scope": "restart", "default": str(config.SIP_RTP_PORT_HIGH),
-     "desc": "Верхняя граница диапазона UDP-портов для RTP-аудио."},
     {"key": "PRICE_FOLDER", "label": "Прайс-папка для ценовых вопросов", "group": "Поиск и генерация",
      "type": "bool", "scope": "live", "default": config.PRICE_FOLDER,
      "desc": "Если включено: на «ценовых» вопросах (цена, стоимость, прайс, тариф…) ответ дополняется "
@@ -569,6 +511,67 @@ FIELDS: list[dict] = [
              "русского); для <code>piper</code> — путь к файлу модели <code>.onnx</code>; для "
              "<code>espeak</code> — код языка (например <code>ru</code>). Пусто = значение по умолчанию "
              "для движка."},
+
+    # --- Телефония (SIP/АТС): голосовой бот по телефону (AudioSocket-мост и/или
+    #     нативная SIP-регистрация). STT — Whisper («Транскрибация»), синтез — TTS (выше). ---
+    {"key": "SIP_ENABLED", "label": "Голосовой бот по SIP/АТС (AudioSocket)", "group": "Телефония (SIP/АТС)",
+     "type": "bool", "scope": "restart", "default": config.SIP_ENABLED,
+     "desc": "Включает голосовой мост: Asterisk (или АТС поверх него) бриджит аудио звонка на этот сервис "
+             "(AudioSocket), бот распознаёт речь (Whisper), отвечает по базе знаний (как в чате) и озвучивает "
+             "ответ (TTS). Требуются Asterisk с приложением AudioSocket, ffmpeg, рабочие Whisper и TTS. "
+             "После изменения — перезапустить сервис (или «Перезапустить мост» в разделе «Телефония»)."},
+    {"key": "SIP_BRIDGE_HOST", "label": "Адрес моста (bind)", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": config.SIP_BRIDGE_HOST,
+     "desc": "На каком интерфейсе слушать AudioSocket. 0.0.0.0 — все интерфейсы. Должен быть доступен Asterisk."},
+    {"key": "SIP_BRIDGE_PORT", "label": "Порт моста", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": str(config.SIP_BRIDGE_PORT),
+     "desc": "TCP-порт AudioSocket. Этот host:port указывается в диалплане Asterisk: AudioSocket(<uuid>,host:port)."},
+    {"key": "SIP_GREETING", "label": "Приветствие", "group": "Телефония (SIP/АТС)",
+     "type": "textarea", "scope": "live", "default": config.SIP_GREETING,
+     "desc": "Фраза, которую бот произносит в начале звонка."},
+    {"key": "SIP_SILENCE_MS", "label": "Пауза-тишина = конец реплики, мс", "group": "Телефония (SIP/АТС)",
+     "type": "range", "scope": "live", "min": 300, "max": 2000, "step": 50, "default": config.SIP_SILENCE_MS,
+     "desc": "Сколько тишины после речи считать концом фразы абонента. Меньше — отзывчивее, но риск обрывать; "
+             "больше — надёжнее на медленной речи."},
+    {"key": "SIP_SILENCE_RMS", "label": "Порог тишины (громкость)", "group": "Телефония (SIP/АТС)",
+     "type": "range", "scope": "live", "min": 100, "max": 3000, "step": 50, "default": config.SIP_SILENCE_RMS,
+     "desc": "Громкость ниже этого значения считается тишиной. Поднимите, если фон/шум линии принимается за речь."},
+    {"key": "SIP_MAX_UTTER_SEC", "label": "Макс. длина реплики, с", "group": "Телефония (SIP/АТС)",
+     "type": "range", "scope": "live", "min": 5, "max": 60, "step": 1, "default": config.SIP_MAX_UTTER_SEC,
+     "desc": "Жёсткий предел длительности одной реплики абонента перед распознаванием."},
+    {"key": "SIP_REGISTER_ENABLED", "label": "Нативная SIP-регистрация (без AudioSocket)",
+     "group": "Телефония (SIP/АТС)", "type": "bool", "scope": "restart",
+     "default": config.SIP_REGISTER_ENABLED,
+     "desc": "Альтернатива AudioSocket: бот сам <b>регистрируется как SIP-аккаунт</b> на АТС/провайдере "
+             "(логин/пароль) и принимает звонки напрямую — диалплан и модули AudioSocket не нужны. "
+             "Аудио RTP обрабатывается библиотекой pyVoIP. Требуются установленный пакет pyVoIP, ffmpeg, "
+             "рабочие Whisper и TTS, открытые SIP-порт (5060/UDP) и диапазон RTP-портов. После изменения — "
+             "перезапустить сервис (или «Перерегистрировать» в разделе «Телефония»)."},
+    {"key": "SIP_SERVER", "label": "SIP-сервер (АТС/провайдер)", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": config.SIP_SERVER,
+     "desc": "Хост/домен SIP-сервера, где регистрируется бот (напр. sip.provider.ru или IP вашей Asterisk)."},
+    {"key": "SIP_PORT", "label": "Порт SIP-сервера", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": str(config.SIP_PORT),
+     "desc": "Порт SIP-сервера (обычно 5060)."},
+    {"key": "SIP_USERNAME", "label": "SIP-логин (аккаунт/номер)", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": config.SIP_USERNAME,
+     "desc": "Имя SIP-аккаунта (внутренний номер/логин), под которым регистрируется бот."},
+    {"key": "SIP_PASSWORD", "label": "SIP-пароль", "group": "Телефония (SIP/АТС)",
+     "type": "secret", "scope": "restart", "default": config.SIP_PASSWORD,
+     "desc": "Пароль SIP-аккаунта. Хранится как секрет (в ответах маскируется)."},
+    {"key": "SIP_LOCAL_IP", "label": "Локальный IP для SDP", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": config.SIP_LOCAL_IP,
+     "desc": "IP, который бот указывает в SDP для приёма RTP. Пусто — определить автоматически. "
+             "За NAT/в Docker укажите внешний адрес, доступный АТС."},
+    {"key": "SIP_LOCAL_PORT", "label": "Локальный SIP-порт", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": str(config.SIP_LOCAL_PORT),
+     "desc": "Локальный UDP-порт для SIP-сигнализации (обычно 5060)."},
+    {"key": "SIP_RTP_PORT_LOW", "label": "RTP-порт: нижний", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": str(config.SIP_RTP_PORT_LOW),
+     "desc": "Нижняя граница диапазона UDP-портов для RTP-аудио. Диапазон должен быть открыт/проброшен."},
+    {"key": "SIP_RTP_PORT_HIGH", "label": "RTP-порт: верхний", "group": "Телефония (SIP/АТС)",
+     "type": "text", "scope": "restart", "default": str(config.SIP_RTP_PORT_HIGH),
+     "desc": "Верхняя граница диапазона UDP-портов для RTP-аудио."},
 
     # --- База данных и кэш ---
     {"key": "DB_BACKEND", "label": "Активная база данных", "group": "База данных и кэш",

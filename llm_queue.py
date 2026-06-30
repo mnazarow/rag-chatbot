@@ -5,21 +5,37 @@
 `LLM_MAX_CONCURRENCY` запросов одновременно; остальные ждут в очереди (не дольше
 `LLM_QUEUE_TIMEOUT` секунд). 0 — без ограничения (очередь выключена).
 
-Гейт общий для синхронного (`chat`) и асинхронного (`chat_stream`) путей и для
-описания изображений vision-моделью. Реализован на Condition, чтобы лимит можно
-было менять «на лету» из админки. Состояние (running/waiting/max) показывается на
-дашборде в блоке «Запросы к LLM».
+Гейт ОБЩИЙ между процессами: индексация идёт отдельным процессом (`ingest.py`), и
+описание картинок vision-моделью должно учитываться в общей очереди вместе с чатом
+и Телеграмом. Для этого активные/ждущие слоты хранятся в Redis (sorted set с TTL —
+самоочищается, если процесс упал). Без Redis — счётчики в памяти текущего процесса.
+
+acquire() возвращает токен, который нужно передать в release().
 """
 from __future__ import annotations
+import os
 import threading
 import time
+import uuid
 
 import settings
 
-_cond = threading.Condition()
-_running = 0
-_waiting = 0
-_peak_wait = 0
+_ACTIVE = "rag:llmq:active"     # zset: member=token, score=срок годности (ts)
+_WAIT = "rag:llmq:waiting"      # zset: member=token, score=срок годности (ts)
+_HOLD_TTL = 1800                # сек: макс. удержание слота (safety от утечки)
+_WAIT_TTL = 300
+
+_lock = threading.Lock()
+_local_active: dict[str, float] = {}
+_local_wait: dict[str, float] = {}
+
+
+def _redis():
+    try:
+        import cache
+        return cache.client()
+    except Exception:
+        return None
 
 
 def _limit() -> int:
@@ -36,55 +52,119 @@ def _timeout() -> float:
         return 0.0
 
 
-def acquire() -> None:
-    """Занять слот к LLM (блокирующе). Если лимит 0 — проходит сразу."""
-    global _running, _waiting
+def _prune_local(d: dict) -> None:
+    now = time.time()
+    for k in [k for k, v in d.items() if v <= now]:
+        d.pop(k, None)
+
+
+def _active_count(c) -> int:
+    now = time.time()
+    if c is not None:
+        try:
+            c.zremrangebyscore(_ACTIVE, "-inf", now)
+            return int(c.zcard(_ACTIVE) or 0)
+        except Exception:
+            pass
+    with _lock:
+        _prune_local(_local_active)
+        return len(_local_active)
+
+
+def _waiting_count(c) -> int:
+    now = time.time()
+    if c is not None:
+        try:
+            c.zremrangebyscore(_WAIT, "-inf", now)
+            return int(c.zcard(_WAIT) or 0)
+        except Exception:
+            pass
+    with _lock:
+        _prune_local(_local_wait)
+        return len(_local_wait)
+
+
+def _add_active(c, tok: str) -> None:
+    if c is not None:
+        try:
+            c.zadd(_ACTIVE, {tok: time.time() + _HOLD_TTL})
+            return
+        except Exception:
+            pass
+    with _lock:
+        _local_active[tok] = time.time() + _HOLD_TTL
+
+
+def _rem(c, key: str, local: dict, tok: str) -> None:
+    if c is not None:
+        try:
+            c.zrem(key, tok)
+            return
+        except Exception:
+            pass
+    with _lock:
+        local.pop(tok, None)
+
+
+def acquire() -> str:
+    """Занять слот к LLM (блокирующе). Возвращает токен для release()."""
+    tok = f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
+    c = _redis()
     m = _limit()
     if m <= 0:
-        with _cond:
-            _running += 1
-        return
+        _add_active(c, tok)              # учитываем для отображения/счётчика
+        return tok
     deadline = None
     to = _timeout()
     if to and to > 0:
         deadline = time.time() + to
-    with _cond:
-        _waiting += 1
+    # отметимся как ожидающие
+    if c is not None:
         try:
-            while _running >= max(1, _limit()):
-                if _limit() <= 0:      # лимит сняли «на лету» — выходим
-                    break
-                remaining = None
-                if deadline is not None:
-                    remaining = deadline - time.time()
-                    if remaining <= 0:
-                        break          # вышло время ожидания — пропускаем (не висим)
-                _cond.wait(timeout=min(0.5, remaining) if remaining else 0.5)
-        finally:
-            _waiting -= 1
-            _running += 1
+            c.zadd(_WAIT, {tok: time.time() + _WAIT_TTL})
+        except Exception:
+            with _lock:
+                _local_wait[tok] = time.time() + _WAIT_TTL
+    else:
+        with _lock:
+            _local_wait[tok] = time.time() + _WAIT_TTL
+    try:
+        while True:
+            m = _limit()
+            if m <= 0:
+                break
+            if _active_count(c) < m:
+                break
+            if deadline is not None and time.time() > deadline:
+                break               # вышло время ожидания — проходим всё равно
+            time.sleep(0.1)
+    finally:
+        _rem(c, _WAIT, _local_wait, tok)
+    _add_active(c, tok)
+    return tok
 
 
-def release() -> None:
-    global _running
-    with _cond:
-        _running = max(0, _running - 1)
-        _cond.notify()
+def release(tok: str | None) -> None:
+    if not tok:
+        return
+    c = _redis()
+    _rem(c, _ACTIVE, _local_active, tok)
 
 
 class slot:
     """Контекстный менеджер: with llm_queue.slot(): <вызов LLM>."""
 
     def __enter__(self):
-        acquire()
+        self.tok = acquire()
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        release()
+        release(self.tok)
         return False
 
 
 def stats() -> dict:
-    with _cond:
-        return {"max": _limit(), "running": _running, "waiting": _waiting,
-                "enabled": _limit() > 0, "timeout": _timeout()}
+    c = _redis()
+    m = _limit()
+    return {"max": m, "running": _active_count(c), "waiting": _waiting_count(c),
+            "enabled": m > 0, "timeout": _timeout(), "shared": bool(c)}
