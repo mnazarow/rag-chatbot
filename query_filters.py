@@ -25,7 +25,8 @@ _VALID_CAT = {"price", "presentation", "training", "document"}
 def extract(question: str) -> dict:
     try:
         out = llm_backend.chat(
-            [{"role": "user", "content": _PROMPT + question}], temperature=0)
+            [{"role": "user", "content": _PROMPT + question}], temperature=0,
+            kind="filter", label=question)
     except Exception:
         return {}
     m = re.search(r"\{.*\}", out, re.S)

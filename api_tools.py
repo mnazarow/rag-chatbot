@@ -59,7 +59,8 @@ def _intent_match(hook: dict, q: str):
             f"Нужно ли для ответа вызвать этот сервис? Если да, извлеки параметры: "
             f"{', '.join(pnames) if pnames else 'нет'}.\n"
             'Ответь СТРОГО в JSON без пояснений: {"match": true|false, "params": {…}}')
-        out = llm_backend.chat([{"role": "user", "content": prompt}], temperature=0)
+        out = llm_backend.chat([{"role": "user", "content": prompt}], temperature=0,
+                               kind="api-intent")
         j = json.loads(_extract_json(out))
         if j.get("match"):
             p = j.get("params") or {}

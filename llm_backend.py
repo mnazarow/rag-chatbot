@@ -15,59 +15,128 @@ import httpx
 import settings
 
 
+def _label_from_messages(messages: list[dict]) -> str:
+    """Короткая подпись запроса — последнее сообщение пользователя (без контекста)."""
+    try:
+        for m in reversed(messages or []):
+            if m.get("role") == "user":
+                c = m.get("content")
+                if isinstance(c, list):       # мультимодальное содержимое
+                    c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+                c = (c or "").strip().replace("\n", " ")
+                return c[:160]
+    except Exception:
+        pass
+    return ""
+
+
+def _act_begin(kind: str, model: str, label: str = ""):
+    try:
+        import llm_activity
+        return llm_activity.begin(kind, model, settings.get("LLM_BACKEND"), label)
+    except Exception:
+        return None
+
+
+def _act_tokens(cid, chars: int):
+    if cid is None:
+        return
+    try:
+        import llm_activity
+        llm_activity.tokens(cid, chars)
+    except Exception:
+        pass
+
+
+def _act_end(cid, ok: bool, chars: int = 0, error: str | None = None):
+    if cid is None:
+        return
+    try:
+        import llm_activity
+        llm_activity.end(cid, ok=ok, chars=chars, error=error)
+    except Exception:
+        pass
+
+
 async def chat_stream(messages: list[dict], temperature: float = 0.1,
-                      model: str | None = None) -> AsyncIterator[str]:
+                      model: str | None = None, kind: str = "chat",
+                      label: str = "") -> AsyncIterator[str]:
     """Асинхронно отдаёт токены ответа по мере генерации."""
     model = model or settings.get("LLM_MODEL")
-    if settings.get("LLM_BACKEND") == "openai":
-        url = f"{settings.get('LLM_BASE_URL')}/chat/completions"
-        payload = {"model": model, "messages": messages,
-                   "stream": True, "temperature": temperature}
-        headers = {"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"}
-        async with httpx.AsyncClient(timeout=None) as c:
-            async with c.stream("POST", url, json=payload, headers=headers) as r:
-                async for line in r.aiter_lines():
-                    line = line.strip()
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[len("data:"):].strip()
-                    if data == "[DONE]":
-                        break
-                    delta = json.loads(data)["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        yield delta
-    else:  # ollama
-        url = f"{settings.get('OLLAMA_URL')}/api/chat"
-        payload = {"model": model, "messages": messages,
-                   "stream": True, "options": {"temperature": temperature}}
-        async with httpx.AsyncClient(timeout=None) as c:
-            async with c.stream("POST", url, json=payload) as r:
-                async for line in r.aiter_lines():
-                    if not line.strip():
-                        continue
-                    tok = json.loads(line).get("message", {}).get("content", "")
-                    if tok:
-                        yield tok
+    cid = _act_begin(kind, model, label or _label_from_messages(messages))
+    nchars = 0
+    ok = True
+    err = None
+    try:
+        if settings.get("LLM_BACKEND") == "openai":
+            url = f"{settings.get('LLM_BASE_URL')}/chat/completions"
+            payload = {"model": model, "messages": messages,
+                       "stream": True, "temperature": temperature}
+            headers = {"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"}
+            async with httpx.AsyncClient(timeout=None) as c:
+                async with c.stream("POST", url, json=payload, headers=headers) as r:
+                    async for line in r.aiter_lines():
+                        line = line.strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if data == "[DONE]":
+                            break
+                        delta = json.loads(data)["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            nchars += len(delta)
+                            if nchars % 64 < len(delta):
+                                _act_tokens(cid, nchars)
+                            yield delta
+        else:  # ollama
+            url = f"{settings.get('OLLAMA_URL')}/api/chat"
+            payload = {"model": model, "messages": messages,
+                       "stream": True, "options": {"temperature": temperature}}
+            async with httpx.AsyncClient(timeout=None) as c:
+                async with c.stream("POST", url, json=payload) as r:
+                    async for line in r.aiter_lines():
+                        if not line.strip():
+                            continue
+                        tok = json.loads(line).get("message", {}).get("content", "")
+                        if tok:
+                            nchars += len(tok)
+                            if nchars % 64 < len(tok):
+                                _act_tokens(cid, nchars)
+                            yield tok
+    except Exception as e:
+        ok = False
+        err = str(e)
+        raise
+    finally:
+        _act_end(cid, ok=ok, chars=nchars, error=err)
 
 
 def chat(messages: list[dict], temperature: float = 0.1,
-         model: str | None = None) -> str:
+         model: str | None = None, kind: str = "llm", label: str = "") -> str:
     """Синхронный полный ответ (для скриптов/сравнения)."""
     model = model or settings.get("LLM_MODEL")
-    if settings.get("LLM_BACKEND") == "openai":
-        r = httpx.post(
-            f"{settings.get('LLM_BASE_URL')}/chat/completions", timeout=None,
-            headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
-            json={"model": model, "messages": messages,
-                  "stream": False, "temperature": temperature},
-        )
-        return r.json()["choices"][0]["message"]["content"]
-    r = httpx.post(
-        f"{settings.get('OLLAMA_URL')}/api/chat", timeout=None,
-        json={"model": model, "messages": messages,
-              "stream": False, "options": {"temperature": temperature}},
-    )
-    return r.json()["message"]["content"]
+    cid = _act_begin(kind, model, label or _label_from_messages(messages))
+    try:
+        if settings.get("LLM_BACKEND") == "openai":
+            r = httpx.post(
+                f"{settings.get('LLM_BASE_URL')}/chat/completions", timeout=None,
+                headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
+                json={"model": model, "messages": messages,
+                      "stream": False, "temperature": temperature},
+            )
+            out = r.json()["choices"][0]["message"]["content"]
+        else:
+            r = httpx.post(
+                f"{settings.get('OLLAMA_URL')}/api/chat", timeout=None,
+                json={"model": model, "messages": messages,
+                      "stream": False, "options": {"temperature": temperature}},
+            )
+            out = r.json()["message"]["content"]
+        _act_end(cid, ok=True, chars=len(out or ""))
+        return out
+    except Exception as e:
+        _act_end(cid, ok=False, error=str(e))
+        raise
 
 
 _DEFAULT_VISION_PROMPT = (
@@ -98,24 +167,48 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
     b64 = base64.b64encode(data).decode("ascii")
     model = (model or settings.get("VISION_MODEL") or settings.get("LLM_MODEL"))
     prompt = prompt or _DEFAULT_VISION_PROMPT
+    # таймаут и число попыток — из настроек (большие vision-модели бывают медленными)
     try:
-        if settings.get("LLM_BACKEND") == "openai":
-            content = [{"type": "text", "text": prompt},
-                       {"type": "image_url",
-                        "image_url": {"url": "data:image/png;base64," + b64}}]
-            r = httpx.post(
-                f"{settings.get('LLM_BASE_URL')}/chat/completions", timeout=180,
-                headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
-                json={"model": model, "stream": False, "temperature": 0.2,
-                      "messages": [{"role": "user", "content": content}]})
-            r.raise_for_status()
-            return (r.json()["choices"][0]["message"]["content"] or "").strip()
-        r = httpx.post(
-            f"{settings.get('OLLAMA_URL')}/api/chat", timeout=180,
-            json={"model": model, "stream": False, "options": {"temperature": 0.2},
-                  "messages": [{"role": "user", "content": prompt, "images": [b64]}]})
-        r.raise_for_status()
-        return (r.json().get("message", {}).get("content", "") or "").strip()
-    except Exception as e:
-        print(f"[vision] описание изображения не удалось (model={model}): {e}")
-        return ""
+        timeout = float(settings.get("VISION_TIMEOUT") or 180)
+    except Exception:
+        timeout = 180.0
+    try:
+        attempts = max(1, int(settings.get("VISION_RETRIES") or 1))
+    except Exception:
+        attempts = 1
+
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        cid = _act_begin("vision", model,
+                         "описание изображения" + (f" (попытка {attempt})" if attempt > 1 else ""))
+        try:
+            if settings.get("LLM_BACKEND") == "openai":
+                content = [{"type": "text", "text": prompt},
+                           {"type": "image_url",
+                            "image_url": {"url": "data:image/png;base64," + b64}}]
+                r = httpx.post(
+                    f"{settings.get('LLM_BASE_URL')}/chat/completions", timeout=timeout,
+                    headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
+                    json={"model": model, "stream": False, "temperature": 0.2,
+                          "messages": [{"role": "user", "content": content}]})
+                r.raise_for_status()
+                out = (r.json()["choices"][0]["message"]["content"] or "").strip()
+            else:
+                r = httpx.post(
+                    f"{settings.get('OLLAMA_URL')}/api/chat", timeout=timeout,
+                    json={"model": model, "stream": False, "options": {"temperature": 0.2},
+                          "messages": [{"role": "user", "content": prompt, "images": [b64]}]})
+                r.raise_for_status()
+                out = (r.json().get("message", {}).get("content", "") or "").strip()
+            _act_end(cid, ok=True, chars=len(out))
+            return out
+        except Exception as e:
+            last_err = e
+            _act_end(cid, ok=False, error=str(e))
+            if attempt < attempts:
+                print(f"[vision] попытка {attempt}/{attempts} не удалась (model={model}): "
+                      f"{e} — повтор")
+                continue
+    print(f"[vision] описание изображения не удалось (model={model}, "
+          f"попыток {attempts}, таймаут {timeout:.0f}с): {last_err}")
+    return ""

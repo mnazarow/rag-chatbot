@@ -121,6 +121,8 @@ OCR_MIN_CHARS = _int("OCR_MIN_CHARS", 25)
 OCR_LLM_DESCRIBE = _bool("OCR_LLM_DESCRIBE", False)
 OCR_LLM_MAX_CHUNKS = _int("OCR_LLM_MAX_CHUNKS", 1)
 VISION_MODEL = os.getenv("VISION_MODEL", "")   # vision-модель (пусто = основная LLM)
+VISION_TIMEOUT = _int("VISION_TIMEOUT", 180)   # таймаут запроса к vision-модели, сек
+VISION_RETRIES = _int("VISION_RETRIES", 2)     # число попыток описать изображение
 # Tesseract PSM (page segmentation mode): 3 — авто; 4 — колонками; 6 — единый блок;
 # 11 — разрозненный текст. OEM: 1 — нейросеть LSTM; 3 — авто (LSTM+legacy).
 OCR_PSM = _int("OCR_PSM", 3)

@@ -394,7 +394,7 @@ async def chat(req: ChatRequest):
         acc = []
         async for tok in llm_backend.chat_stream(
                 messages, temperature=settings.get("TEMPERATURE"),
-                model=settings.active_model()):
+                model=settings.active_model(), kind="chat", label=req.question):
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         gen_ms = max(0, int((time.time() - t0) * 1000) - retrieve_ms)
@@ -534,7 +534,7 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
         acc = []
         async for tok in llm_backend.chat_stream(
                 messages, temperature=settings.get("TEMPERATURE"),
-                model=settings.active_model()):
+                model=settings.active_model(), kind="chat-doc", label=question):
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield _stg("generate", "done", {"chars": len("".join(acc))})
@@ -711,6 +711,15 @@ def api_activity():
     return {"live": snap["items"], "jobs": jobs,
             "active": snap["active"] + sum(1 for j in jobs if j.get("running")),
             "by_kind": snap["by_kind"]}
+
+
+@app.get("/api/llm-activity")
+def api_llm_activity(limit: int = 60):
+    """Запросы к LLM в реальном времени: генерация ответов (чат/Телеграм), описание
+    изображений vision-моделью и служебные вызовы (фильтр запроса, API-интент и т. п.) —
+    что выполняется сейчас и недавно завершилось, с моделью, объёмом вывода и временем."""
+    import llm_activity
+    return llm_activity.snapshot(min(max(int(limit), 1), 200))
 
 
 # ===================== Структура компании =====================

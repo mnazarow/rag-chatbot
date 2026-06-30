@@ -2525,6 +2525,8 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
     source = (source or "").strip()
     if not source:
         return {"ok": False, "msg": "не указан файл"}
+    # маркер чанков-описаний, добавленных vision-моделью (см. loaders._describe_image_part)
+    desc_mark = "Описание изображения (vision-модель)"
     # источник — PostgreSQL: отдаём сохранённый текст из doc_catalog
     if _catalog_pg_active():
         r = db.catalog_text(source, max_chars)
@@ -2532,7 +2534,12 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
             return {"ok": True, "source": source, "text": "", "chunks": 0,
                     "method": _file_method(Path(source).suffix),
                     "note": "файл отсутствует в каталоге PostgreSQL"}
-        return {"ok": True, "source": source, "text": r["text"],
+        text, desc = r["text"], ""
+        if desc_mark in (text or ""):     # отделяем описание LLM от остального текста
+            segs = text.split(desc_mark)
+            text = segs[0].strip()
+            desc = "\n\n".join(s.lstrip(" :\n").strip() for s in segs[1:] if s.strip())
+        return {"ok": True, "source": source, "text": text, "description": desc,
                 "chunks": None, "method": r.get("method") or _file_method(Path(source).suffix),
                 "n_chars": r.get("n_chars"), "truncated": r.get("truncated"),
                 "from": "postgresql"}
@@ -2567,10 +2574,16 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
         return v if isinstance(v, int) else 10 ** 9
     points.sort(key=_pg)
 
-    parts, total, truncated = [], 0, False
+    # отделяем чанки-описания vision-модели от извлечённого текста (OCR/инструменты)
+    desc_parts, parts, total, truncated = [], [], 0, False
     for p in points:
         t = ((p.get("payload") or {}).get("text") or "").strip()
         if not t:
+            continue
+        if t.startswith(desc_mark):
+            body = t.split("\n", 1)[1].strip() if "\n" in t else ""
+            if body:
+                desc_parts.append(body)
             continue
         if total + len(t) > max_chars:
             parts.append(t[:max(0, max_chars - total)])
@@ -2579,6 +2592,7 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
         parts.append(t)
         total += len(t) + 2
     return {"ok": True, "source": source, "text": "\n\n".join(parts),
+            "description": "\n\n".join(desc_parts),
             "chunks": len(points), "method": _file_method(Path(source).suffix),
             "truncated": truncated or len(points) >= 4000}
 

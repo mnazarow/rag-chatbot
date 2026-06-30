@@ -214,6 +214,13 @@
       <div id="act_list"></div>
     </div>
     <div class="box">
+      <h3>🧠 Запросы к LLM <span id="llmact_count" class="tag"></span>
+        <span class="note" style="font-weight:400;margin-left:8px">в реальном времени</span></h3>
+      <div class="note" style="margin-bottom:8px">Вызовы модели: генерация ответов (чат/Телеграм), описание изображений vision-моделью и служебные вызовы (фильтр запроса, API-интент). Показаны выполняемые сейчас и недавно завершённые. Обновляется автоматически.</div>
+      <div style="overflow:auto;max-height:42vh"><table><thead><tr><th>Статус</th><th>Тип</th><th>Модель</th><th>Запрос</th><th>Вывод</th><th>Время</th></tr></thead>
+      <tbody id="llmact_rows"></tbody></table></div>
+    </div>
+    <div class="box">
       <h3>🌐 Последние запросы (веб-чат)</h3>
       <table><thead><tr><th>Время</th><th>Вопрос</th><th>Ответ</th><th>Оценка</th><th>Комментарий</th></tr></thead>
       <tbody id="dashrecent"></tbody></table>
@@ -1606,7 +1613,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 
 // ---- текущие запросы (живая активность) ----
 let actTimer=null;
-function startActivityPoll(){ clearInterval(actTimer); loadActivity(); actTimer=setInterval(loadActivity,1500); }
+function startActivityPoll(){ clearInterval(actTimer); loadActivity(); loadLlmActivity(); actTimer=setInterval(()=>{ loadActivity(); loadLlmActivity(); },1500); }
 const ACT_KIND={
   chat:{icon:'💬',label:'Веб-чат'}, telegram:{icon:'✈️',label:'Телеграм'},
   attach:{icon:'📎',label:'Документ в чате'}, parse:{icon:'🏢',label:'Парсинг'},
@@ -1641,6 +1648,37 @@ async function loadActivity(){
   $('#act_count').textContent = n? (n+' активн.') : 'нет активных';
   $('#act_list').innerHTML = rows.length ? rows.join('')
     : '<div class="note">Сейчас нет активных запросов и задач. Здесь появятся обрабатываемые вопросы, генерация ответов, разбор файлов, парсинг и фоновые процессы.</div>';
+}
+
+// ---- запросы к LLM (в реальном времени) ----
+const LLM_KIND={
+  chat:{icon:'💬',label:'Веб-чат'}, 'chat-doc':{icon:'📎',label:'Документ в чате'},
+  telegram:{icon:'✈️',label:'Телеграм'}, vision:{icon:'👁',label:'Vision'},
+  filter:{icon:'🧭',label:'Фильтр запроса'}, 'api-intent':{icon:'🔌',label:'API-интент'},
+  llm:{icon:'🧠',label:'LLM'},
+};
+async function loadLlmActivity(){
+  if(!$('#llmact_rows')) return;
+  let d; try{ d=await (await fetch('/api/llm-activity?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
+  const items=d.items||[];
+  const rows=items.map(it=>{
+    const k=LLM_KIND[it.kind]||{icon:'•',label:it.kind};
+    const st = it.done
+      ? (it.ok===false?'<span style="color:#f87171">✖ ошибка</span>':'<span style="color:#34d399">✓ готово</span>')
+      : '<span style="color:var(--accent)"><span class="actspin">⏳</span> идёт</span>';
+    const out = it.chars ? (it.chars+' симв.') : (it.done?'<span class="note">—</span>':'…');
+    const lbl = it.error ? ('<span style="color:#f87171" title="'+escAttr(it.error)+'">'+esc(it.label||'')+'</span>')
+                         : (esc(it.label||'')||'<span class="note">—</span>');
+    return `<tr><td style="white-space:nowrap">${st}</td>
+      <td style="white-space:nowrap">${k.icon} ${esc(k.label)}</td>
+      <td style="white-space:nowrap"><span class="note">${esc(schModShort(it.model||''))}</span></td>
+      <td style="max-width:360px">${lbl}</td>
+      <td style="white-space:nowrap">${out}</td>
+      <td style="white-space:nowrap">${actElapsed(it.elapsed_ms)}</td></tr>`;
+  });
+  const r=d.running||0;
+  if($('#llmact_count')) $('#llmact_count').textContent = r? (r+' выполняется') : 'нет активных';
+  $('#llmact_rows').innerHTML = rows.length ? rows.join('') : emptyRow(6);
 }
 
 // ---- дашборд ----
@@ -2743,8 +2781,13 @@ async function fcShowText(source,btn){
     const label={transcribed:'🎤 Транскрипция',ocr:'🔍 Распознанный текст (OCR)',tool:'🛠 Извлечённый текст',text:'📄 Текст'}[r.method]||'Текст';
     html+=`<div class="note" style="margin-bottom:6px">${label} · фрагментов: ${nz(r.chunks)}${r.truncated?' · показан фрагмент (текст длинный)':''}</div>
        <pre style="white-space:pre-wrap;max-height:340px;overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px">${esc(r.text)}</pre>`;
-  } else if(kind==='other'||kind==='model'){
+  } else if(!(r && r.description && r.description.trim()) && (kind==='other'||kind==='model')){
     html+=`<div class="note">${esc((r&&(r.note||r.msg))||'текст не извлечён (файл не проиндексирован)')}</div>`;
+  }
+  // описание изображения, добавленное vision-моделью (отдельным блоком)
+  if(r && r.description && r.description.trim()){
+    html+=`<div class="note" style="margin:8px 0 6px">🧠 Описание LLM-моделью (vision) — добавлено в базу знаний</div>
+       <pre style="white-space:pre-wrap;max-height:340px;overflow:auto;background:var(--panel2);border:1px solid var(--accent);border-radius:8px;padding:10px;font-size:12px">${esc(r.description)}</pre>`;
   }
   btn.textContent='🔼';
   const det=document.createElement('tr'); det.className='fc-detail';

@@ -312,6 +312,17 @@ FIELDS: list[dict] = [
              "<code>llama3.2-vision</code>, <code>qwen2-vl</code> в Ollama; для vLLM — "
              "vision-совместимая модель). Пусто = использовать основную LLM (если она "
              "поддерживает изображения)."},
+    {"key": "VISION_TIMEOUT", "label": "Таймаут vision-модели, сек",
+     "group": "OCR (распознавание текста)", "type": "int", "scope": "live",
+     "default": config.VISION_TIMEOUT,
+     "desc": "Сколько ждать ответа vision-модели на одно изображение. Большие модели "
+             "(напр. 30B+) бывают медленными — увеличьте, если в логе индексации "
+             "встречается «timed out». По умолчанию 180 с."},
+    {"key": "VISION_RETRIES", "label": "Попыток описания изображения",
+     "group": "OCR (распознавание текста)", "type": "int", "scope": "live",
+     "default": config.VISION_RETRIES,
+     "desc": "Сколько раз пытаться описать одно изображение при ошибке/таймауте, прежде "
+             "чем пропустить его. 1 — без повторов. По умолчанию 2."},
     {"key": "OCR_MIN_CHARS", "label": "Порог символов для OCR страницы PDF",
      "group": "OCR (распознавание текста)", "type": "int", "scope": "reindex",
      "default": config.OCR_MIN_CHARS,
