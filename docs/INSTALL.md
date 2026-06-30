@@ -364,6 +364,11 @@ python query_lightrag.py "вопрос" --mode mix
 | `OCR_LLM_MAX_CHUNKS` / `VISION_MODEL` | Порог чанков для описания / имя vision-модели (пусто = основная LLM) | `1` / пусто |
 | `SIP_ENABLED`     | Голосовой бот по SIP/АТС (Asterisk AudioSocket: STT→RAG→TTS) | `0` (выкл)               |
 | `SIP_BRIDGE_HOST` / `SIP_BRIDGE_PORT` | Адрес и порт AudioSocket-моста (указать в диалплане Asterisk) | `0.0.0.0` / `8090` |
+| `SIP_REGISTER_ENABLED` | Нативная SIP-регистрация (без AudioSocket; нужен pyVoIP) | `0` (выкл) |
+| `SIP_SERVER` / `SIP_PORT` | SIP-сервер АТС/провайдера и порт | пусто / `5060` |
+| `SIP_USERNAME` / `SIP_PASSWORD` | Логин и пароль SIP-аккаунта (пароль — секрет) | пусто / пусто |
+| `SIP_LOCAL_IP` / `SIP_LOCAL_PORT` | IP для SDP (пусто = авто; за NAT укажите внешний) / локальный SIP-порт | пусто / `5060` |
+| `SIP_RTP_PORT_LOW` / `SIP_RTP_PORT_HIGH` | Диапазон UDP-портов для RTP-аудио (открыть/пробросить) | `10000` / `20000` |
 | `PRICE_FOLDER`    | Брать прайсы из отдельной папки без индексации (ценовые вопросы) | `0` (выкл)              |
 | `PRICE_DIR` / `PRICE_TOP_K` | Путь к папке прайс-листов / число фрагментов в ответ | пусто / `6`                |
 | `MONITOR_INTERVAL` | Период выборки метрик загрузки хоста, сек    | `60`                               |

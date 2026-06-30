@@ -78,14 +78,21 @@ def _start_dns():
 
 @app.on_event("startup")
 def _start_sip():
-    """Поднять голосовой мост к АТС (AudioSocket), если включён."""
+    """Поднять телефонию: AudioSocket-мост и/или нативную SIP-регистрацию."""
     try:
         import sip_bridge
         if settings.get("SIP_ENABLED"):
             r = sip_bridge.start()
             print(f"[sip] {r.get('msg')}")
     except Exception as e:
-        print(f"[sip] не запущен: {e}")
+        print(f"[sip] AudioSocket не запущен: {e}")
+    try:
+        import sip_phone
+        if settings.get("SIP_REGISTER_ENABLED"):
+            r = sip_phone.start()
+            print(f"[sip-reg] {r.get('msg')}")
+    except Exception as e:
+        print(f"[sip-reg] не запущен: {e}")
 
 
 @app.on_event("startup")
@@ -632,6 +639,22 @@ def api_sip_restart(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     import sip_bridge
     return sip_bridge.restart()
+
+
+@app.get("/api/admin/sip/register-status")
+def api_sip_register_status(x_admin_token: str | None = Header(None)):
+    """Состояние нативной SIP-регистрации (без AudioSocket)."""
+    _check_admin(x_admin_token)
+    import sip_phone
+    return sip_phone.status()
+
+
+@app.post("/api/admin/sip/register-restart")
+def api_sip_register_restart(x_admin_token: str | None = Header(None)):
+    """Перерегистрировать SIP-аккаунт (после смены настроек)."""
+    _check_admin(x_admin_token)
+    import sip_phone
+    return sip_phone.restart()
 
 
 # ===================== Внешние API-хуки =====================

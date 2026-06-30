@@ -43,6 +43,9 @@ markdown-it-py==3.0.0
 # --- транскрибация обучающих записей (аудио/видео) ---
 mlx-whisper==0.4.2         # Whisper на Apple Silicon (Metal)
 
+# --- телефония: нативная SIP-регистрация (опционально; AudioSocket работает без неё) ---
+pyVoIP==1.6.8              # SIP-клиент + RTP (PCMU/PCMA) для режима SIP-регистрации
+
 # --- внешние БД и кэш (опционально; SQLite работает без них) ---
 PyMySQL==1.1.1           # бэкенд MySQL/MariaDB для журнала и настроек
 psycopg2-binary==2.9.10  # бэкенд PostgreSQL

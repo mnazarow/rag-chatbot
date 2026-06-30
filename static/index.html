@@ -1082,7 +1082,37 @@
       </div>
       <div class="note" style="margin-top:10px">Пример диалплана Asterisk (<code>extensions.conf</code>) — направить звонок боту:</div>
       <pre id="sip_dialplan" style="background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap"></pre>
-      <div class="note" style="line-height:1.5">Если ваша АТС не умеет AudioSocket — заведите SIP-транк/пир в Asterisk, а дальше используйте AudioSocket. «Сырая» SIP-регистрация в самом приложении не используется (надёжнее через медиамост).</div>
+      <div class="note" style="line-height:1.5">Если в Asterisk нет AudioSocket (модули <code>app_audiosocket</code>/<code>res_audiosocket</code>) — используйте режим <b>SIP-регистрации</b> ниже: бот сам зарегистрируется как SIP-аккаунт и будет принимать звонки напрямую.</div>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+      <h3 style="margin-top:0">☎️ Подключение по SIP (регистрация) <span id="sipreg_badge" class="tag"></span></h3>
+      <div class="note" style="line-height:1.5">Бот <b>регистрируется как SIP-аккаунт</b> на АТС/провайдере (логин/пароль) и принимает звонки напрямую — без AudioSocket и диалплана. Нужны пакет <code>pyVoIP</code>, <code>ffmpeg</code>, рабочие Whisper и TTS, открытые порт <b>5060/UDP</b> и диапазон <b>RTP-портов</b>.</div>
+      <div class="clb-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+        <div class="field" style="margin:0"><label class="note">SIP-сервер (АТС/провайдер)</label>
+          <input type="text" id="sipreg_server" placeholder="sip.provider.ru или IP Asterisk"></div>
+        <div class="field" style="margin:0"><label class="note">Порт</label>
+          <input type="text" id="sipreg_port" placeholder="5060"></div>
+        <div class="field" style="margin:0"><label class="note">Логin (аккаунт/номер)</label>
+          <input type="text" id="sipreg_user" placeholder="1001"></div>
+        <div class="field" style="margin:0"><label class="note">Пароль</label>
+          <input type="password" id="sipreg_pass" placeholder="••••••• (пусто — не менять)"></div>
+        <div class="field" style="margin:0"><label class="note">Локальный IP для SDP (опц.)</label>
+          <input type="text" id="sipreg_lip" placeholder="авто / внешний IP за NAT"></div>
+        <div class="field" style="margin:0"><label class="note">Локальный SIP-порт</label>
+          <input type="text" id="sipreg_lport" placeholder="5060"></div>
+        <div class="field" style="margin:0"><label class="note">RTP-порт: нижний</label>
+          <input type="text" id="sipreg_rtplo" placeholder="10000"></div>
+        <div class="field" style="margin:0"><label class="note">RTP-порт: верхний</label>
+          <input type="text" id="sipreg_rtphi" placeholder="20000"></div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:10px 0">
+        <input type="checkbox" id="sipreg_enabled"> <b>Включить SIP-регистрацию</b></label>
+      <div id="sipreg_status" class="note" style="margin:8px 0"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="sipRegSave()">💾 Сохранить и перерегистрировать</button>
+        <button class="act ghost" onclick="loadSipReg()">Обновить статус</button>
+        <span id="sipreg_msg" class="note"></span>
+      </div>
     </div>
 
     <!-- операции -->
@@ -3082,7 +3112,7 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns(); loadPrice(); apihLoad(); loadSip();
+  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns(); loadPrice(); apihLoad(); loadSip(); loadSipReg();
 }
 
 // ---- автокалибровка параметров ----
@@ -4616,6 +4646,48 @@ async function sipRestart(){
   const r=await adminPost('/api/admin/sip/restart');
   if(m){ m.textContent=r&&r.msg?r.msg:(r&&r.ok?'ок':'ошибка'); m.className=(r&&r.ok!==false)?'saved':'note'; }
   setTimeout(loadSip,400);
+}
+
+// ---- SIP-регистрация (нативная, без AudioSocket) ----
+async function loadSipReg(){
+  if(!$('#sipreg_status')) return;
+  let d; try{ d=await adminGet('/api/admin/sip/register-status'); }catch(e){ return; }
+  const b=$('#sipreg_badge');
+  if(b) b.textContent = !d.enabled ? 'выключена' : (d.registered?'зарегистрирован':'не зарегистрирован');
+  const setv=(id,v)=>{ const e=$('#'+id); if(e && document.activeElement!==e) e.value=(v==null?'':v); };
+  setv('sipreg_server',d.server); setv('sipreg_port',d.port);
+  setv('sipreg_user',d.username); setv('sipreg_lport',d.local_port);
+  if(d.rtp_range){ setv('sipreg_rtplo',d.rtp_range[0]); setv('sipreg_rtphi',d.rtp_range[1]); }
+  const en=$('#sipreg_enabled'); if(en) en.checked=!!d.enabled;
+  const pv=d.pyvoip?'<span style="color:#34d399">pyVoIP ✓</span>':'<span style="color:#f87171">pyVoIP не установлен</span>';
+  const ff=d.ffmpeg?'<span style="color:#34d399">ffmpeg ✓</span>':'<span style="color:#f87171">ffmpeg не найден</span>';
+  $('#sipreg_status').innerHTML = !d.enabled
+    ? 'Выключена. Заполните данные SIP-аккаунта, включите и сохраните. '+pv+' · '+ff
+    : `Статус: ${d.registered?'<span style="color:#34d399">зарегистрирован</span>':'<span style="color:#f87171">не зарегистрирован</span>'}`
+      +` · ${esc(d.username||'')}@${esc(d.server||'')}:${d.port} · ${pv} · ${ff}`
+      +` · звонков: <b>${d.calls||0}</b> · активных: <b>${d.active||0}</b>`
+      +(d.error?` · <span style="color:#f87171">${esc(d.error)}</span>`:'');
+}
+async function sipRegSave(){
+  const m=$('#sipreg_msg'); if(m){m.textContent='сохранение…';m.className='note';}
+  const body={
+    SIP_REGISTER_ENABLED:$('#sipreg_enabled').checked,
+    SIP_SERVER:$('#sipreg_server').value.trim(),
+    SIP_PORT:$('#sipreg_port').value.trim()||'5060',
+    SIP_USERNAME:$('#sipreg_user').value.trim(),
+    SIP_LOCAL_IP:$('#sipreg_lip').value.trim(),
+    SIP_LOCAL_PORT:$('#sipreg_lport').value.trim()||'5060',
+    SIP_RTP_PORT_LOW:$('#sipreg_rtplo').value.trim()||'10000',
+    SIP_RTP_PORT_HIGH:$('#sipreg_rtphi').value.trim()||'20000' };
+  const pass=$('#sipreg_pass').value;
+  if(pass) body.SIP_PASSWORD=pass;          // пустой — не менять (секрет)
+  try{
+    await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':tok()},body:JSON.stringify(body)});
+    const r=await adminPost('/api/admin/sip/register-restart');
+    if(m){ m.textContent=r&&r.msg?r.msg:(r&&r.ok?'ок':'ошибка'); m.className=(r&&r.ok!==false)?'saved':'note'; }
+    $('#sipreg_pass').value='';
+  }catch(e){ if(m){m.textContent='ошибка: '+e;m.className='note';} }
+  setTimeout(loadSipReg,500);
 }
 
 // ---- прайс-папка: статус ----
