@@ -71,6 +71,12 @@ services:
       - "host.docker.internal:host-gateway"        # доступ к Ollama на хосте (в т.ч. Linux)
     ports:
       - "8000:8000"                                # веб-интерфейс: http://localhost:8000
+      # --- Телефония (опционально; раскомментируйте нужное) ---
+      # AudioSocket-мост (SIP_ENABLED=1): порт = SIP_BRIDGE_PORT
+      # - "8090:8090"
+      # Нативная SIP-регистрация (SIP_REGISTER_ENABLED=1): SIP + диапазон RTP
+      # - "5060:5060/udp"
+      # - "10000-20000:10000-20000/udp"            # диапазон SIP_RTP_PORT_LOW..HIGH
     volumes:
       # папка с документами — на запись (загрузки файлов/папок, сайты, восстановление)
       - "${DOCS_DIR_HOST:-./docs}:/data/docs"
