@@ -483,6 +483,14 @@
 
         <div class="field" style="margin:0">
           <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="tgv_previews" onchange="tgVoiceSave()"> <b>Присылать превью источников</b></label>
+          <div class="note" style="line-height:1.5">Как карточки-превью в веб-чате: к ответу бот отправляет
+            <b>визуальные превью источников</b> — миниатюры картинок, RAW-фото и чертежей, первую страницу PDF,
+            кадр видео (с таймкодом) и аудио-файл. Превью строятся «лениво» и кешируются; нужны Pillow/ffmpeg.</div>
+        </div>
+
+        <div class="field" style="margin:0">
+          <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
             <input type="checkbox" id="tgv_pipeline" onchange="tgVoiceSave()"> <b>Показывать структуру формирования ответа</b></label>
           <div class="note" style="line-height:1.5">К ответу добавляется «структура формирования ответа» —
             этапы конвейера (эмбеддинг → фильтр → поиск → BM25 → реранк → контекст → генерация, либо шаги KAG)
@@ -2212,6 +2220,7 @@ function tgVoiceFill(st){
   const set=(id,v)=>{ const e=$('#'+id); if(e) e.checked=!!v; };
   set('tgv_in',st.voice_in); set('tgv_out',st.voice_out); set('tgv_files',st.files);
   set('tgv_answer',st.show_answer); set('tgv_pipeline',st.pipeline); set('tgv_feedback',st.feedback);
+  set('tgv_previews',st.previews);
   if($('#tgv_engine')) $('#tgv_engine').value=st.tts_engine||'auto';
   if($('#tgv_voice')) $('#tgv_voice').value=st.tts_voice||'';
   tgVoiceLoadList();
@@ -2385,6 +2394,7 @@ async function tgVoiceSave(){
     TELEGRAM_SHOW_ANSWER:$('#tgv_answer').checked,
     TELEGRAM_PIPELINE:$('#tgv_pipeline').checked,
     TELEGRAM_FEEDBACK:$('#tgv_feedback').checked,
+    TELEGRAM_PREVIEWS:$('#tgv_previews').checked,
     TTS_ENGINE:$('#tgv_engine').value,
     TTS_VOICE:$('#tgv_voice').value };
   const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':tok()},body:JSON.stringify(body)});

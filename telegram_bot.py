@@ -172,6 +172,94 @@ def send_voice(chat_id: int, ogg_path: str, caption: str = "") -> bool:
         return False
 
 
+def send_photo(chat_id: int, path: str, caption: str = "") -> bool:
+    """Отправить картинку (превью источника) через sendPhoto (multipart)."""
+    token = _token()
+    if not token:
+        return False
+    try:
+        data = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption[:1024]
+        fname = os.path.basename(path) or "preview.jpg"
+        with httpx.Client(proxy=_proxy(), timeout=120) as c, open(path, "rb") as f:
+            r = c.post(_API.format(token=token, method="sendPhoto"),
+                       data=data, files={"photo": (fname, f, "image/jpeg")})
+        return bool(r.json().get("ok"))
+    except Exception as e:
+        print(f"[tg] sendPhoto не удался: {e}")
+        return False
+
+
+def send_audio(chat_id: int, path: str, caption: str = "") -> bool:
+    """Отправить аудиофайл-источник через sendAudio (multipart)."""
+    token = _token()
+    if not token:
+        return False
+    try:
+        data = {"chat_id": str(chat_id)}
+        if caption:
+            data["caption"] = caption[:1024]
+        fname = os.path.basename(path) or "audio"
+        with httpx.Client(proxy=_proxy(), timeout=180) as c, open(path, "rb") as f:
+            r = c.post(_API.format(token=token, method="sendAudio"),
+                       data=data, files={"audio": (fname, f, "application/octet-stream")})
+        return bool(r.json().get("ok"))
+    except Exception as e:
+        print(f"[tg] sendAudio не удался: {e}")
+        return False
+
+
+def _send_previews(chat_id: int, hits: list) -> None:
+    """Отправить визуальные превью источников ответа — как карточки в веб-чате:
+    миниатюра картинки/RAW/чертежа/PDF, кадр видео (с таймкодом), аудио-файл.
+    Источники дедуплицируются; число ограничено TELEGRAM_PREVIEW_MAX."""
+    if not hits:
+        return
+    try:
+        import media
+    except Exception:
+        return
+    try:
+        maxn = int(settings.get("TELEGRAM_PREVIEW_MAX") or 4)
+    except Exception:
+        maxn = 4
+    seen: set = set()
+    sent = 0
+    for h in hits:
+        if sent >= maxn:
+            break
+        src = h.get("source") if isinstance(h, dict) else None
+        if not src or src in seen:
+            continue
+        seen.add(src)
+        try:
+            k = media.kind_of(src)
+            if not media.available(src):
+                continue
+            page = h.get("page")
+            t_start = h.get("t_start")
+            cap = src + (f", с.{page}" if page else "")
+            if k in ("image", "raw", "cad", "pdf"):
+                thumb = media.thumbnail(src, page if k == "pdf" else None)
+                if thumb and send_photo(chat_id, str(thumb), cap):
+                    sent += 1
+            elif k == "video":
+                ts = t_start if isinstance(t_start, (int, float)) else 1.0
+                thumb = media.thumbnail(src, ts)
+                if thumb:
+                    vc = cap + (f" · {int(ts // 60):02d}:{int(ts % 60):02d}"
+                                if isinstance(t_start, (int, float)) else "")
+                    if send_photo(chat_id, str(thumb), "🎬 " + vc):
+                        sent += 1
+            elif k == "audio":
+                p = media.materialize(src)
+                if p and send_audio(chat_id, str(p), "🔊 " + cap):
+                    sent += 1
+        except Exception as e:
+            print(f"[tg] превью источника не удалось ({src}): {e}")
+
+
 def notify_approved(chat_id: int) -> None:
     send(chat_id, "✅ Доступ подтверждён. Задайте вопрос по документам компании.")
 
@@ -706,6 +794,12 @@ def _handle(msg: dict) -> None:
                             latency, answered, sources)
     kb = _feedback_kb(rid) if (rid and settings.get("TELEGRAM_FEEDBACK")) else None
     send(chat_id, out, reply_markup=kb)
+    # визуальные превью источников (картинки/чертежи/кадры видео/аудио) — как в веб-чате
+    if answered and settings.get("TELEGRAM_PREVIEWS"):
+        try:
+            _send_previews(chat_id, hits)
+        except Exception as e:
+            print(f"  ! telegram previews error: {e}")
     # голосовой ответ на голосовой запрос (если включено, доступен TTS и вывод ответа не отключён)
     if show_answer and voice_in and settings.get("TELEGRAM_VOICE_OUT") and ans:
         try:
@@ -856,6 +950,7 @@ def status() -> dict:
             "pipeline": bool(settings.get("TELEGRAM_PIPELINE")),
             "show_answer": bool(settings.get("TELEGRAM_SHOW_ANSWER")),
             "feedback": bool(settings.get("TELEGRAM_FEEDBACK")),
+            "previews": bool(settings.get("TELEGRAM_PREVIEWS")),
             "tts_engine": settings.get("TTS_ENGINE"),
             "tts_voice": settings.get("TTS_VOICE") or "",
             "tts": tts_info,

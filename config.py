@@ -137,6 +137,10 @@ TELEGRAM_PIPELINE = _bool("TELEGRAM_PIPELINE", True)
 TELEGRAM_SHOW_ANSWER = _bool("TELEGRAM_SHOW_ANSWER", True)
 # Кнопки оценки ответа (👍/👎) и комментария под ответом бота.
 TELEGRAM_FEEDBACK = _bool("TELEGRAM_FEEDBACK", True)
+# Отправлять визуальные превью источников (картинки/чертежи/кадры видео/аудио),
+# как карточки-превью в веб-чате. Кол-во превью на ответ — TELEGRAM_PREVIEW_MAX.
+TELEGRAM_PREVIEWS = _bool("TELEGRAM_PREVIEWS", True)
+TELEGRAM_PREVIEW_MAX = _int("TELEGRAM_PREVIEW_MAX", 4)
 # Движок синтеза речи: auto (пробует доступные) | piper | say (macOS) | espeak | off.
 TTS_ENGINE = os.getenv("TTS_ENGINE", "auto")
 # Голос/модель: для macOS `say` — имя голоса (напр. Milena/Yuri); для piper — путь к .onnx;
