@@ -109,7 +109,7 @@ def ensure_collection(client: QdrantClient, reset: bool):
         )
         # индексы payload — для инкрементального обновления и фильтрации
         for field in ("source", "fhash", "doc_category", "date", "ftype",
-                      "product", "topic", "doc_type"):
+                      "product", "topic", "doc_type", "vision_desc"):
             client.create_payload_index(
                 COLLECTION, field, qm.PayloadSchemaType.KEYWORD
             )
@@ -267,6 +267,7 @@ def main():
                             "indexed_at": time.strftime("%Y-%m-%d"),
                             **({"t_start": p["t_start"], "t_end": p["t_end"]}
                                if p.get("t_start") is not None else {}),
+                            **({"vision_desc": True} if p.get("vision_desc") else {}),
                             **md,
                         },
                     )
@@ -322,7 +323,8 @@ def main():
                 for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
                     points.append({"chunk": chunk, "page": part["page"],
                                    "t_start": part.get("t_start"),
-                                   "t_end": part.get("t_end")})
+                                   "t_end": part.get("t_end"),
+                                   "vision_desc": part.get("vision_desc")})
             if not points:
                 return {"status": "empty", "tmp": tmp_path}
             return {"status": "ok", "source": source, "fhash": fhash, "points": points,
@@ -397,7 +399,8 @@ def main():
                     for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
                         points.append({"chunk": chunk, "page": part["page"],
                                        "t_start": part.get("t_start"),
-                                       "t_end": part.get("t_end")})
+                                       "t_end": part.get("t_end"),
+                                       "vision_desc": part.get("vision_desc")})
                 if use_alarm:
                     signal.alarm(0)
                 parse_ms = int((time.time() - t_parse) * 1000)

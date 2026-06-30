@@ -348,6 +348,9 @@
     <div class="box"><h3>⏱ Время обработки (индексация)</h3><div id="sys_ingest"></div></div>
     <div class="box"><h3>🗃 Базы данных (SQLite / MySQL / PostgreSQL)</h3><div id="sys_db"></div></div>
     <div class="box"><h3>⚡ Кэш Redis</h3><div id="sys_cache"></div></div>
+    <div class="box"><h3>📞 Телефония (SIP) <span id="sys_sip_badge" class="tag"></span></h3>
+      <div class="note" style="margin-bottom:8px">Состояние голосовых подключений: AudioSocket-мост (Asterisk) и нативная SIP-регистрация.</div>
+      <div id="sys_sip"></div></div>
 
     <div class="box"><h3>🔎 Проверка каталога данных</h3>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -1759,7 +1762,11 @@ function schemaRender(){
   // дополнительные коннекторы
   const synC=cn.synonyms||{}, orgC=cn.org||{}, hookC=cn.api_hooks||{};
   const visionOn=!!c.OCR_LLM_DESCRIBE;
-  const sipOn=!!c.SIP_ENABLED;
+  // телефония: два режима — AudioSocket-мост и нативная SIP-регистрация
+  const sipC=cn.sip||{}, sipAS=sipC.audiosocket||{}, sipReg=sipC.register||{};
+  const sipAsOn=!!c.SIP_ENABLED, sipRegOn=!!c.SIP_REGISTER_ENABLED;
+  const sipAsRun=!!sipAS.running, sipRegRun=!!sipReg.registered;
+  const sipOn=sipAsOn||sipRegOn;
   const priceOn=!!c.PRICE_FOLDER;
   const synOn=!!synC.enabled;
   const orgOn=(nz(orgC.count)>0);
@@ -1788,8 +1795,13 @@ function schemaRender(){
       st:tgRun?'on':(tokenSet?'warn':'na'), act:tokenSet,
       info:[tgRun?('бот работает'+(tgC.username?(' · @'+tgC.username):''))
              :(tokenSet?'токен задан, бот остановлен':'бот выключен (нет токена)')]},
-    sip:{x:20,y:440,w:170,h:50,icon:'📞',title:'Телефония (SIP)',st:sipOn?'on':'na',act:sipOn,
-      info:[sipOn?'голос. мост к АТС':'выключен','STT → RAG → TTS']},
+    sip:{x:20,y:440,w:170,h:50,icon:'📞',title:'SIP · AudioSocket',
+      st:sipAsRun?'on':(sipAsOn?'warn':'na'), act:sipAsOn,
+      info:[sipAsRun?'мост к АТС активен':(sipAsOn?'мост запущен':'выключен'),'через Asterisk · STT→RAG→TTS']},
+    sipreg:{x:20,y:500,w:170,h:50,icon:'☎️',title:'SIP · регистрация',
+      st:sipRegRun?'on':(sipRegOn?'warn':'na'), act:sipRegOn,
+      info:[sipRegRun?('зарег.'+(sipReg.server?(' · '+schModShort(sipReg.server)):''))
+             :(sipRegOn?'не зарегистрирован':'выключена'),'прямой SIP (pyVoIP)']},
     syn:{x:255,y:262,w:195,h:46,icon:'🔁',title:'Синонимы',st:synOn?'on':'na',act:synOn,
       info:[synOn?(nz(synC.count)+' терминов · расш. запроса'):'выключены']},
     route:{x:255,y:320,w:195,h:60,icon:'🔀',title:'Режим / Движок',st:'ready',act:true,
@@ -1821,7 +1833,8 @@ function schemaRender(){
     ['ingest','embed','r','l',true],['embed','qdrant','r','l',qOn],
     ['ingest','vision','b','t',visionOn],['vision','embed','r','l',visionOn],
     ['ingest','db','b','t',catPg],
-    ['ask','route','r','l',true],['tg','ask','r','l',tgRun],['sip','ask','r','l',sipOn],
+    ['ask','route','r','l',true],['tg','ask','r','l',tgRun],
+    ['sip','ask','r','l',sipAsRun],['sipreg','ask','r','l',sipRegRun],
     ['syn','route','b','t',synOn],
     ['route','search','r','l',searchOn],['route','light','r','l',lightOn],['route','kag','r','l',kagOn],
     ['search','qdrant','t','b',searchOn&&qOn],
@@ -2131,8 +2144,39 @@ async function loadSystem(){
   // Базы данных
   renderSysDb(s.database||{});
   renderSysCache(s.cache||{});
+  loadSysSip();
   applyHelp('#system .note'); applyHelp('#system .k');
   loadFiles();
+}
+// статус SIP-подключений (AudioSocket-мост + нативная регистрация)
+async function loadSysSip(){
+  if(!$('#sys_sip')) return;
+  let a={},r={};
+  try{ a=await adminGet('/api/admin/sip/status'); }catch(e){}
+  try{ r=await adminGet('/api/admin/sip/register-status'); }catch(e){}
+  const dot=(c,t)=>`<span style="color:${c}">●</span> ${t}`;
+  const yn=v=>v?'<span style="color:#4ade80">да</span>':'<span style="color:#9aa3b2">нет</span>';
+  // AudioSocket
+  const asBadge = !a.enabled?dot('#6b7280','выключен')
+    :(a.running?dot('#4ade80','слушает'):dot('#f87171','не запущен'));
+  let asHtml=`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--panel2)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <b style="font-size:14px">📞 AudioSocket-мост (Asterisk)</b><span>${asBadge}</span></div>`;
+  if(a.enabled) asHtml+=sysCards([['Адрес',esc((a.host||'')+':'+(a.port||''))],
+    ['Звонков',nz(a.calls)],['Активных',nz(a.active)],['ffmpeg',yn(a.ffmpeg)]]);
+  asHtml+=(a.error?`<div class="note" style="color:#f87171;margin-top:6px">${esc(a.error)}</div>`:'')+'</div>';
+  // SIP-регистрация
+  const rgBadge = !r.enabled?dot('#6b7280','выключена')
+    :(r.registered?dot('#4ade80','зарегистрирован'):dot('#f87171','не зарегистрирован'));
+  let rgHtml=`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--panel2)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <b style="font-size:14px">☎️ Нативная SIP-регистрация (pyVoIP)</b><span>${rgBadge}</span></div>`;
+  if(r.enabled) rgHtml+=sysCards([['Сервер',esc((r.username||'')+'@'+(r.server||'')+':'+(r.port||''))],
+    ['Звонков',nz(r.calls)],['Активных',nz(r.active)],['pyVoIP',yn(r.pyvoip)],['ffmpeg',yn(r.ffmpeg)]]);
+  rgHtml+=(r.error?`<div class="note" style="color:#f87171;margin-top:6px">${esc(r.error)}</div>`:'')+'</div>';
+  $('#sys_sip').innerHTML=asHtml+rgHtml;
+  const anyOn=a.enabled||r.enabled, anyUp=(a.enabled&&a.running)||(r.enabled&&r.registered);
+  if($('#sys_sip_badge')) $('#sys_sip_badge').textContent = !anyOn?'выключено':(anyUp?'активно':'не подключено');
 }
 function dbStatusBadge(name,info){
   if(name==='sqlite') return '<span style="color:#4ade80">● доступна</span>';
@@ -2700,6 +2744,7 @@ async function loadFiles(){
   $('#fc_summary').innerHTML=sysCards([['Всего файлов',r.total],
     ['Проиндексировано',r.indexed],['Не проиндексировано',r.not_indexed],
     ['🎤 Транскрибировано',nz(r.transcribed_count)],['🔍 Распознано',nz(r.recognized_count)],
+    ['🧠 Описано LLM',nz(r.described_count)],
     ['С ошибками',r.checked?(r.error_count||0):'—'],
     ['Общее время обработки',fmtMs(r.total_proc_ms)],
     ['Объём',fcSize(r.total_size)]])+'<div class="note" style="margin-top:8px">Источник каталога: <b>'+(r.source==='postgresql'?'PostgreSQL · doc_catalog':'папка документов')+'</b> · По типам: '+byext+'</div>'+lrNote
@@ -2715,8 +2760,9 @@ async function loadFiles(){
     // превью доступно, если файл проиндексирован (есть текст) или это визуальный тип
     const canPrev=f.indexed||['image','raw','cad','video','audio','model','pdf'].includes(fileKind(f.ext));
     const eye=canPrev?`<button class="dirbtn" title="Превью / содержимое" onclick="fcShowText('${escAttr(f.path)}',this)">👁</button> `:'';
+    const descChip=f.described?'<span class="tag" title="Описано LLM (vision-модель)">🧠 LLM</span>':'';
     return `<tr${f.error?' style="background:rgba(239,68,68,.08)"':''}>
-    <td style="max-width:340px;word-break:break-all">${eye}${esc(f.path)} ${methChip(f.method)}${f.error?`<div class="note" style="color:#f87171;margin-top:2px">${esc(f.error)}</div>`:''}</td>
+    <td style="max-width:340px;word-break:break-all">${eye}${esc(f.path)} ${methChip(f.method)}${descChip}${f.error?`<div class="note" style="color:#f87171;margin-top:2px">${esc(f.error)}</div>`:''}</td>
     <td><span class="tag">${esc(f.ext)}</span></td>
     <td>${fcSize(f.size)}</td><td>${f.chunks}</td>
     <td>${fmtMs(f.proc_ms)}</td>

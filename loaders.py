@@ -144,7 +144,7 @@ def _describe_image_part(img, page=None):
         desc = llm_backend.describe_image(img)
         if desc and desc.strip():
             return {"text": "Описание изображения (vision-модель):\n" + desc.strip(),
-                    "page": page}
+                    "page": page, "vision_desc": True}
     except Exception as e:
         print(f"  ~ описание изображения моделью не удалось: {e}")
     return None

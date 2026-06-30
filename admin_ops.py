@@ -1823,6 +1823,22 @@ def _system_info_raw() -> dict:
         }
     except Exception:
         connectors["telegram"] = {"running": False, "token_set": False}
+    try:
+        import sip_bridge
+        import sip_phone
+        as_st = getattr(sip_bridge, "_state", {})
+        rg_st = getattr(sip_phone, "_state", {})
+        connectors["sip"] = {
+            "audiosocket": {"enabled": bool(settings.get("SIP_ENABLED")),
+                            "running": bool(as_st.get("running"))},
+            "register": {"enabled": bool(settings.get("SIP_REGISTER_ENABLED")),
+                         "registered": bool(rg_st.get("registered")),
+                         "running": bool(rg_st.get("running")),
+                         "server": str(settings.get("SIP_SERVER") or "")},
+            "active": int(as_st.get("active", 0)) + int(rg_st.get("active", 0)),
+        }
+    except Exception:
+        connectors["sip"] = {}
 
     return {"qdrant": qd, "graph": graph, "finetune": ft,
             "hybrid": hybrid, "kag": kag, "usage": db.engine_usage(),
@@ -2426,12 +2442,33 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
             pass
         return out
 
+    # источники, у которых есть чанк-описание vision-модели (payload vision_desc=true)
+    def _facet_described():
+        out = set()
+        try:
+            base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
+            r = httpx.post(f"{base}/collections/{coll}/facet",
+                           json={"key": "source", "limit": 100000, "exact": True,
+                                 "filter": {"must": [{"key": "vision_desc",
+                                                      "match": {"value": True}}]}},
+                           timeout=30)
+            if r.status_code == 200:
+                for h in (r.json().get("result", {}) or {}).get("hits", []):
+                    if h.get("count", 0) > 0:
+                        out.add(h.get("value"))
+        except Exception:
+            pass
+        return out
+
     try:
         import cache
         counts = cache.get_or_set("facet:" + str(settings.get("QDRANT_COLLECTION")),
                                   60, _facet, ns="index")
+        described = cache.get_or_set("facet_desc:" + str(settings.get("QDRANT_COLLECTION")),
+                                     60, _facet_described, ns="index")
     except Exception:
         counts = _facet()
+        described = _facet_described()
 
     files, by_ext = [], {}
     total_size = indexed = 0
@@ -2476,6 +2513,10 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
     error_count = sum(1 for f in files if f["error"])
     transcribed_count = sum(1 for f in files if f["method"] == "transcribed")
     recognized_count = sum(1 for f in files if f["method"] in ("ocr", "tool"))
+    described = described or set()
+    described_count = sum(1 for f in files if f["path"] in described)
+    for f in files:                       # пометка для строки таблицы
+        f["described"] = f["path"] in described
     # суммарное время обработки по всем известным файлам (мс) и сводка последнего прогона
     total_proc_ms = sum(v for v in proc_map.values() if isinstance(v, (int, float)))
     last_run = istats.get("last_run") or {}
@@ -2510,6 +2551,7 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
             "err_truncated": err_truncated,
             "transcribed_count": transcribed_count,
             "recognized_count": recognized_count,
+            "described_count": described_count,
             "total_proc_ms": total_proc_ms, "timed_files": len(proc_map),
             "last_run": last_run,
             "by_ext": by_ext, "files": page,

@@ -167,6 +167,9 @@ TTS_VOICE = os.getenv("TTS_VOICE", "")
 # Фолбэк, когда обычный поиск не нашёл ответа: лексический (полнотекст/имена файлов),
 # затем «глубокий» (LLM выбирает файлы по списку имён). По умолчанию выключен.
 NO_ANSWER_FALLBACK = _bool("NO_ANSWER_FALLBACK", False)
+# Не показывать источники/«дополнительные документы», если ответ — честное
+# «В доступных документах нет точного ответа на этот вопрос».
+HIDE_SOURCES_IF_NO_ANSWER = _bool("HIDE_SOURCES_IF_NO_ANSWER", False)
 
 WEB_CRAWL_DEPTH = _int("WEB_CRAWL_DEPTH", 1)
 WEB_MAX_PAGES = _int("WEB_MAX_PAGES", 20)

@@ -780,7 +780,9 @@ def _handle(msg: dict) -> None:
     parts = []
     if show_answer and ans:
         parts.append(ans)
-    if sources:
+    # по настройке не показывать источники, если ответ — честное «нет точного ответа»
+    hide_src = settings.get("HIDE_SOURCES_IF_NO_ANSWER") and prompts.is_no_answer(ans)
+    if sources and not hide_src:
         srctxt = "; ".join(s["source"] + (f", с.{s['page']}" if s.get("page") else "")
                            for s in sources[:6])
         parts.append(f"📎 Источники: {srctxt}")
@@ -797,7 +799,7 @@ def _handle(msg: dict) -> None:
     kb = _feedback_kb(rid) if (rid and settings.get("TELEGRAM_FEEDBACK")) else None
     send(chat_id, out, reply_markup=kb)
     # визуальные превью источников (картинки/чертежи/кадры видео/аудио) — как в веб-чате
-    if answered and settings.get("TELEGRAM_PREVIEWS"):
+    if answered and settings.get("TELEGRAM_PREVIEWS") and not hide_src:
         try:
             _send_previews(chat_id, hits)
         except Exception as e:

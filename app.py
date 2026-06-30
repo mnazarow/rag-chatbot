@@ -236,7 +236,9 @@ async def chat(req: ChatRequest):
                 for i in range(0, len(ktext), 40):
                     yield json.dumps({"type": "answer", "text": ktext[i:i + 40]},
                                      ensure_ascii=False) + "\n"
-                yield json.dumps({"type": "sources", "items": ksources},
+                _ksrc = ([] if (settings.get("HIDE_SOURCES_IF_NO_ANSWER")
+                                and prompts.is_no_answer(ktext)) else ksources)
+                yield json.dumps({"type": "sources", "items": _ksrc},
                                  ensure_ascii=False) + "\n"
                 lat = int((time.time() - t0) * 1000)
                 top = round(khits[0].get("score", 0.0), 3) if khits else 0.0
@@ -275,8 +277,10 @@ async def chat(req: ChatRequest):
                 for i in range(0, len(text), 40):
                     yield json.dumps({"type": "answer", "text": text[i:i + 40]},
                                      ensure_ascii=False) + "\n"
-                yield json.dumps({"type": "sources",
-                                  "items": [{"source": "граф знаний (LightRAG)", "page": None}]},
+                _gsrc = ([] if (settings.get("HIDE_SOURCES_IF_NO_ANSWER")
+                                and prompts.is_no_answer(text))
+                         else [{"source": "граф знаний (LightRAG)", "page": None}])
+                yield json.dumps({"type": "sources", "items": _gsrc},
                                  ensure_ascii=False) + "\n"
                 lat = int((time.time() - t0) * 1000)
                 if req.debug:
@@ -316,7 +320,9 @@ async def chat(req: ChatRequest):
                 for i in range(0, len(txt), 40):
                     yield json.dumps({"type": "answer", "text": txt[i:i + 40]},
                                      ensure_ascii=False) + "\n"
-                yield json.dumps({"type": "sources", "items": cached.get("sources", [])},
+                _csrc = ([] if (settings.get("HIDE_SOURCES_IF_NO_ANSWER")
+                                and prompts.is_no_answer(txt)) else cached.get("sources", []))
+                yield json.dumps({"type": "sources", "items": _csrc},
                                  ensure_ascii=False) + "\n"
                 lat = int((time.time() - t0) * 1000)
                 if req.debug:
@@ -399,7 +405,10 @@ async def chat(req: ChatRequest):
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         gen_ms = max(0, int((time.time() - t0) * 1000) - retrieve_ms)
         yield _stg("generate", "done", {"chars": len("".join(acc)), "ms": gen_ms}, gen_ms)
-        yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
+        out_sources = sources
+        if settings.get("HIDE_SOURCES_IF_NO_ANSWER") and prompts.is_no_answer("".join(acc)):
+            out_sources = []
+        yield json.dumps({"type": "sources", "items": out_sources}, ensure_ascii=False) + "\n"
         latency = int((time.time() - t0) * 1000)
         if req.debug:
             yield json.dumps({"type": "debug", "info": {
@@ -538,7 +547,9 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield _stg("generate", "done", {"chars": len("".join(acc))})
-        yield json.dumps({"type": "sources", "items": sources}, ensure_ascii=False) + "\n"
+        _dsrc = ([] if (settings.get("HIDE_SOURCES_IF_NO_ANSWER")
+                        and prompts.is_no_answer("".join(acc))) else sources)
+        yield json.dumps({"type": "sources", "items": _dsrc}, ensure_ascii=False) + "\n"
         latency = int((time.time() - t0) * 1000)
         if debug in ("1", "true", "on", "yes"):
             yield json.dumps({"type": "debug", "info": {
