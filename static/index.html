@@ -1676,7 +1676,9 @@ function schemaRender(){
   const q=s.qdrant||{}, gr=s.graph||{}, ca=s.cache||{}, dbi=s.database||{}, cn=s.connectors||{};
   const eng=c.ENGINE||'vector';
   const graphRag=!!c.GRAPH_RAG;
-  const tokenSet=!!(c.TELEGRAM_BOT_TOKEN&&String(c.TELEGRAM_BOT_TOKEN).length);
+  const tgC=(s.connectors||{}).telegram||{};
+  const tokenSet=!!tgC.token_set || !!(c.TELEGRAM_BOT_TOKEN&&String(c.TELEGRAM_BOT_TOKEN).length);
+  const tgRun=!!tgC.running;
   const catPg=(c.CATALOG_SOURCE==='postgresql');
   const redisOn=!!c.REDIS_ENABLED;
   const modeL={basic:'Базовый',meta:'С метаданными',hybrid:'Hybrid+'}[c.MODE]||c.MODE||'—';
@@ -1714,8 +1716,10 @@ function schemaRender(){
     qdrant:{x:775,y:84,w:185,h:60,icon:'🗄',title:'Qdrant',st:qOn?(q.collection_exists?'on':'warn'):'off',act:qOn,
       info:[qOn?((nz(q.points))+' чанков'):'недоступен', c.QDRANT_COLLECTION||'']},
     ask:{x:20,y:320,w:170,h:50,icon:'💬',title:'Вопрос',st:'ready',act:true,info:['пользователь / API']},
-    tg:{x:20,y:380,w:170,h:50,icon:'✈️',title:'Telegram',st:tokenSet?'on':'na',act:tokenSet,
-      info:[tokenSet?'бот включён':'бот выключен']},
+    tg:{x:20,y:380,w:170,h:50,icon:'✈️',title:'Telegram',
+      st:tgRun?'on':(tokenSet?'warn':'na'), act:tokenSet,
+      info:[tgRun?('бот работает'+(tgC.username?(' · @'+tgC.username):''))
+             :(tokenSet?'токен задан, бот остановлен':'бот выключен (нет токена)')]},
     sip:{x:20,y:440,w:170,h:50,icon:'📞',title:'Телефония (SIP)',st:sipOn?'on':'na',act:sipOn,
       info:[sipOn?'голос. мост к АТС':'выключен','STT → RAG → TTS']},
     syn:{x:255,y:262,w:195,h:46,icon:'🔁',title:'Синонимы',st:synOn?'on':'na',act:synOn,
@@ -1749,7 +1753,7 @@ function schemaRender(){
     ['ingest','embed','r','l',true],['embed','qdrant','r','l',qOn],
     ['ingest','vision','b','t',visionOn],['vision','embed','r','l',visionOn],
     ['ingest','db','b','t',catPg],
-    ['ask','route','r','l',true],['tg','ask','r','l',tokenSet],['sip','ask','r','l',sipOn],
+    ['ask','route','r','l',true],['tg','ask','r','l',tgRun],['sip','ask','r','l',sipOn],
     ['syn','route','b','t',synOn],
     ['route','search','r','l',searchOn],['route','light','r','l',lightOn],['route','kag','r','l',kagOn],
     ['search','qdrant','t','b',searchOn&&qOn],

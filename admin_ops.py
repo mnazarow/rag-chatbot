@@ -1813,6 +1813,16 @@ def _system_info_raw() -> dict:
         }
     except Exception:
         connectors["api_hooks"] = {"total": 0, "enabled": 0}
+    try:
+        import telegram_bot
+        connectors["telegram"] = {
+            "running": bool(telegram_bot._state.get("running")),
+            "token_set": bool((settings.get("TELEGRAM_BOT_TOKEN") or "").strip()),
+            "username": telegram_bot._state.get("username"),
+            "error": telegram_bot._state.get("error"),
+        }
+    except Exception:
+        connectors["telegram"] = {"running": False, "token_set": False}
 
     return {"qdrant": qd, "graph": graph, "finetune": ft,
             "hybrid": hybrid, "kag": kag, "usage": db.engine_usage(),
