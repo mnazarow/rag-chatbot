@@ -224,11 +224,53 @@ def _load_pptx(path: Path):
             yield {"text": "\n".join(chunks), "page": i}
 
 
+def _read_csv_any(path: Path, pd):
+    """Прочитать CSV с авто-определением кодировки и разделителя.
+    Поддерживает UTF-8/UTF-8-BOM, Windows-1251 (кириллица), Latin-1 и др.;
+    разделитель — , ; \\t |."""
+    import io
+    raw = path.read_bytes()
+    # 1) кодировка: сначала пробуем определитель, затем типичные варианты
+    encodings: list[str] = []
+    try:
+        import charset_normalizer
+        best = charset_normalizer.from_bytes(raw).best()
+        if best and best.encoding:
+            encodings.append(best.encoding)
+    except Exception:
+        pass
+    for e in ("utf-8-sig", "cp1251", "latin-1"):
+        if e not in encodings:
+            encodings.append(e)
+    text = None
+    for e in encodings:
+        try:
+            text = raw.decode(e)
+            break
+        except Exception:
+            continue
+    if text is None:
+        text = raw.decode("utf-8", errors="replace")
+    # 2) разделитель: Sniffer, иначе — самый частый в первой строке
+    import csv as _csv
+    sample = text[:8192]
+    sep = ","
+    try:
+        sep = _csv.Sniffer().sniff(sample, delimiters=";,\t|").delimiter
+    except Exception:
+        first = (sample.splitlines() or [""])[0]
+        cand = max((";", ",", "\t", "|"), key=lambda d: first.count(d))
+        if first.count(cand) > 0:
+            sep = cand
+    return pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False,
+                       sep=sep, engine="python")
+
+
 def _load_table(path: Path):
     """Прайс-листы и таблицы: каждую строку превращаем в 'колонка: значение'."""
     import pandas as pd
     if path.suffix.lower() == ".csv":
-        frames = {"csv": pd.read_csv(path, dtype=str, keep_default_na=False)}
+        frames = {"csv": _read_csv_any(path, pd)}
     else:
         frames = pd.read_excel(path, sheet_name=None, dtype=str)
     for sheet, df in frames.items():
