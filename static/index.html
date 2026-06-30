@@ -217,6 +217,7 @@
       <h3>🧠 Запросы к LLM <span id="llmact_count" class="tag"></span>
         <span class="note" style="font-weight:400;margin-left:8px">в реальном времени</span></h3>
       <div class="note" style="margin-bottom:8px">Вызовы модели: генерация ответов (чат/Телеграм), описание изображений vision-моделью и служебные вызовы (фильтр запроса, API-интент). Показаны выполняемые сейчас и недавно завершённые. Обновляется автоматически.</div>
+      <div id="llmact_queue" style="margin-bottom:10px"></div>
       <div style="overflow:auto;max-height:42vh"><table><thead><tr><th>Статус</th><th>Тип</th><th>Модель</th><th>Запрос</th><th>Вывод</th><th>Время</th></tr></thead>
       <tbody id="llmact_rows"></tbody></table></div>
     </div>
@@ -1682,6 +1683,28 @@ async function loadLlmActivity(){
   const r=d.running||0;
   if($('#llmact_count')) $('#llmact_count').textContent = r? (r+' выполняется') : 'нет активных';
   $('#llmact_rows').innerHTML = rows.length ? rows.join('') : emptyRow(6);
+  // визуализация очереди к LLM
+  const qe=$('#llmact_queue'); if(qe){
+    const qd=d.queue||{};
+    if(!qd.enabled){
+      qe.innerHTML=`<div class="note">Очередь к LLM: <b>без ограничения</b> · выполняется <b>${r}</b>. `
+        +`Лимит одновременных запросов — в настройках (Генерация (LLM) → «Очередь к LLM»).</div>`;
+    } else {
+      const mx=qd.max||0, run=qd.running||0, wait=qd.waiting||0;
+      // ячейки слотов: занятые (зелёные) / свободные (серые)
+      let cells='';
+      for(let i=0;i<mx;i++){ const on=i<run;
+        cells+=`<span style="display:inline-block;width:18px;height:18px;border-radius:4px;margin-right:4px;background:${on?'#34d399':'var(--panel2)'};border:1px solid ${on?'#34d399':'var(--line)'}"></span>`; }
+      const waitBadge = wait>0
+        ? `<span class="tag" style="background:#f59e0b22;color:#f59e0b">⏳ в очереди: ${wait}</span>`
+        : `<span class="tag ok">очередь пуста</span>`;
+      qe.innerHTML=`<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div><b>Очередь к LLM</b> <span class="note">лимит ${mx}</span></div>
+        <div title="Занято ${run} из ${mx} слотов">${cells}</div>
+        <div>выполняется <b>${run}</b> / ${mx}</div>
+        <div>${waitBadge}</div></div>`;
+    }
+  }
 }
 
 // ---- дашборд ----

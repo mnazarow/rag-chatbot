@@ -44,7 +44,8 @@ markdown-it-py==3.0.0
 mlx-whisper==0.4.2         # Whisper на Apple Silicon (Metal)
 
 # --- телефония: нативная SIP-регистрация (опционально; AudioSocket работает без неё) ---
-pyVoIP==1.6.8              # SIP-клиент + RTP (PCMU/PCMA) для режима SIP-регистрации
+pyVoIP==1.6.9              # SIP-клиент + RTP (PCMU/PCMA) для режима SIP-регистрации
+audioop-lts; python_version >= "3.13"   # audioop удалён из stdlib в 3.13 — нужен pyVoIP/RTP
 
 # --- внешние БД и кэш (опционально; SQLite работает без них) ---
 PyMySQL==1.1.1           # бэкенд MySQL/MariaDB для журнала и настроек

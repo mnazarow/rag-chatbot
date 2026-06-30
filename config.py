@@ -32,6 +32,10 @@ LLM_BACKEND = os.getenv("LLM_BACKEND", "ollama")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:8001/v1")  # для vLLM
 LLM_API_KEY = os.getenv("LLM_API_KEY", "EMPTY")
+# Очередь к LLM: максимум одновременных запросов к модели (генерация, vision и т. п.).
+# Остальные ждут своей очереди. 0 — без ограничения. Защищает перегруженную модель/GPU.
+LLM_MAX_CONCURRENCY = _int("LLM_MAX_CONCURRENCY", 0)
+LLM_QUEUE_TIMEOUT = _int("LLM_QUEUE_TIMEOUT", 120)   # макс. ожидание в очереди, с (0 — без лимита)
 
 # Qdrant
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")

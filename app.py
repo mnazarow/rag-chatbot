@@ -730,7 +730,13 @@ def api_llm_activity(limit: int = 60):
     изображений vision-моделью и служебные вызовы (фильтр запроса, API-интент и т. п.) —
     что выполняется сейчас и недавно завершилось, с моделью, объёмом вывода и временем."""
     import llm_activity
-    return llm_activity.snapshot(min(max(int(limit), 1), 200))
+    snap = llm_activity.snapshot(min(max(int(limit), 1), 200))
+    try:
+        import llm_queue
+        snap["queue"] = llm_queue.stats()
+    except Exception:
+        snap["queue"] = {}
+    return snap
 
 
 # ===================== Структура компании =====================
