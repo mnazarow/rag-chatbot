@@ -220,7 +220,8 @@ def _ddl(d: str) -> list[str]:
         return [
             """CREATE TABLE IF NOT EXISTS requests(
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                ts DOUBLE, day VARCHAR(16), question MEDIUMTEXT, category VARCHAR(128),
+                ts DOUBLE, day VARCHAR(16), question MEDIUMTEXT, answer LONGTEXT,
+                category VARCHAR(128),
                 n_hits INT, top_score DOUBLE, latency_ms INT,
                 answer_chars INT, answered INT, sources MEDIUMTEXT,
                 rating INT, retrieve_ms INT, gen_ms INT, session_id VARCHAR(80),
@@ -284,7 +285,7 @@ def _ddl(d: str) -> list[str]:
         return [
             """CREATE TABLE IF NOT EXISTS requests(
                 id BIGSERIAL PRIMARY KEY,
-                ts DOUBLE PRECISION, day TEXT, question TEXT, category TEXT,
+                ts DOUBLE PRECISION, day TEXT, question TEXT, answer TEXT, category TEXT,
                 n_hits INTEGER, top_score DOUBLE PRECISION, latency_ms INTEGER,
                 answer_chars INTEGER, answered INTEGER, sources TEXT,
                 rating INTEGER, retrieve_ms INTEGER, gen_ms INTEGER, session_id TEXT,
@@ -341,7 +342,7 @@ def _ddl(d: str) -> list[str]:
     return [
         """CREATE TABLE IF NOT EXISTS requests(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts REAL, day TEXT, question TEXT, category TEXT,
+            ts REAL, day TEXT, question TEXT, answer TEXT, category TEXT,
             n_hits INTEGER, top_score REAL, latency_ms INTEGER,
             answer_chars INTEGER, answered INTEGER, sources TEXT,
             rating INTEGER, retrieve_ms INTEGER, gen_ms INTEGER, session_id TEXT,
@@ -452,6 +453,12 @@ def init(dialect: str | None = None) -> None:
             cur.execute(f"ALTER TABLE requests ADD COLUMN comment {_cmt_t}")
         except Exception:
             pass
+        # миграция: текст ответа в журнале веб-чата (старые базы)
+        _ans_t = {"mysql": "LONGTEXT", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        try:
+            cur.execute(f"ALTER TABLE requests ADD COLUMN answer {_ans_t}")
+        except Exception:
+            pass
         if dd == "sqlite":
             conn.commit()
     finally:
@@ -470,16 +477,17 @@ def log_request(question: str, category: str | None, n_hits: int,
                 top_score: float, latency_ms: int, answer_chars: int,
                 answered: bool, sources: list,
                 retrieve_ms: int = 0, gen_ms: int = 0,
-                session_id: str = "") -> int:
+                session_id: str = "", answer: str = "") -> int:
     now = datetime.now()
+    ans = (answer or "")[:20000]   # текст ответа (для журнала); ограничиваем размер
     try:
         with _LOCK:
             rid = _insert(
                 """INSERT INTO requests
-                   (ts,day,question,category,n_hits,top_score,latency_ms,
+                   (ts,day,question,answer,category,n_hits,top_score,latency_ms,
                     answer_chars,answered,sources,retrieve_ms,gen_ms,session_id)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (now.timestamp(), now.strftime("%Y-%m-%d"), question, category,
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (now.timestamp(), now.strftime("%Y-%m-%d"), question, ans, category,
                  n_hits, round(top_score, 4), latency_ms, answer_chars,
                  int(answered), json.dumps(sources, ensure_ascii=False),
                  int(retrieve_ms), int(gen_ms), session_id or ""),
@@ -521,8 +529,8 @@ def recent_all(limit: int = 100) -> list[dict]:
     lim = int(limit)
     out = []
     try:
-        web = _all("SELECT id, ts, question, answered, top_score, rating, comment "
-                   "FROM requests ORDER BY id DESC LIMIT ?", (lim,))
+        web = _all("SELECT id, ts, question, answer, answered, top_score, rating, "
+                   "comment FROM requests ORDER BY id DESC LIMIT ?", (lim,))
         for w in web:
             w["channel"] = "web"
             w["username"] = None
@@ -530,8 +538,8 @@ def recent_all(limit: int = 100) -> list[dict]:
     except Exception as e:
         print(f"[db] recent_all web: {e}")
     try:
-        tg = _all("SELECT id, ts, username, question, answered, top_score, rating, "
-                  "comment FROM tg_requests ORDER BY id DESC LIMIT ?", (lim,))
+        tg = _all("SELECT id, ts, username, question, answer, answered, top_score, "
+                  "rating, comment FROM tg_requests ORDER BY id DESC LIMIT ?", (lim,))
         for t in tg:
             t["channel"] = "telegram"
         out += tg
@@ -870,9 +878,9 @@ def tg_clear_history() -> int:
 
 # Полные списки колонок (с явным id для сохранения связей оценок/истории).
 _TABLES = {
-    "requests": ["id", "ts", "day", "question", "category", "n_hits", "top_score",
-                 "latency_ms", "answer_chars", "answered", "sources", "rating",
-                 "retrieve_ms", "gen_ms", "session_id", "comment"],
+    "requests": ["id", "ts", "day", "question", "answer", "category", "n_hits",
+                 "top_score", "latency_ms", "answer_chars", "answered", "sources",
+                 "rating", "retrieve_ms", "gen_ms", "session_id", "comment"],
     "tg_users": ["chat_id", "username", "first_name", "status", "created", "updated",
                  "n_requests", "can_train", "mode", "emp_email", "emp_name", "emp_info"],
     "tg_requests": ["id", "ts", "day", "chat_id", "username", "question", "answer",

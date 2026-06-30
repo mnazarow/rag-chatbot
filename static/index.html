@@ -306,7 +306,7 @@
     <h1>Журнал запросов</h1>
     <div class="sub">Все обращения сотрудников — веб-чат и Телеграм <button class="act ghost" onclick="loadLogs()">Обновить</button></div>
     <div class="box" style="max-height:70vh;overflow:auto">
-      <table><thead><tr><th>Время</th><th>Канал</th><th>Вопрос</th><th>Статус</th><th>Оценка</th><th>Комментарий</th></tr></thead>
+      <table><thead><tr><th>Время</th><th>Канал</th><th>Вопрос</th><th>Ответ</th><th>Статус</th><th>Оценка</th><th>Комментарий</th></tr></thead>
       <tbody id="logrows"></tbody></table>
     </div>
   </section>
@@ -1547,6 +1547,9 @@ const fmtTime = ts => new Date(ts*1000).toLocaleString('ru-RU',{day:'2-digit',mo
 function ratingBadge(r){ return r===1?'<span class="tag ok">👍</span>':(r===-1?'<span class="tag no">👎</span>':'<span class="note">—</span>'); }
 function commentCell(c){ c=(c||'').trim(); if(!c) return '<span class="note">—</span>';
   return `<span title="${escAttr(c)}">💬 ${esc(c.length>60?c.slice(0,60)+'…':c)}</span>`; }
+function answerCell(a){ a=(a||'').trim(); if(!a) return '<span class="note">—</span>';
+  const sh=a.length>140?a.slice(0,140)+'…':a;
+  return `<span title="${escAttr(a)}" style="white-space:pre-wrap">${esc(sh)}</span>`; }
 
 // ---- навигация ----
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
@@ -1662,7 +1665,7 @@ function schemaApplyAnim(){ const w=$('#schemawrap'); if(w) w.classList.toggle('
 function schemaRender(){
   const wrap=$('#schemawrap'); if(!wrap) return;
   const c=SCH_CFG, s=SCH_SYS;
-  const q=s.qdrant||{}, gr=s.graph||{}, ca=s.cache||{}, dbi=s.database||{};
+  const q=s.qdrant||{}, gr=s.graph||{}, ca=s.cache||{}, dbi=s.database||{}, cn=s.connectors||{};
   const eng=c.ENGINE||'vector';
   const graphRag=!!c.GRAPH_RAG;
   const tokenSet=!!(c.TELEGRAM_BOT_TOKEN&&String(c.TELEGRAM_BOT_TOKEN).length);
@@ -1675,50 +1678,76 @@ function schemaRender(){
   const lightOn=(eng==='lightrag'||graphRag);
   const kagOn=(eng==='kag');
   const qOn=!!q.online;
+  // дополнительные коннекторы
+  const synC=cn.synonyms||{}, orgC=cn.org||{}, hookC=cn.api_hooks||{};
+  const visionOn=!!c.OCR_LLM_DESCRIBE;
+  const sipOn=!!c.SIP_ENABLED;
+  const priceOn=!!c.PRICE_FOLDER;
+  const synOn=!!synC.enabled;
+  const orgOn=(nz(orgC.count)>0);
+  const hooksOn=(nz(hookC.enabled)>0);
   // узлы
   const N={
-    docs:{x:20,y:30,w:170,h:54,icon:'📁',title:'Документы/Excel',st:'ready',act:true,
+    docs:{x:20,y:30,w:170,h:50,icon:'📁',title:'Документы/Excel',st:'ready',act:true,
       info:[ (c.DOCS_DIR?('папка: '+schShortPath(c.DOCS_DIR)):'папка не задана'), catPg?'каталог: PostgreSQL':'каталог: файлы']},
-    web:{x:20,y:98,w:170,h:54,icon:'🌐',title:'Сайты (парсинг)',st:'ready',act:true,
+    web:{x:20,y:90,w:170,h:50,icon:'🌐',title:'Сайты (парсинг)',st:'ready',act:true,
       info:['глубина '+nz(c.WEB_CRAWL_DEPTH)+' · стр '+nz(c.WEB_MAX_PAGES), 'файлов до '+nz(c.WEB_MAX_FILES)]},
-    upload:{x:20,y:166,w:170,h:54,icon:'⬆️',title:'Загрузка файлов',st:'ready',act:true,info:['файлы/папки до 100 ГБ']},
-    ingest:{x:255,y:96,w:195,h:62,icon:'⚙️',title:'Ингест + чанки',st:'ready',act:true,
+    upload:{x:20,y:150,w:170,h:50,icon:'⬆️',title:'Загрузка файлов',st:'ready',act:true,info:['файлы/папки до 100 ГБ']},
+    org:{x:20,y:210,w:170,h:50,icon:'👥',title:'Справочник',st:orgOn?'on':'na',act:orgOn,
+      info:[orgOn?(nz(orgC.count)+' сотрудников'):'не загружен','синхрон. по URL раз в час']},
+    ingest:{x:255,y:84,w:195,h:60,icon:'⚙️',title:'Ингест + чанки',st:'ready',act:true,
       info:['чанк '+nz(c.CHUNK_SIZE)+'/'+nz(c.CHUNK_OVERLAP)+' · потоки '+(c.INGEST_WORKERS||'авто'),
         'batch '+nz(c.EMBED_BATCH)+' · '+schFlags(c)]},
-    embed:{x:520,y:96,w:185,h:62,icon:'🔤',title:'Эмбеддер',st:qOn?'on':'ready',act:true,
+    vision:{x:255,y:166,w:195,h:54,icon:'👁',title:'Vision-описание',st:visionOn?'on':'na',act:visionOn,
+      info:[visionOn?('при OCR ≤ '+nz(c.OCR_LLM_MAX_CHUNKS)+' чанк.'):'выключено',
+        schModShort(c.VISION_MODEL||activeModel)]},
+    embed:{x:520,y:84,w:185,h:60,icon:'🔤',title:'Эмбеддер',st:qOn?'on':'ready',act:true,
       info:[schModShort(c.EMBED_MODEL), 'устройство: '+(c.DEVICE||'—')]},
-    qdrant:{x:775,y:96,w:185,h:62,icon:'🗄',title:'Qdrant',st:qOn?(q.collection_exists?'on':'warn'):'off',act:qOn,
+    qdrant:{x:775,y:84,w:185,h:60,icon:'🗄',title:'Qdrant',st:qOn?(q.collection_exists?'on':'warn'):'off',act:qOn,
       info:[qOn?((nz(q.points))+' чанков'):'недоступен', c.QDRANT_COLLECTION||'']},
-    ask:{x:20,y:300,w:170,h:54,icon:'💬',title:'Вопрос',st:'ready',act:true,info:['пользователь / API']},
-    tg:{x:20,y:368,w:170,h:54,icon:'✈️',title:'Telegram',st:tokenSet?'on':'na',act:tokenSet,
+    ask:{x:20,y:320,w:170,h:50,icon:'💬',title:'Вопрос',st:'ready',act:true,info:['пользователь / API']},
+    tg:{x:20,y:380,w:170,h:50,icon:'✈️',title:'Telegram',st:tokenSet?'on':'na',act:tokenSet,
       info:[tokenSet?'бот включён':'бот выключен']},
-    route:{x:255,y:300,w:195,h:62,icon:'🔀',title:'Режим / Движок',st:'ready',act:true,
+    sip:{x:20,y:440,w:170,h:50,icon:'📞',title:'Телефония (SIP)',st:sipOn?'on':'na',act:sipOn,
+      info:[sipOn?'голос. мост к АТС':'выключен','STT → RAG → TTS']},
+    syn:{x:255,y:262,w:195,h:46,icon:'🔁',title:'Синонимы',st:synOn?'on':'na',act:synOn,
+      info:[synOn?(nz(synC.count)+' терминов · расш. запроса'):'выключены']},
+    route:{x:255,y:320,w:195,h:60,icon:'🔀',title:'Режим / Движок',st:'ready',act:true,
       info:['режим: '+modeL, 'движок: '+engL+(c.SMART_FILTER?' · умн.фильтр':(c.AUTO_FILTER?' · авто-фильтр':''))]},
-    search:{x:520,y:250,w:185,h:60,icon:'🔎',title:'Поиск + реранк',st:searchOn?(qOn?'on':'off'):'na',act:searchOn,
+    search:{x:520,y:262,w:185,h:56,icon:'🔎',title:'Поиск + реранк',st:searchOn?(qOn?'on':'off'):'na',act:searchOn,
       info:['top '+nz(c.TOP_K_RETRIEVE)+'→'+nz(c.TOP_K_RERANK)+' · порог '+nz(c.MIN_SCORE), schModShort(c.RERANK_MODEL)]},
-    light:{x:520,y:322,w:185,h:60,icon:'🧠',title:'LightRAG (граф)',st:gr.ready?'on':(lightOn?'warn':'na'),act:lightOn,
+    light:{x:520,y:330,w:185,h:56,icon:'🧠',title:'LightRAG (граф)',st:gr.ready?'on':(lightOn?'warn':'na'),act:lightOn,
       info:[gr.ready?(nz(gr.entities)+' сущн · '+nz(gr.relations)+' связей'):'граф не построен','режим '+(c.GRAPH_MODE||'—')]},
-    kag:{x:520,y:394,w:185,h:60,icon:'🪢',title:'KAG',st:kagOn?'on':'na',act:kagOn,
+    kag:{x:520,y:398,w:185,h:56,icon:'🪢',title:'KAG',st:kagOn?'on':'na',act:kagOn,
       info:['шагов '+nz(c.KAG_MAX_HOPS)+' · фрагм '+nz(c.KAG_CONTEXT_CHUNKS), c.KAG_GRAPH?'+ знания графа':'без графа']},
-    llm:{x:775,y:300,w:185,h:62,icon:'🧩',title:'LLM-генерация',st:'ready',act:true,
+    price:{x:520,y:466,w:185,h:50,icon:'🏷',title:'Прайс-папка',st:priceOn?'on':'na',act:priceOn,
+      info:[priceOn?('top '+nz(c.PRICE_TOP_K)+' без индексации'):'выключена',
+        priceOn?schShortPath(c.PRICE_DIR):'']},
+    api:{x:520,y:528,w:185,h:50,icon:'🔌',title:'API-хуки',st:hooksOn?'on':'na',act:hooksOn,
+      info:[hooksOn?(nz(hookC.enabled)+' активн. из '+nz(hookC.total)):'нет активных','внешние данные в контекст']},
+    llm:{x:775,y:320,w:185,h:60,icon:'🧩',title:'LLM-генерация',st:'ready',act:true,
       info:[(c.LLM_BACKEND||'—')+' · '+schModShort(activeModel), c.USE_FINETUNED?'дообученная (LoRA)':'базовая модель']},
-    ans:{x:990,y:200,w:160,h:62,icon:'✅',title:'Ответ',st:'ready',act:true,
+    ans:{x:990,y:220,w:160,h:60,icon:'✅',title:'Ответ',st:'ready',act:true,
       info:['со ссылками на источники', c.NO_ANSWER_FALLBACK?'+ доп. поиск если нет':'честное «не знаю»']},
-    db:{x:255,y:480,w:195,h:50,icon:'🗃',title:'База данных',st:'on',act:true,
+    db:{x:255,y:620,w:195,h:48,icon:'🗃',title:'База данных',st:'on',act:true,
       info:[(dbi.active||c.DB_BACKEND||'sqlite')+' · журнал/настройки']},
-    redis:{x:520,y:484,w:185,h:46,icon:'⚡',title:'Redis-кэш',st:redisOn?(ca.reachable?'on':'off'):'na',act:redisOn,
+    redis:{x:775,y:620,w:185,h:48,icon:'⚡',title:'Redis-кэш',st:redisOn?(ca.reachable?'on':'off'):'na',act:redisOn,
       info:[redisOn?(ca.reachable?'онлайн':'оффлайн'):'выключен', c.ANSWER_CACHE?'+ кэш ответов':'кэш данных']},
-    remote:{x:775,y:482,w:300,h:48,icon:'☁️',title:'Удалённые хосты',st:'na',act:false,info:['Qdrant / vLLM (опционально)']},
+    remote:{x:990,y:620,w:160,h:48,icon:'☁️',title:'Удалённые хосты',st:'na',act:false,info:['Qdrant / vLLM']},
   };
   const E=[
     ['docs','ingest','r','l',true],['web','ingest','r','l',true],['upload','ingest','r','l',true],
+    ['org','ingest','r','l',orgOn],
     ['ingest','embed','r','l',true],['embed','qdrant','r','l',qOn],
+    ['ingest','vision','b','t',visionOn],['vision','embed','r','l',visionOn],
     ['ingest','db','b','t',catPg],
-    ['ask','route','r','l',true],['tg','ask','r','l',tokenSet],
+    ['ask','route','r','l',true],['tg','ask','r','l',tokenSet],['sip','ask','r','l',sipOn],
+    ['syn','route','b','t',synOn],
     ['route','search','r','l',searchOn],['route','light','r','l',lightOn],['route','kag','r','l',kagOn],
     ['search','qdrant','t','b',searchOn&&qOn],
     ['kag','light','t','b',kagOn&&!!c.KAG_GRAPH],
     ['search','llm','r','l',searchOn],['light','llm','r','l',lightOn],['kag','llm','r','l',kagOn],
+    ['price','llm','r','b',priceOn],['api','llm','r','b',hooksOn],
     ['llm','ans','r','t',true],
     ['redis','search','t','b',redisOn],['redis','llm','t','b',redisOn],
     ['qdrant','remote','b','t',false],
@@ -1731,17 +1760,17 @@ function schemaRender(){
   const dot={on:'#22c55e',off:'#ef4444',warn:'#f59e0b',na:'#6b7280',ready:'#3b82f6'};
   let nodes='';
   for(const id in N){ const n=N[id];
-    const inf=(n.info||[]).slice(0,2).map((t,i)=>`<text x="${n.x+12}" y="${n.y+38+i*14}" font-size="10.5" fill="var(--muted)">${esc(t)}</text>`).join('');
+    const inf=(n.info||[]).slice(0,2).map((t,i)=>`<text x="${n.x+12}" y="${n.y+36+i*13}" font-size="10.5" fill="var(--muted)">${esc(t)}</text>`).join('');
     nodes+=`<g class="sch-node ${n.act?'active':''}" data-id="${id}">
       <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="11" fill="var(--panel2)" stroke="${n.act?'var(--accent)':'var(--line)'}" stroke-width="1.5"/>
       <circle cx="${n.x+n.w-14}" cy="${n.y+14}" r="5.5" fill="${dot[n.st]||'#6b7280'}"><title>${n.st}</title></circle>
       <text x="${n.x+12}" y="${n.y+22}" font-size="12.5" fill="var(--txt)" font-weight="700">${esc(n.icon+' '+n.title)}</text>${inf}</g>`;
   }
-  wrap.innerHTML=`<svg viewBox="0 0 1170 545" width="100%" style="min-width:900px" xmlns="http://www.w3.org/2000/svg">
+  wrap.innerHTML=`<svg viewBox="0 0 1170 685" width="100%" style="min-width:900px" xmlns="http://www.w3.org/2000/svg">
     <defs><marker id="scharr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6b7280"/></marker></defs>
     <text x="20" y="18" font-size="11" fill="var(--muted)">ИНДЕКСАЦИЯ</text>
-    <text x="20" y="288" font-size="11" fill="var(--muted)">ОТВЕТ НА ВОПРОС</text>
-    <text x="255" y="472" font-size="11" fill="var(--muted)">ИНФРАСТРУКТУРА</text>
+    <text x="20" y="308" font-size="11" fill="var(--muted)">ОТВЕТ НА ВОПРОС</text>
+    <text x="255" y="610" font-size="11" fill="var(--muted)">ИНФРАСТРУКТУРА</text>
     ${edges}${nodes}</svg>`;
   $('#schlegend').innerHTML=[
     ['#22c55e','работает'],['#3b82f6','готов'],['#f59e0b','нужен / не готов'],
@@ -1775,11 +1804,12 @@ async function loadLogs(){
   $('#logrows').innerHTML = r.map(x=>{
     const who = (x.channel==='telegram' && x.username) ? ('<div class="note">@'+esc(x.username)+'</div>') : '';
     return `<tr><td>${fmtTime(x.ts)}</td><td>${channelTag(x.channel)}</td>
-      <td style="max-width:380px">${esc(x.question)}${who}</td>
+      <td style="max-width:320px">${esc(x.question)}${who}</td>
+      <td style="max-width:360px">${answerCell(x.answer)}</td>
       <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет данных</span>'}</td>
       <td>${ratingBadge(x.rating)}</td>
       <td style="max-width:240px">${commentCell(x.comment)}</td></tr>`;
-  }).join('') || emptyRow(6);
+  }).join('') || emptyRow(7);
 }
 
 // ---- аналитика ----

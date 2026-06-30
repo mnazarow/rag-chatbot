@@ -243,7 +243,8 @@ async def chat(req: ChatRequest):
                         "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
                 rid = db.log_request(req.question, "kag", len(khits), top, lat,
                                      len(ktext), kres.get("answered", True), ksources,
-                                     retrieve_ms=0, gen_ms=lat, session_id=req.session_id)
+                                     retrieve_ms=0, gen_ms=lat, session_id=req.session_id,
+                                     answer=ktext)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
             activity.update(aid, stage="KAG: генерация ответа")
@@ -280,7 +281,7 @@ async def chat(req: ChatRequest):
                         "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
                 rid = db.log_request(req.question, cat, 1, 1.0, lat, len(text), True, [],
                                      retrieve_ms=0, gen_ms=lat,
-                                     session_id=req.session_id)
+                                     session_id=req.session_id, answer=text)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
             activity.update(aid, stage="генерация ответа (граф)")
@@ -321,7 +322,8 @@ async def chat(req: ChatRequest):
                 rid = db.log_request(req.question, cached.get("category"),
                                      cached.get("n_hits", 0), cached.get("top_score", 0.0),
                                      lat, len(txt), True, cached.get("sources", []),
-                                     retrieve_ms=0, gen_ms=0, session_id=req.session_id)
+                                     retrieve_ms=0, gen_ms=0, session_id=req.session_id,
+                                     answer=txt)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
             activity.update(aid, stage="ответ из кэша")
@@ -348,7 +350,7 @@ async def chat(req: ChatRequest):
         rid = db.log_request(req.question, category, 0, 0.0,
                              int((time.time() - t0) * 1000), len(msg), False, [],
                              retrieve_ms=retrieve_ms, gen_ms=0,
-                             session_id=req.session_id)
+                             session_id=req.session_id, answer=msg)
 
         async def empty():
             for s in trace:
@@ -400,10 +402,11 @@ async def chat(req: ChatRequest):
                 "timings": {"retrieve_ms": retrieve_ms, "gen_ms": max(0, latency - retrieve_ms),
                             "total_ms": latency},
                 "params": _debug_params(), "chunks": _debug_chunks(hits)}}, ensure_ascii=False) + "\n"
+        full = "".join(acc)
         rid = db.log_request(req.question, category, len(hits), hits[0]["score"],
-                             latency, len("".join(acc)), True, sources,
+                             latency, len(full), True, sources,
                              retrieve_ms=retrieve_ms, gen_ms=max(0, latency - retrieve_ms),
-                             session_id=req.session_id)
+                             session_id=req.session_id, answer=full)
         if acache_key and acc:
             try:
                 import cache
@@ -500,7 +503,8 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
             yield json.dumps({"type": "sources", "items": []}, ensure_ascii=False) + "\n"
         db.log_request(question, "attached", 0, 0.0,
                        int((time.time() - t0) * 1000), 0, False, [],
-                       session_id=session_id)
+                       session_id=session_id,
+                       answer="Не удалось извлечь данные из файла или он пуст.")
         return _ndjson(empty(), aid)
 
     context = prompts.build_context(hits)
@@ -535,9 +539,10 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
                 "model": settings.active_model(), "backend": settings.get("LLM_BACKEND"),
                 "timings": {"retrieve_ms": 0, "gen_ms": latency, "total_ms": latency},
                 "params": _debug_params(), "chunks": _debug_chunks(hits)}}, ensure_ascii=False) + "\n"
+        full = "".join(acc)
         rid = db.log_request(question, "attached", len(hits), hits[0]["score"],
-                             latency, len("".join(acc)), True, sources,
-                             session_id=session_id)
+                             latency, len(full), True, sources,
+                             session_id=session_id, answer=full)
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
     return _ndjson(stream(), aid)

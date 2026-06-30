@@ -1791,9 +1791,32 @@ def _system_info_raw() -> dict:
     except Exception as e:
         cache_info = {"enabled": False, "error": str(e)}
 
+    # ---- Дополнительные коннекторы (для живой схемы работы) ----
+    # Синонимы, справочник сотрудников и внешние API-хуки управляются через БД,
+    # а не через конфиг, поэтому их состояние отдаём отдельным блоком.
+    connectors: dict = {}
+    try:
+        import synonyms
+        connectors["synonyms"] = {"enabled": bool(synonyms.enabled()),
+                                  "count": len(db.syn_list())}
+    except Exception:
+        connectors["synonyms"] = {"enabled": False, "count": 0}
+    try:
+        connectors["org"] = db.org_meta()
+    except Exception:
+        connectors["org"] = {"count": 0}
+    try:
+        hooks = db.api_hooks_list()
+        connectors["api_hooks"] = {
+            "total": len(hooks),
+            "enabled": sum(1 for h in hooks if h.get("enabled")),
+        }
+    except Exception:
+        connectors["api_hooks"] = {"total": 0, "enabled": 0}
+
     return {"qdrant": qd, "graph": graph, "finetune": ft,
             "hybrid": hybrid, "kag": kag, "usage": db.engine_usage(),
-            "ingest": _ingest_summary(),
+            "ingest": _ingest_summary(), "connectors": connectors,
             "database": database, "cache": cache_info}
 
 
