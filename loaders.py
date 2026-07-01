@@ -332,25 +332,80 @@ def _dwg_to_dxf(path: Path) -> Path:
                        "чертёж как DXF/PDF")
 
 
+def _dxf_scrape_text(src) -> str:
+    """Аварийное извлечение текста из повреждённого DXF без полного парсинга.
+    DXF — текстовый формат «код/значение»; текстовые строки идут под группами 1 и 3
+    (TEXT/MTEXT/ATTRIB). Читаем их напрямую — работает даже когда ezdxf падает
+    («Invalid group code», «Invalid transformation matrix» и т. п.)."""
+    import re
+    try:
+        raw = Path(src).read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        try:
+            raw = Path(src).read_bytes().decode("cp1251", errors="ignore")
+        except Exception:
+            return ""
+    lines = raw.splitlines()
+    vals = []
+    for i in range(len(lines) - 1):
+        if lines[i].strip() in ("1", "3"):        # 1 — основной текст, 3 — доп. MTEXT
+            v = lines[i + 1].strip()
+            if v and any(ch.isalpha() for ch in v):
+                vals.append(v)
+    cleaned = []
+    for v in vals:
+        v = re.sub(r"\\[A-Za-z][^;\\]*;", "", v)   # форматные коды MTEXT: \A1; \fArial|...;
+        v = v.replace("\\P", " ").replace("\\~", " ")
+        v = re.sub(r"[{}]", "", v).strip()
+        if not v or len(v) < 2:
+            continue
+        # берём: текст со словами/пробелами/кириллицей ИЛИ артикулы (буквы+цифры, напр. SPL-3-D-60);
+        # отбрасываем технический мусор (имена стилей/типов линий: Standard, ByLayer, txt.shx …)
+        looks_partno = bool(re.search(r"\d", v)) and bool(re.search(r"[A-Za-zА-Яа-я]", v)) \
+            and ("-" in v or "_" in v)
+        if _has_cyr_or_space(v) or looks_partno:
+            cleaned.append(v)
+    return "\n".join(dict.fromkeys(cleaned)).strip()
+
+
+def _has_cyr_or_space(s: str) -> bool:
+    return (" " in s) or any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in s)
+
+
 def _load_cad(path: Path):
     """Извлечь весь текст из чертежа DXF/DWG: TEXT, MTEXT, атрибуты блоков,
-    размеры, имена слоёв (для DWG требуется конвертация в DXF)."""
+    размеры, имена слоёв (для DWG требуется конвертация в DXF). Повреждённые файлы
+    (частый случай после конвертации DWG→DXF) обрабатываются по возможности, с
+    аварийным текстовым извлечением как фолбэком."""
     import ezdxf
     src, tmp = path, None
     if path.suffix.lower() == ".dwg":
         src = _dwg_to_dxf(path)
         tmp = src
     try:
+        doc = None
         try:
             doc = ezdxf.readfile(str(src))
         except Exception:
-            from ezdxf import recover
-            doc, _ = recover.readfile(str(src))
+            try:
+                from ezdxf import recover
+                doc, _ = recover.readfile(str(src))
+            except Exception as e:
+                print(f"  ~ CAD: {path.name} — ezdxf не смог разобрать ({e}); "
+                      f"аварийное извлечение текста")
+                doc = None
 
         lines = []
 
         def grab(container):
-            for e in container:
+            it = iter(container)
+            while True:
+                try:
+                    e = next(it)
+                except StopIteration:
+                    break
+                except Exception:
+                    break            # итератор повреждён — прекращаем этот контейнер
                 try:
                     t = e.dxftype()
                     s = ""
@@ -372,19 +427,37 @@ def _load_cad(path: Path):
                 except Exception:
                     continue
 
-        for layout in doc.layouts:          # модель + листы
-            grab(layout)
-        for blk in doc.blocks:              # текст внутри определений блоков
-            grab(blk)
+        layers = []
+        if doc is not None:
+            try:
+                for layout in doc.layouts:      # модель + листы
+                    try:
+                        grab(layout)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            try:
+                for blk in doc.blocks:          # текст внутри определений блоков
+                    try:
+                        grab(blk)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            try:
+                layers = [ly.dxf.name for ly in doc.layers]
+            except Exception:
+                layers = []
 
-        try:
-            layers = [ly.dxf.name for ly in doc.layers]
-        except Exception:
-            layers = []
-
-        body = "\n".join(dict.fromkeys(lines))  # дедуп с сохранением порядка
+        body = "\n".join(dict.fromkeys(lines)).strip()  # дедуп с сохранением порядка
+        # фолбэк: ezdxf не дал текста (или упал) — скребём DXF как текст
+        if not body:
+            scraped = _dxf_scrape_text(src)
+            if scraped:
+                body = "Текст чертежа (аварийное извлечение):\n" + scraped
         if layers:
-            body += "\nСлои: " + ", ".join(layers[:300])
+            body += ("\n" if body else "") + "Слои: " + ", ".join(layers[:300])
         body = body.strip()
         if body:
             yield {"text": body, "page": None}
