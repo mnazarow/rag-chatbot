@@ -1671,24 +1671,49 @@ const LLM_KIND={
   filter:{icon:'🧭',label:'Фильтр запроса'}, 'api-intent':{icon:'🔌',label:'API-интент'},
   llm:{icon:'🧠',label:'LLM'},
 };
+const _llmOpen=new Set();          // раскрытые строки (id) — сохраняем между опросами
+const _llmPromptCache={};          // кэш полного запроса по id
+async function llmToggle(id){
+  if(_llmOpen.has(id)){ _llmOpen.delete(id); }
+  else{
+    _llmOpen.add(id);
+    if(_llmPromptCache[id]===undefined){
+      _llmPromptCache[id]='__loading__';
+      try{ const r=await (await fetch('/api/llm-activity/item?id='+encodeURIComponent(id)+'&t='+Date.now(),{cache:'no-store'})).json();
+        _llmPromptCache[id]=(r&&r.prompt)||''; }catch(e){ _llmPromptCache[id]=''; }
+    }
+  }
+  loadLlmActivity();
+}
 async function loadLlmActivity(){
   if(!$('#llmact_rows')) return;
   let d; try{ d=await (await fetch('/api/llm-activity?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
   const items=d.items||[];
-  const rows=items.map(it=>{
+  const rows=[];
+  items.forEach(it=>{
     const k=LLM_KIND[it.kind]||{icon:'•',label:it.kind};
     const st = it.done
       ? (it.ok===false?'<span style="color:#f87171">✖ ошибка</span>':'<span style="color:#34d399">✓ готово</span>')
       : '<span style="color:var(--accent)"><span class="actspin">⏳</span> идёт</span>';
     const out = it.chars ? (it.chars+' симв.') : (it.done?'<span class="note">—</span>':'…');
+    const open=_llmOpen.has(it.id);
+    const caret=open?'▼':'▶';
     const lbl = it.error ? ('<span style="color:#f87171" title="'+escAttr(it.error)+'">'+esc(it.label||'')+'</span>')
                          : (esc(it.label||'')||'<span class="note">—</span>');
-    return `<tr><td style="white-space:nowrap">${st}</td>
+    rows.push(`<tr style="cursor:pointer" onclick="llmToggle('${escAttr(it.id)}')" title="Показать полный запрос к LLM"><td style="white-space:nowrap">${st}</td>
       <td style="white-space:nowrap">${k.icon} ${esc(k.label)}</td>
       <td style="white-space:nowrap"><span class="note">${esc(schModShort(it.model||''))}</span></td>
-      <td style="max-width:360px">${lbl}</td>
+      <td style="max-width:360px"><span class="note">${caret}</span> ${lbl}</td>
       <td style="white-space:nowrap">${out}</td>
-      <td style="white-space:nowrap">${actElapsed(it.elapsed_ms)}</td></tr>`;
+      <td style="white-space:nowrap">${actElapsed(it.elapsed_ms)}</td></tr>`);
+    if(open){
+      const p=_llmPromptCache[it.id];
+      const body = p==='__loading__' ? '<span class="note">загрузка…</span>'
+        : (p ? `<pre style="white-space:pre-wrap;max-height:340px;overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;margin:0">${esc(p)}</pre>`
+             : '<span class="note">полный запрос недоступен (запись устарела или очищена)</span>');
+      const errLine = it.error ? `<div class="note" style="color:#f87171;margin-bottom:6px">Ошибка: ${esc(it.error)}</div>` : '';
+      rows.push(`<tr><td colspan="6" style="background:rgba(127,127,127,.05)"><div class="note" style="margin-bottom:6px">📤 Полный запрос к LLM${it.model?(' · модель '+esc(schModShort(it.model))):''}:</div>${errLine}${body}</td></tr>`);
+    }
   });
   const r=d.running||0;
   if($('#llmact_count')) $('#llmact_count').textContent = r? (r+' выполняется') : 'нет активных';

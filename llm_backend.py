@@ -30,10 +30,26 @@ def _label_from_messages(messages: list[dict]) -> str:
     return ""
 
 
-def _act_begin(kind: str, model: str, label: str = ""):
+def _full_request(messages: list[dict]) -> str:
+    """Полный текст запроса к LLM (роли + содержимое) — для раскрытия строки на дашборде."""
+    parts = []
+    try:
+        for m in messages or []:
+            role = m.get("role", "")
+            c = m.get("content")
+            if isinstance(c, list):          # мультимодальное содержимое
+                c = " ".join(p.get("text", "[изображение]") for p in c
+                             if isinstance(p, dict))
+            parts.append(f"[{role}]\n{c}")
+    except Exception:
+        return ""
+    return "\n\n".join(parts)
+
+
+def _act_begin(kind: str, model: str, label: str = "", prompt: str = ""):
     try:
         import llm_activity
-        return llm_activity.begin(kind, model, settings.get("LLM_BACKEND"), label)
+        return llm_activity.begin(kind, model, settings.get("LLM_BACKEND"), label, prompt)
     except Exception:
         return None
 
@@ -67,7 +83,8 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
     import asyncio
     import llm_queue
     _qtok = await asyncio.get_event_loop().run_in_executor(None, llm_queue.acquire)
-    cid = _act_begin(kind, model, label or _label_from_messages(messages))
+    cid = _act_begin(kind, model, label or _label_from_messages(messages),
+                     _full_request(messages))
     nchars = 0
     ok = True
     err = None
@@ -125,7 +142,8 @@ def chat(messages: list[dict], temperature: float = 0.1,
     model = model or settings.get("LLM_MODEL")
     import llm_queue
     _qtok = llm_queue.acquire()
-    cid = _act_begin(kind, model, label or _label_from_messages(messages))
+    cid = _act_begin(kind, model, label or _label_from_messages(messages),
+                     _full_request(messages))
     try:
         if settings.get("LLM_BACKEND") == "openai":
             r = httpx.post(
@@ -197,7 +215,8 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
     for attempt in range(1, attempts + 1):
         _qtok = llm_queue.acquire()
         cid = _act_begin("vision", model,
-                         "описание изображения" + (f" (попытка {attempt})" if attempt > 1 else ""))
+                         "описание изображения" + (f" (попытка {attempt})" if attempt > 1 else ""),
+                         prompt=prompt + "\n\n[изображение прикреплено]")
         try:
             if settings.get("LLM_BACKEND") == "openai":
                 content = [{"type": "text", "text": prompt},

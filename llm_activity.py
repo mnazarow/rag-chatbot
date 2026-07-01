@@ -46,11 +46,13 @@ def _new_id() -> str:
 # --------------------------------------------------------------------------- #
 #  Запись                                                                      #
 # --------------------------------------------------------------------------- #
-def begin(kind: str, model: str = "", backend: str = "", label: str = "") -> str:
+def begin(kind: str, model: str = "", backend: str = "", label: str = "",
+          prompt: str = "") -> str:
     cid = _new_id()
     now = time.time()
     rec = {"id": cid, "kind": kind or "llm", "model": model or "",
            "backend": backend or "", "label": (label or "")[:160],
+           "prompt": (prompt or "")[:16000],   # полный запрос (для раскрытия строки)
            "started": now, "updated": now, "finished": None,
            "done": False, "ok": None, "chars": 0, "error": None}
     c = _redis()
@@ -190,6 +192,30 @@ def snapshot(limit: int = 60) -> dict:
         items = list(_items.values())
         totals = dict(_totals)
     return _assemble(items, limit, totals["calls"], totals["errors"])
+
+
+def get(cid) -> dict:
+    """Полная запись вызова (с полным текстом запроса) по id — для раскрытия строки."""
+    cid = str(cid)
+    c = _redis()
+    if c is not None:
+        try:
+            import json
+            raw = c.get(_PREFIX + "i:" + cid)
+            if raw:
+                r = json.loads(raw)
+                v = _view(r)
+                v["prompt"] = r.get("prompt", "")
+                return v
+        except Exception:
+            pass
+    with _lock:
+        it = _items.get(cid)
+        if it:
+            v = _view(it)
+            v["prompt"] = it.get("prompt", "")
+            return v
+    return {}
 
 
 def _assemble(items: list[dict], limit: int, calls: int, errors: int) -> dict:

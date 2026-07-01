@@ -739,6 +739,13 @@ def api_llm_activity(limit: int = 60):
     return snap
 
 
+@app.get("/api/llm-activity/item")
+def api_llm_activity_item(id: str):
+    """Полная запись одного вызова LLM (с полным текстом запроса) — для раскрытия строки."""
+    import llm_activity
+    return llm_activity.get(id)
+
+
 # ===================== Структура компании =====================
 
 @app.get("/api/admin/org/config")
