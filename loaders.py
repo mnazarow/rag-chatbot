@@ -378,6 +378,10 @@ def _load_cad(path: Path):
     (частый случай после конвертации DWG→DXF) обрабатываются по возможности, с
     аварийным текстовым извлечением как фолбэком."""
     import ezdxf
+    # приглушаем шумные предупреждения ezdxf (Found non-unique entity handle,
+    # Missing required ENDBLK, Invalid group code …) — они не мешают извлечению текста
+    import logging as _lg
+    _lg.getLogger("ezdxf").setLevel(_lg.ERROR)
     src, tmp = path, None
     if path.suffix.lower() == ".dwg":
         src = _dwg_to_dxf(path)
