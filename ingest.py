@@ -152,6 +152,10 @@ def main():
     device = settings.device()
     chunk_size = settings.get("CHUNK_SIZE")
     chunk_overlap = settings.get("CHUNK_OVERLAP")
+    try:
+        max_chunks = int(settings.get("INGEST_MAX_CHUNKS") or 0)
+    except Exception:
+        max_chunks = 0
 
     # --- фатальные ошибки инициализации: понятное сообщение и выход ---
     print(f"Документы: {DOCS_DIR}")
@@ -319,12 +323,23 @@ def main():
                     return {"status": "skip"}
                 meta_path = path
             points = []
+            _capped = False
             for part in load_file(path):
                 for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
                     points.append({"chunk": chunk, "page": part["page"],
                                    "t_start": part.get("t_start"),
                                    "t_end": part.get("t_end"),
                                    "vision_desc": part.get("vision_desc")})
+                    if max_chunks and len(points) >= max_chunks:
+                        _capped = True
+                        break
+                if _capped:
+                    break
+            if _capped:
+                print(f"  ! {source}: превышен лимит чанков на файл "
+                      f"({max_chunks}) — проиндексирована только часть "
+                      f"(увеличьте INGEST_MAX_CHUNKS или уберите огромный архив)",
+                      flush=True)
             if not points:
                 return {"status": "empty", "tmp": tmp_path}
             return {"status": "ok", "source": source, "fhash": fhash, "points": points,
@@ -395,12 +410,23 @@ def main():
                     signal.alarm(file_timeout)
                 t_parse = time.time()
                 points = []
+                _capped = False
                 for part in load_file(path):
                     for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
                         points.append({"chunk": chunk, "page": part["page"],
                                        "t_start": part.get("t_start"),
                                        "t_end": part.get("t_end"),
                                        "vision_desc": part.get("vision_desc")})
+                        if max_chunks and len(points) >= max_chunks:
+                            _capped = True
+                            break
+                    if _capped:
+                        break
+                if _capped:
+                    print(f"  ! {source}: превышен лимит чанков на файл "
+                          f"({max_chunks}) — проиндексирована только часть "
+                          f"(увеличьте INGEST_MAX_CHUNKS или уберите огромный архив)",
+                          flush=True)
                 if use_alarm:
                     signal.alarm(0)
                 parse_ms = int((time.time() - t_parse) * 1000)

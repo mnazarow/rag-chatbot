@@ -820,6 +820,15 @@ def _extract_archive(path: Path, dest: Path) -> bool:
             return True
         if ext == ".rar":
             import rarfile
+            # rarfile сам по себе не распаковывает — ему нужен внешний бэкенд.
+            # Подскажем доступный (unar/unrar/bsdtar), если авто-детект не сработал.
+            for _t in ("unar", "unrar", "bsdtar"):
+                if shutil.which(_t):
+                    try:
+                        rarfile.UNRAR_TOOL = _t
+                    except Exception:
+                        pass
+                    break
             with rarfile.RarFile(path) as r:
                 r.extractall(dest)
             return True
@@ -849,15 +858,26 @@ def _extract_archive(path: Path, dest: Path) -> bool:
     except Exception as e:
         print(f"  ! {path.name}: ошибка распаковки ({e}); пробую системные утилиты")
 
-    # 2) системные утилиты (best-effort)
-    for tool in (["7z", "x", "-y", f"-o{dest}", str(path)],
-                 ["7za", "x", "-y", f"-o{dest}", str(path)],
-                 ["bsdtar", "-xf", str(path), "-C", str(dest)],
-                 ["unar", "-quiet", "-output-directory", str(dest), str(path)]):
+    # 2) системные утилиты (best-effort). Для .rar сначала специализированные
+    # распаковщики (unar/unrar), затем универсальные (7z/bsdtar).
+    tools = []
+    if ext == ".rar":
+        tools += [
+            ["unar", "-quiet", "-force-overwrite", "-output-directory", str(dest), str(path)],
+            ["unrar", "x", "-y", "-o+", str(path), str(dest) + "/"],
+        ]
+    tools += [
+        ["7z", "x", "-y", f"-o{dest}", str(path)],
+        ["7za", "x", "-y", f"-o{dest}", str(path)],
+        ["bsdtar", "-xf", str(path), "-C", str(dest)],
+        ["unar", "-quiet", "-output-directory", str(dest), str(path)],
+    ]
+    for tool in tools:
         if shutil.which(tool[0]):
             try:
-                r = subprocess.run(tool, capture_output=True, timeout=900)
-                if r.returncode == 0:
+                r = subprocess.run(tool, capture_output=True, timeout=1800)
+                # успех: код 0 И в каталоге появились файлы
+                if r.returncode == 0 and any(Path(dest).rglob("*")):
                     return True
             except Exception:
                 continue
