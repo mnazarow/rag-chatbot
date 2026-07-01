@@ -1696,8 +1696,11 @@ async function loadLlmActivity(){
     const shareNote = (qd.shared===false)
       ? ' <span style="color:#f59e0b" title="Включите Redis, чтобы видеть вызовы LLM из процесса индексации (описание картинок vision-моделью)">⚠ без Redis вызовы из индексации (vision) здесь не видны</span>'
       : '';
+    const delayNote = (qd.delay>0)
+      ? ` · <span class="tag" title="Минимальный интервал между началами запросов к LLM">⏱ пауза ${qd.delay} c</span>` : '';
     if(!qd.enabled){
       qe.innerHTML=`<div class="note">Очередь к LLM: <b>без ограничения</b> · выполняется <b>${qd.running!=null?qd.running:r}</b>.`
+        +delayNote
         +` Лимит одновременных запросов — в настройках (Генерация (LLM) → «Очередь к LLM»).${shareNote}</div>`;
     } else {
       const mx=qd.max||0, run=qd.running||0, wait=qd.waiting||0;
@@ -1709,7 +1712,7 @@ async function loadLlmActivity(){
         ? `<span class="tag" style="background:#f59e0b22;color:#f59e0b">⏳ в очереди: ${wait}</span>`
         : `<span class="tag ok">очередь пуста</span>`;
       qe.innerHTML=`<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div><b>Очередь к LLM</b> <span class="note">лимит ${mx}</span></div>
+        <div><b>Очередь к LLM</b> <span class="note">лимит ${mx}${qd.delay>0?(' · пауза '+qd.delay+' c'):''}</span></div>
         <div title="Занято ${run} из ${mx} слотов">${cells}</div>
         <div>выполняется <b>${run}</b> / ${mx}</div>
         <div>${waitBadge}</div></div>`

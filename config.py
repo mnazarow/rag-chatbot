@@ -36,6 +36,9 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "EMPTY")
 # Остальные ждут своей очереди. 0 — без ограничения. Защищает перегруженную модель/GPU.
 LLM_MAX_CONCURRENCY = _int("LLM_MAX_CONCURRENCY", 0)
 LLM_QUEUE_TIMEOUT = _int("LLM_QUEUE_TIMEOUT", 120)   # макс. ожидание в очереди, с (0 — без лимита)
+# Минимальная пауза между началами запросов к LLM (с). Запросы стартуют не чаще,
+# чем раз в LLM_REQUEST_DELAY секунд. 0 — без паузы. Бережёт модель/GPU от «пиков».
+LLM_REQUEST_DELAY = _float("LLM_REQUEST_DELAY", 0.0)
 
 # Qdrant
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")

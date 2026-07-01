@@ -52,6 +52,47 @@ def _timeout() -> float:
         return 0.0
 
 
+def _delay() -> float:
+    try:
+        return float(settings.get("LLM_REQUEST_DELAY") or 0)
+    except Exception:
+        return 0.0
+
+
+_pace_lock = threading.Lock()
+_pace_next = [0.0]       # локальный «момент, когда можно начать следующий запрос»
+# Lua-скрипт для Redis: атомарно резервирует следующий слот старта, spaced by delay.
+_PACE_LUA = ("local n=tonumber(redis.call('get',KEYS[1]) or '0') "
+             "local now=tonumber(ARGV[1]) local d=tonumber(ARGV[2]) "
+             "local start=math.max(now,n) redis.call('set',KEYS[1],start+d) "
+             "redis.call('pexpire',KEYS[1],math.ceil((d+1)*1000)) return tostring(start)")
+
+
+def _pace() -> None:
+    """Выдержать минимальную паузу между началами запросов к LLM (общую для всех
+    процессов через Redis; иначе — в пределах процесса)."""
+    d = _delay()
+    if d <= 0:
+        return
+    now = time.time()
+    start = now
+    c = _redis()
+    if c is not None:
+        try:
+            start = float(c.eval(_PACE_LUA, 1, "rag:llmq:next", now, d))
+        except Exception:
+            with _pace_lock:
+                start = max(now, _pace_next[0])
+                _pace_next[0] = start + d
+    else:
+        with _pace_lock:
+            start = max(now, _pace_next[0])
+            _pace_next[0] = start + d
+    wait = start - time.time()
+    if wait > 0:
+        time.sleep(min(wait, 60.0))
+
+
 def _prune_local(d: dict) -> None:
     now = time.time()
     for k in [k for k, v in d.items() if v <= now]:
@@ -113,6 +154,7 @@ def acquire() -> str:
     m = _limit()
     if m <= 0:
         _add_active(c, tok)              # учитываем для отображения/счётчика
+        _pace()                          # пауза между запросами (если задана)
         return tok
     deadline = None
     to = _timeout()
@@ -141,6 +183,7 @@ def acquire() -> str:
     finally:
         _rem(c, _WAIT, _local_wait, tok)
     _add_active(c, tok)
+    _pace()                              # пауза между запросами (если задана)
     return tok
 
 
@@ -167,4 +210,5 @@ def stats() -> dict:
     c = _redis()
     m = _limit()
     return {"max": m, "running": _active_count(c), "waiting": _waiting_count(c),
-            "enabled": m > 0, "timeout": _timeout(), "shared": bool(c)}
+            "enabled": m > 0, "timeout": _timeout(), "delay": _delay(),
+            "shared": bool(c)}
