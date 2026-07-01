@@ -2218,8 +2218,10 @@ async function loadSysSip(){
     ['Звонков',nz(a.calls)],['Активных',nz(a.active)],['ffmpeg',yn(a.ffmpeg)]]);
   asHtml+=(a.error?`<div class="note" style="color:#f87171;margin-top:6px">${esc(a.error)}</div>`:'')+'</div>';
   // SIP-регистрация
+  const phaseRu={registering:'регистрация…',registered:'зарегистрирован',failed:'ошибка регистрации',deregistering:'отключение…',inactive:'не запущен',unknown:'статус неизвестен'}[r.phase]||r.phase||'';
   const rgBadge = !r.enabled?dot('#6b7280','выключена')
-    :(r.registered?dot('#4ade80','зарегистрирован'):dot('#f87171','не зарегистрирован'));
+    :(r.registered?dot('#4ade80','зарегистрирован')
+      :dot('#f87171', phaseRu||'не зарегистрирован'));
   let rgHtml=`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--panel2)">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <b style="font-size:14px">☎️ Нативная SIP-регистрация (pyVoIP)</b><span>${rgBadge}</span></div>`;
@@ -4817,7 +4819,8 @@ async function loadSipReg(){
   if(!$('#sipreg_status')) return;
   let d; try{ d=await adminGet('/api/admin/sip/register-status'); }catch(e){ return; }
   const b=$('#sipreg_badge');
-  if(b) b.textContent = !d.enabled ? 'выключена' : (d.registered?'зарегистрирован':'не зарегистрирован');
+  const phaseRu={registering:'регистрация…',registered:'зарегистрирован',failed:'ошибка регистрации',deregistering:'отключение…',inactive:'не запущен',unknown:'статус неизвестен'}[d.phase]||d.phase||'не зарегистрирован';
+  if(b) b.textContent = !d.enabled ? 'выключена' : (d.registered?'зарегистрирован':phaseRu);
   const setv=(id,v)=>{ const e=$('#'+id); if(e && document.activeElement!==e) e.value=(v==null?'':v); };
   setv('sipreg_server',d.server); setv('sipreg_port',d.port);
   setv('sipreg_user',d.username); setv('sipreg_lport',d.local_port);
@@ -4827,7 +4830,7 @@ async function loadSipReg(){
   const ff=d.ffmpeg?'<span style="color:#34d399">ffmpeg ✓</span>':'<span style="color:#f87171">ffmpeg не найден</span>';
   $('#sipreg_status').innerHTML = !d.enabled
     ? 'Выключена. Заполните данные SIP-аккаунта, включите и сохраните. '+pv+' · '+ff
-    : `Статус: ${d.registered?'<span style="color:#34d399">зарегистрирован</span>':'<span style="color:#f87171">не зарегистрирован</span>'}`
+    : `Статус: ${d.registered?'<span style="color:#34d399">зарегистрирован</span>':'<span style="color:#f87171">'+esc(phaseRu)+'</span>'}`
       +` · ${esc(d.username||'')}@${esc(d.server||'')}:${d.port} · ${pv} · ${ff}`
       +` · звонков: <b>${d.calls||0}</b> · активных: <b>${d.active||0}</b>`
       +(d.error?` · <span style="color:#f87171">${esc(d.error)}</span>`:'');

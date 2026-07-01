@@ -1828,11 +1828,16 @@ def _system_info_raw() -> dict:
         import sip_phone
         as_st = getattr(sip_bridge, "_state", {})
         rg_st = getattr(sip_phone, "_state", {})
+        try:
+            rg_phase = sip_phone._phone_phase()      # фактическая фаза регистрации
+        except Exception:
+            rg_phase = "unknown"
         connectors["sip"] = {
             "audiosocket": {"enabled": bool(settings.get("SIP_ENABLED")),
                             "running": bool(as_st.get("running"))},
             "register": {"enabled": bool(settings.get("SIP_REGISTER_ENABLED")),
-                         "registered": bool(rg_st.get("registered")),
+                         "registered": rg_phase == "registered",
+                         "phase": rg_phase,
                          "running": bool(rg_st.get("running")),
                          "server": str(settings.get("SIP_SERVER") or "")},
             "active": int(as_st.get("active", 0)) + int(rg_st.get("active", 0)),

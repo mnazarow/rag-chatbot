@@ -209,7 +209,6 @@ def start() -> dict:
                                callCallback=_on_call)
             _phone.start()
             _state["running"] = True
-            _state["registered"] = True
             _state["error"] = None
         except Exception as e:
             _state["error"] = str(e)[:200]
@@ -217,8 +216,40 @@ def start() -> dict:
             _state["registered"] = False
             _phone = None
             return {"ok": False, "msg": "ошибка регистрации: " + _state["error"]}
-    print(f"[sip-reg] зарегистрирован как {user}@{server}:{port} (myIP={myip})")
-    return {"ok": True, "msg": f"зарегистрирован как {user}@{server}:{port}"}
+    # ждём фактического подтверждения регистрации от pyVoIP (или ошибки), до ~6 c
+    phase = "registering"
+    for _ in range(30):
+        phase = _phone_phase()
+        if phase in ("registered", "failed", "inactive"):
+            break
+        time.sleep(0.2)
+    _state["registered"] = (phase == "registered")
+    if phase == "registered":
+        _state["error"] = None
+        print(f"[sip-reg] зарегистрирован как {user}@{server}:{port} (myIP={myip})")
+        return {"ok": True, "msg": f"зарегистрирован как {user}@{server}:{port}"}
+    _state["error"] = (f"регистрация не подтверждена (статус: {phase}). Проверьте логин/пароль, "
+                       f"адрес и порт сервера, а также NAT/локальный IP для SDP.")
+    print(f"[sip-reg] НЕ зарегистрирован ({phase}) как {user}@{server}:{port} (myIP={myip})")
+    return {"ok": False, "msg": _state["error"]}
+
+
+def _phone_phase() -> str:
+    """Фактическое состояние регистрации из pyVoIP: inactive|registering|registered|
+    deregistering|failed|unknown. Не полагаемся на «оптимистичный» флаг."""
+    p = _phone
+    if p is None:
+        return "inactive"
+    try:
+        st = p.get_status()                      # pyVoIP.VoIP.PhoneStatus
+        return getattr(st, "name", str(st)).lower()
+    except Exception:
+        # старые/иные версии pyVoIP без get_status — берём внутреннее поле, иначе unknown
+        for attr in ("_status", "status"):
+            v = getattr(p, attr, None)
+            if v is not None:
+                return getattr(v, "name", str(v)).lower()
+        return "unknown"
 
 
 def stop() -> None:
@@ -242,10 +273,15 @@ def restart() -> dict:
 
 
 def status() -> dict:
+    # фактическая фаза регистрации из pyVoIP (обновляется в реальном времени)
+    phase = _phone_phase()
+    registered = (phase == "registered") if _phone is not None \
+        else bool(_state.get("registered", False))
     return {
         "enabled": bool(_cfg("SIP_REGISTER_ENABLED")),
         "running": _state.get("running", False),
-        "registered": _state.get("registered", False),
+        "registered": registered,
+        "phase": phase,
         "server": str(_cfg("SIP_SERVER", "") or ""),
         "username": str(_cfg("SIP_USERNAME", "") or ""),
         "port": int(_cfg("SIP_PORT", 5060) or 5060),
