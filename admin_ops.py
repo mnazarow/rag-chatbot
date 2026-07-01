@@ -2844,6 +2844,97 @@ def cache_clear() -> dict:
     return {"ok": True, "cleared": cache.clear()}
 
 
+def _redis_ping(host: str = "127.0.0.1", port: int = 6379) -> bool:
+    """Проверить доступность Redis без зависимости от настроек (для установки)."""
+    import socket as _s
+    try:
+        with _s.create_connection((host, port), timeout=2) as c:
+            c.sendall(b"PING\r\n")
+            return b"PONG" in c.recv(64)
+    except Exception:
+        return False
+
+
+def redis_install() -> dict:
+    """Установить и запустить Redis-сервер средствами ОС (apt/brew/apk/dnf/yum),
+    включить REDIS_ENABLED и проверить подключение. Возвращает {ok, msg, log}."""
+    import platform
+    import shutil as _sh
+    log: list[str] = []
+
+    def run(cmd, **kw):
+        log.append("$ " + " ".join(cmd))
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=300, **kw)
+            out = (p.stdout or "") + (p.stderr or "")
+            if out.strip():
+                log.append(out.strip()[:4000])
+            return p.returncode
+        except Exception as e:
+            log.append(f"[ошибка запуска] {e}")
+            return 1
+
+    # 0) уже доступен?
+    if _redis_ping():
+        settings.update({"REDIS_ENABLED": True})
+        log.append("Redis уже запущен и отвечает на PING.")
+        return {"ok": True, "msg": "Redis уже установлен и доступен", "log": "\n".join(log)}
+
+    sysname = platform.system().lower()
+    # 1) установка пакета Redis подходящим менеджером
+    if _sh.which("brew"):                                   # macOS / Linuxbrew
+        run(["brew", "install", "redis"])
+    elif _sh.which("apt-get"):                              # Debian/Ubuntu
+        run(["apt-get", "update"])
+        run(["apt-get", "install", "-y", "redis-server"])
+    elif _sh.which("apk"):                                  # Alpine (Docker)
+        run(["apk", "add", "--no-cache", "redis"])
+    elif _sh.which("dnf"):                                  # Fedora/RHEL
+        run(["dnf", "install", "-y", "redis"])
+    elif _sh.which("yum"):
+        run(["yum", "install", "-y", "redis"])
+    else:
+        return {"ok": False,
+                "msg": "не найден поддерживаемый менеджер пакетов (brew/apt/apk/dnf/yum)",
+                "log": "\n".join(log) +
+                "\nУстановите Redis вручную и включите REDIS_ENABLED в настройках."}
+
+    # 2) запуск сервера (демонизированно; путь к бинарю ищем в PATH)
+    redis_bin = _sh.which("redis-server")
+    if _sh.which("brew") and "darwin" in sysname:
+        run(["brew", "services", "start", "redis"])
+    elif redis_bin:
+        run([redis_bin, "--daemonize", "yes"])
+    else:
+        # системные службы Linux
+        if _sh.which("systemctl"):
+            run(["systemctl", "enable", "--now", "redis-server"]) or \
+                run(["systemctl", "enable", "--now", "redis"])
+        elif _sh.which("service"):
+            run(["service", "redis-server", "start"])
+
+    # 3) подождать и проверить
+    for _ in range(10):
+        if _redis_ping():
+            break
+        time.sleep(1)
+    ok = _redis_ping()
+    if ok:
+        # включаем кэш и указываем локальный хост, если он ещё не задан явно
+        changes = {"REDIS_ENABLED": True}
+        if not (settings.get("REDIS_HOST") or "").strip() or \
+                settings.get("REDIS_HOST") in ("redis",):
+            changes["REDIS_HOST"] = "127.0.0.1"
+        settings.update(changes)
+        log.append("Redis отвечает на PING. REDIS_ENABLED включён.")
+        return {"ok": True, "msg": "Redis установлен, запущен и подключён",
+                "log": "\n".join(log)}
+    return {"ok": False,
+            "msg": "Redis установлен, но не отвечает — запустите вручную (redis-server) "
+                   "или проверьте права/службу",
+            "log": "\n".join(log)}
+
+
 # ----- Каталог документов в PostgreSQL -----
 
 _CAT_JOB: dict = {"running": False, "ok": None, "processed": 0, "total": 0,

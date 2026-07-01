@@ -1330,6 +1330,13 @@ def admin_cache_clear(x_admin_token: str | None = Header(None)):
     return admin_ops.cache_clear()
 
 
+@app.post("/api/admin/redis/install")
+def admin_redis_install(x_admin_token: str | None = Header(None)):
+    """Установить и запустить Redis-сервер средствами ОС, включить REDIS_ENABLED."""
+    _check_admin(x_admin_token)
+    return admin_ops.redis_install()
+
+
 @app.get("/api/admin/catalog/status")
 def admin_catalog_status(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

@@ -1440,9 +1440,12 @@
         <b style="font-size:13px">Кэш Redis</b>
         <div class="note" style="margin:4px 0 8px">Включается флажком <code>REDIS_ENABLED</code> в настройках ниже. Кэш сбрасывается автоматически при новых запросах.</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="act" onclick="redisInstall()">⬇️ Установить Redis</button>
           <button class="act ghost" onclick="cacheClear()">🧹 Очистить кэш Redis</button>
           <span id="dbmsg" class="note"></span>
         </div>
+        <div class="note" style="margin-top:6px">Кнопка ставит и запускает Redis-сервер средствами ОС (apt/brew/apk/dnf), включает <code>REDIS_ENABLED</code> и проверяет подключение. В Docker-варианте Redis уже поднят отдельным контейнером — установка не нужна.</div>
+        <pre id="redis_log" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:220px;overflow:auto;white-space:pre-wrap;display:none"></pre>
       </div>
 
       <div id="db_catalog" style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px"></div>
@@ -4065,6 +4068,16 @@ async function dbCopy(target){ if(!confirm('Скопировать данные 
 async function dbMigrate(target){ if(!confirm('Мигрировать на '+target+'? Данные скопируются и приложение переключится на '+target+'. После — перезапустите сервис.'))return;
   dbMsg('миграция на '+target+'…'); const r=await adminPost('/api/admin/db/migrate',{target}); dbMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false); dbPoll(); }
 async function cacheClear(){ dbMsg('очистка кэша…'); const r=await adminPost('/api/admin/cache/clear'); dbMsg(r.ok?('очищено ключей: '+(r.cleared||0)):'ошибка',r.ok!==false); loadDbCache(); }
+async function redisInstall(){
+  if(!confirm('Установить и запустить Redis-сервер средствами ОС? Может занять до минуты.')) return;
+  dbMsg('установка Redis…');
+  const lg=$('#redis_log'); if(lg){ lg.style.display='block'; lg.textContent='Запуск установки…'; }
+  const r=await adminPost('/api/admin/redis/install');
+  dbMsg(r&&r.ok?'Redis установлен и доступен ✓':(r&&r.msg||'не удалось'), !!(r&&r.ok));
+  if(lg) lg.textContent=(r&&r.log)||(r&&r.msg)||'нет вывода';
+  loadDbCache();
+  if($('#sys_cache')) loadSystem();
+}
 
 // ---- калибровка по оценкам ----
 function calMsg(t,ok=true){ $('#calmsg').textContent=t; $('#calmsg').className=ok?'saved':'note'; }
