@@ -82,7 +82,7 @@ SIP_LOCAL_IP = os.getenv("SIP_LOCAL_IP", "")      # наш IP для SDP (пус
 SIP_LOCAL_PORT = _int("SIP_LOCAL_PORT", 5060)     # локальный SIP-порт (bind)
 SIP_RTP_PORT_LOW = _int("SIP_RTP_PORT_LOW", 10000)
 SIP_RTP_PORT_HIGH = _int("SIP_RTP_PORT_HIGH", 20000)
-SIP_DEBUG = _bool("SIP_DEBUG", False)   # подробный лог pyVoIP (обмен REGISTER/SIP)
+SIP_DEBUG = os.getenv("SIP_DEBUG", "0") not in ("0", "false", "")   # подробный лог pyVoIP
 
 # Прайс-папка: на «ценовых» вопросах брать контекст напрямую из указанной папки
 # (без индексации — файлы читаются по требованию и реранкуются под вопрос).
