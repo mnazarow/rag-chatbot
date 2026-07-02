@@ -1472,6 +1472,16 @@
         <span id="rsmsg"></span>
       </div>
       <div class="note">«Переустановить окружение» — пересоздаёт .venv и зависимости, данные сохраняются. «Полная переустановка» — DESTRUCTIVE: удаляет окружение и ВСЕ данные (индекс, граф, адаптер, журнал) и разворачивает заново; `.env` сохраняется, сервис будет недоступен во время процесса. Выбирайте кнопку под вашу платформу. На GPU нужен сервис, запущенный от пользователя с правами sudo.</div>
+
+      <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+        <b style="font-size:13px">Конвертер чертежей DWG (ODA File Converter)</b>
+        <div class="note" style="margin:4px 0 8px">Запасной конвертер DWG→DXF, когда встроенный <code>dwg2dxf</code> (libredwg) не справляется с новыми версиями DWG. При индексации используется автоматически, если установлен.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="act" onclick="odaInstall()">⬇️ Установить / проверить ODA</button>
+          <span id="oda_msg" class="note"></span>
+        </div>
+        <pre id="oda_log" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:220px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+      </div>
     </div>
   </section>
 
@@ -4367,6 +4377,13 @@ async function reinstallFull(kind){
   rsMsg('запуск полной переустановки ('+kind+')…');
   const r=await adminPost('/api/admin/reinstall-full',{kind});
   rsMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
+}
+async function odaInstall(){
+  const m=$('#oda_msg'); if(m){m.textContent='проверка/установка…';m.className='note';}
+  const lg=$('#oda_log'); if(lg){ lg.style.display='block'; lg.textContent='…'; }
+  const r=await adminPost('/api/admin/oda/install');
+  if(m){ m.textContent=r&&r.ok?('ODA готов ✓'+(r.path?(': '+r.path):'')):(r&&r.msg||'не удалось'); m.className=(r&&r.ok)?'saved':'note'; }
+  if(lg) lg.textContent=(r&&r.log)||(r&&r.msg)||'нет вывода';
 }
 
 // ---- удалённые хосты ----

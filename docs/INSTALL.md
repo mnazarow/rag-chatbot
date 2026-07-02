@@ -53,7 +53,11 @@ chmod +x setup.sh
    `poppler`, `tesseract` (+ `tesseract-lang` для OCR на русском), `libredwg`,
    `antiword`, `p7zip`/`unar` (архивы), Ollama, Docker; Python-зависимости (включая
    `matplotlib` для рендера чертежей, `psutil` для метрик, `pytesseract`/`rawpy`/
-   `Pillow` для OCR) ставятся из `requirements.txt`;
+   `Pillow` для OCR) ставятся из `requirements.txt`. Для «трудных» DWG (новые версии,
+   которые не берёт `libredwg`/`dwg2dxf`) можно поставить **ODA File Converter** —
+   он используется как запасной конвертер DWG→DXF автоматически; установить/проверить —
+   кнопкой «Администратор → Переустановка и сброс → Установить/проверить ODA» (или задать
+   путь в `ODA_CONVERTER_PATH`);
 3. запуск Ollama как сервиса и скачивание LLM (по умолчанию
    `qwen3.6:35b-a3b-q4_K_M`);
 4. поднятие Qdrant в Docker (`docker-compose.yml`);

@@ -53,6 +53,9 @@ CHUNK_OVERLAP = _int("CHUNK_OVERLAP", 150)
 # (например огромный архив с тысячами моделей) даёт больше — лишнее отбрасывается
 # с предупреждением. 0 — без ограничения.
 INGEST_MAX_CHUNKS = _int("INGEST_MAX_CHUNKS", 20000)
+# Путь к ODA File Converter (конвертер DWG→DXF, запасной к dwg2dxf). Пусто —
+# искать автоматически (PATH и типовые места установки, вкл. .app на macOS).
+ODA_CONVERTER_PATH = os.getenv("ODA_CONVERTER_PATH", "")
 TOP_K_RETRIEVE = _int("TOP_K_RETRIEVE", 20)
 TOP_K_RERANK = _int("TOP_K_RERANK", 6)
 MIN_SCORE = _float("MIN_SCORE", 0.30)

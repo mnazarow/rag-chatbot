@@ -1344,6 +1344,13 @@ def admin_redis_install(x_admin_token: str | None = Header(None)):
     return admin_ops.redis_install()
 
 
+@app.post("/api/admin/oda/install")
+def admin_oda_install(x_admin_token: str | None = Header(None)):
+    """Установить/проверить ODA File Converter (запасной конвертер DWG→DXF)."""
+    _check_admin(x_admin_token)
+    return admin_ops.oda_install()
+
+
 @app.get("/api/admin/catalog/status")
 def admin_catalog_status(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

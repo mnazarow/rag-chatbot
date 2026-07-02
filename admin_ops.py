@@ -2849,6 +2849,61 @@ def cache_clear() -> dict:
     return {"ok": True, "cleared": cache.clear()}
 
 
+def oda_install() -> dict:
+    """Установить/проверить ODA File Converter (запасной конвертер DWG→DXF).
+    Авто-установка возможна не всегда (ODA требует ручной загрузки с сайта после
+    регистрации) — тогда возвращаем ссылку и инструкцию."""
+    import platform
+    import shutil as _sh
+    import loaders
+    log: list[str] = []
+
+    def run(cmd):
+        log.append("$ " + " ".join(cmd))
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+            out = (p.stdout or "") + (p.stderr or "")
+            if out.strip():
+                log.append(out.strip()[:4000])
+            return p.returncode
+        except Exception as e:
+            log.append(f"[ошибка запуска] {e}")
+            return 1
+
+    cur = loaders.find_oda_converter()
+    if cur:
+        return {"ok": True, "msg": "ODA File Converter уже установлен", "path": cur,
+                "log": f"Найден: {cur}"}
+
+    link = "https://www.opendesign.com/guestfiles/oda_file_converter"
+    sysname = platform.system().lower()
+    if "darwin" in sysname and _sh.which("brew"):
+        run(["brew", "install", "--cask", "oda-file-converter"])
+        cur = loaders.find_oda_converter()
+        if cur:
+            return {"ok": True, "msg": "установлен через Homebrew", "path": cur,
+                    "log": "\n".join(log)}
+    elif _sh.which("apt-get"):
+        # в репозиториях ODA обычно нет; ставим xvfb (нужен для headless-запуска)
+        run(["apt-get", "install", "-y", "xvfb"])
+
+    return {
+        "ok": False,
+        "msg": "Автоустановка недоступна: ODA File Converter требует ручной загрузки "
+               "с сайта ODA (после бесплатной регистрации).",
+        "link": link,
+        "log": "\n".join(log) + (
+            f"\n\nСкачайте ODA File Converter: {link}\n"
+            "• macOS: откройте .dmg и перетащите приложение в /Applications — путь "
+            "определится автоматически.\n"
+            "• Linux: установите .deb/.rpm/.run; для сервера без дисплея нужен пакет "
+            "xvfb (устанавливается этой кнопкой на apt-системах).\n"
+            "• Если установили в нестандартное место — укажите путь к исполняемому файлу "
+            "в настройке ODA_CONVERTER_PATH.\n"
+            "После установки нажмите кнопку ещё раз для проверки."),
+    }
+
+
 def _redis_ping(host: str = "127.0.0.1", port: int = 6379) -> bool:
     """Проверить доступность Redis без зависимости от настроек (для установки)."""
     import socket as _s

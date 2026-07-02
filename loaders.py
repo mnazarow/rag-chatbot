@@ -306,30 +306,106 @@ def _load_html(path: Path):
         yield {"text": text, "page": None}
 
 
-def _dwg_to_dxf(path: Path) -> Path:
-    """Конвертировать DWG -> DXF (dwg2dxf из libredwg-tools или ODA File Converter)."""
+def find_oda_converter():
+    """Найти ODA File Converter: путь из настроек/env, затем PATH, затем типовые места
+    установки (в т. ч. .app на macOS). Возвращает путь к исполняемому файлу или None."""
+    import os as _os
+    import shutil
+    cands = []
+    try:
+        import settings
+        p = (settings.get("ODA_CONVERTER_PATH") or "").strip()
+    except Exception:
+        p = _os.getenv("ODA_CONVERTER_PATH", "")
+    if p:
+        cands.append(p)
+    w = shutil.which("ODAFileConverter")
+    if w:
+        cands.append(w)
+    cands += [
+        "/Applications/ODAFileConverter.app/Contents/MacOS/ODAFileConverter",  # macOS
+        "/usr/bin/ODAFileConverter", "/usr/local/bin/ODAFileConverter",
+        "/opt/ODAFileConverter/ODAFileConverter",
+    ]
+    for c in cands:
+        try:
+            if c and Path(c).exists():
+                return c
+        except Exception:
+            continue
+    return None
+
+
+def _dwg_to_dxf(path: Path):
+    """Конвертировать DWG -> DXF. Сначала dwg2dxf (libredwg), при неудаче —
+    ODA File Converter (если установлен). Возвращает путь к DXF или None
+    (не бросает исключение — вызывающий перейдёт к аварийному извлечению)."""
+    import os as _os
     import shutil
     import subprocess
     import tempfile
     out = Path(tempfile.gettempdir()) / (path.stem + "_conv.dxf")
     if shutil.which("dwg2dxf"):
-        subprocess.run(["dwg2dxf", "-o", str(out), str(path)],
-                       check=True, capture_output=True, timeout=180)
-        if out.exists():
+        try:
+            subprocess.run(["dwg2dxf", "-o", str(out), str(path)],
+                           check=True, capture_output=True, timeout=180)
+        except Exception:
+            pass                       # частый случай: неподдерживаемая версия DWG
+        if out.exists() and out.stat().st_size > 0:
             return out
-    oda = shutil.which("ODAFileConverter")
+    # запасной конвертер — ODA File Converter (директория→директория)
+    oda = find_oda_converter()
     if oda:
-        ind, outd = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
-        shutil.copy(path, ind / path.name)
-        subprocess.run([oda, str(ind), str(outd), "ACAD2018", "DXF", "0", "1"],
-                       capture_output=True, timeout=300)
-        cand = outd / (path.stem + ".dxf")
-        if cand.exists():
-            shutil.copy(cand, out)
-            return out
-    raise RuntimeError("для DWG нужен конвертер в DXF: установите libredwg-tools "
-                       "(команда dwg2dxf) или ODA File Converter, либо сохраните "
-                       "чертёж как DXF/PDF")
+        try:
+            ind, outd = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+            shutil.copy(path, ind / path.name)
+            cmd = [oda, str(ind), str(outd), "ACAD2018", "DXF", "0", "1", "*.DWG"]
+            # на Linux без дисплея ODA (Qt) требует виртуальный X-сервер
+            if _os.name == "posix" and not _os.environ.get("DISPLAY") \
+                    and shutil.which("xvfb-run") and "darwin" not in _os.sys.platform:
+                cmd = ["xvfb-run", "-a"] + cmd
+            subprocess.run(cmd, capture_output=True, timeout=300)
+            cand = outd / (path.stem + ".dxf")
+            if cand.exists() and cand.stat().st_size > 0:
+                shutil.copy(cand, out)
+                return out
+        except Exception:
+            pass
+    return None
+
+
+def _dwg_scrape_text(path) -> str:
+    """Аварийное извлечение текста прямо из бинарника DWG, когда конвертер (dwg2dxf/ODA)
+    не справился. Достаёт печатаемые строки (cp1251 и UTF-16LE) и оставляет только
+    осмысленные: со словами/пробелами/кириллицей или артикулы (буквы+цифры, напр.
+    SPL-3-A-105). Грубо, но лучше, чем потерять файл целиком."""
+    import re
+    try:
+        data = Path(path).read_bytes()
+    except Exception:
+        return ""
+    chunks = []
+    for enc in ("cp1251", "utf-16-le"):
+        try:
+            s = data.decode(enc, errors="ignore")
+        except Exception:
+            continue
+        # режем на «слова» по непечатаемым символам
+        chunks += re.split(r"[\x00-\x1f\x7f]+", s)
+    out = []
+    for v in chunks:
+        v = v.strip()
+        if len(v) < 3:
+            continue
+        looks_partno = bool(re.search(r"\d", v)) and bool(re.search(r"[A-Za-zА-Яа-я]", v)) \
+            and ("-" in v or "_" in v)
+        if _has_cyr_or_space(v) or looks_partno:
+            # отсекаем очевидный техномусор классов DWG
+            if not re.match(r"^(Ac[A-Z]|AutoCAD|ANSI|ISO-|\*|SHX|Standard$)", v):
+                out.append(v)
+        if sum(len(x) for x in out) > 8000:
+            break
+    return "\n".join(dict.fromkeys(out)).strip()
 
 
 def _dxf_scrape_text(src) -> str:
@@ -386,6 +462,19 @@ def _load_cad(path: Path):
     if path.suffix.lower() == ".dwg":
         src = _dwg_to_dxf(path)
         tmp = src
+        if src is None:
+            # конвертер не справился (частый случай для новых версий DWG) —
+            # не роняем файл ошибкой, а пробуем достать текст из бинарника
+            scraped = _dwg_scrape_text(path)
+            if scraped:
+                print(f"  ~ CAD: {path.name} — DWG не конвертируется, "
+                      f"аварийное извлечение текста из бинарника")
+                yield {"text": "Текст чертежа DWG (аварийное извлечение):\n" + scraped,
+                       "page": None}
+            else:
+                print(f"  ~ CAD: {path.name} — DWG не конвертируется и текст не найден "
+                      f"(нужен libredwg/ODA или сохраните как DXF/PDF); пропуск")
+            return
     try:
         doc = None
         try:
