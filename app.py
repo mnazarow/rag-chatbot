@@ -477,6 +477,12 @@ def api_telegram_recent(limit: int = 10):
     return {"items": db.tg_recent(min(max(limit, 1), 200))}
 
 
+@app.get("/api/voip-recent")
+def api_voip_recent(limit: int = 10):
+    """Последние запросы VoIP (для дашборда)."""
+    return {"items": db.voip_recent(min(max(limit, 1), 200))}
+
+
 # ============================ ЧАТ С ПРИЛОЖЕННЫМ ДОКУМЕНТОМ ============================
 @app.post("/chat-doc")
 async def chat_doc(file: UploadFile = File(...), question: str = Form(...),

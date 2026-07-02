@@ -233,6 +233,11 @@
       <table><thead><tr><th>Время</th><th>Пользователь</th><th>Вопрос</th><th>Статус</th><th>Оценка</th><th>Комментарий</th></tr></thead>
       <tbody id="dashtgrecent"></tbody></table>
     </div>
+    <div class="box">
+      <h3>📞 Последние запросы VoIP</h3>
+      <table><thead><tr><th>Время</th><th>Добавочный / сотрудник</th><th>Вопрос</th><th>Ответ</th><th>Оценка</th><th>Комментарий</th></tr></thead>
+      <tbody id="dashvoiprecent"></tbody></table>
+    </div>
   </section>
 
   <!-- ===== СХЕМА ===== -->
@@ -1855,42 +1860,58 @@ async function loadLlmActivity(){
   }
 }
 
-// ---- дашборд ----
-async function loadStats(){
-  const s = await (await fetch('/api/stats')).json();
+// ---- дашборд (загрузка блоками: каждый блок грузится и рисуется независимо) ----
+async function _jget(url){ try{ return await (await fetch(url,{cache:'no-store'})).json(); }catch(e){ return null; } }
+function _blkLoading(el,cols){ const e=$('#'+el); if(e) e.innerHTML=`<tr><td colspan="${cols}" class="note">загрузка…</td></tr>`; }
+async function dashStats(){
+  const s = await _jget('/api/stats'); if(!s) return;
   $('#footinfo').textContent = `Модель: ${s.model} · ${s.backend}/${s.device}`;
   const cards = [
-    ['Всего запросов', s.total],
-    ['Сегодня', s.today],
+    ['Всего запросов', s.total],['Сегодня', s.today],
     ['✈️ Запросов в Телеграм', (s.tg_total||0)+'<small> · сегодня '+(s.tg_today||0)+'</small>'],
-    ['Доля ответов', s.answer_rate+'<small>%</small>'],
-    ['Ср. релевантность', s.avg_top_score],
+    ['Доля ответов', s.answer_rate+'<small>%</small>'],['Ср. релевантность', s.avg_top_score],
     ['Ср. задержка', s.avg_latency_ms+'<small> мс</small>'],
     ['Ср. поиск', (s.avg_retrieve_ms||0)+'<small> мс</small>'],
-    ['Ср. генерация', (s.avg_gen_ms||0)+'<small> мс</small>'],
-    ['Чанков в базе', s.chunks],
+    ['Ср. генерация', (s.avg_gen_ms||0)+'<small> мс</small>'],['Чанков в базе', s.chunks],
   ];
-  $('#statcards').innerHTML = cards.map(([k,v])=>
-    `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
-  const r = await (await fetch('/api/logs?limit=8')).json();
-  $('#dashrecent').innerHTML = r.map(x=>
+  $('#statcards').innerHTML = cards.map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+}
+async function dashWebRecent(){
+  const r = await _jget('/api/logs?limit=8'); if(!$('#dashrecent'))return;
+  $('#dashrecent').innerHTML = (r||[]).map(x=>
     `<tr><td>${fmtTime(x.ts)}</td><td style="max-width:320px">${esc(x.question)}</td>
      <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет</span>'}</td>
      <td>${ratingBadge(x.rating)}</td>
      <td style="max-width:220px">${commentCell(x.comment)}</td></tr>`).join('') || emptyRow(5);
-  // последние запросы в Телеграм — отдельно
-  try{
-    const tr=await (await fetch('/api/telegram-recent?limit=8')).json();
-    const ti=(tr&&tr.items)||[];
-    $('#dashtgrecent').innerHTML = ti.length ? ti.map(x=>
-      `<tr><td>${fmtTime(x.ts)}</td>
-       <td>${x.username?('@'+esc(x.username)):esc(String(x.chat_id))}</td>
-       <td style="max-width:300px">${esc(x.question)}</td>
-       <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет</span>'}</td>
-       <td>${ratingBadge(x.rating)}</td>
-       <td style="max-width:200px">${commentCell(x.comment)}</td></tr>`).join('')
-      : '<tr><td colspan="6" class="note">пока нет запросов из Телеграм</td></tr>';
-  }catch(e){}
+}
+async function dashTgRecent(){
+  const tr=await _jget('/api/telegram-recent?limit=8'); if(!$('#dashtgrecent'))return;
+  const ti=(tr&&tr.items)||[];
+  $('#dashtgrecent').innerHTML = ti.length ? ti.map(x=>
+    `<tr><td>${fmtTime(x.ts)}</td>
+     <td>${x.username?('@'+esc(x.username)):esc(String(x.chat_id))}</td>
+     <td style="max-width:300px">${esc(x.question)}</td>
+     <td>${x.answered?'<span class="tag ok">ответ</span>':'<span class="tag no">нет</span>'}</td>
+     <td>${ratingBadge(x.rating)}</td>
+     <td style="max-width:200px">${commentCell(x.comment)}</td></tr>`).join('')
+    : '<tr><td colspan="6" class="note">пока нет запросов из Телеграм</td></tr>';
+}
+async function dashVoipRecent(){
+  const vr=await _jget('/api/voip-recent?limit=8'); if(!$('#dashvoiprecent'))return;
+  const vi=(vr&&vr.items)||[];
+  $('#dashvoiprecent').innerHTML = vi.length ? vi.map(x=>
+    `<tr><td>${fmtTime(x.ts)}</td>
+     <td>${x.username?esc(x.username):(x.caller?('доб. '+esc(x.caller)):'<span class="note">—</span>')}</td>
+     <td style="max-width:280px">${esc(x.question||'')}</td>
+     <td style="max-width:320px">${answerCell(x.answer)}</td>
+     <td>${ratingBadge(x.rating)}</td>
+     <td style="max-width:200px">${commentCell(x.comment)}</td></tr>`).join('')
+    : '<tr><td colspan="6" class="note">пока нет звонков</td></tr>';
+}
+function loadStats(){
+  // показываем плейсхолдеры и грузим блоки параллельно — каждый рисуется по готовности
+  _blkLoading('dashrecent',5); _blkLoading('dashtgrecent',6); _blkLoading('dashvoiprecent',6);
+  dashStats(); dashWebRecent(); dashTgRecent(); dashVoipRecent();
 }
 
 // ---- схема работы (живая, по настройкам и статусам) ----
@@ -4806,11 +4827,12 @@ async function loadVoipCallers(){
       let body;
       if(h===undefined) body='<span class="note">загрузка…</span>';
       else if(!h.length) body='<span class="note">нет записей</span>';
-      else body='<table style="width:100%"><thead><tr><th>Время</th><th>Вопрос</th><th>Ответ</th><th>Оценка</th></tr></thead><tbody>'+
+      else body='<table style="width:100%"><thead><tr><th>Время</th><th>Вопрос</th><th>Ответ</th><th>Оценка</th><th>Комментарий</th></tr></thead><tbody>'+
         h.map(x=>`<tr><td style="white-space:nowrap">${fmtTime(x.ts)}</td>
-          <td style="max-width:280px">${esc(x.question||'')}</td>
-          <td style="max-width:420px"><span style="white-space:pre-wrap">${esc(x.answer||'')}</span></td>
-          <td>${ratingBadge(x.rating)}</td></tr>`).join('')+'</tbody></table>';
+          <td style="max-width:260px">${esc(x.question||'')}</td>
+          <td style="max-width:360px"><span style="white-space:pre-wrap">${esc(x.answer||'')}</span></td>
+          <td>${ratingBadge(x.rating)}</td>
+          <td style="max-width:240px">${commentCell(x.comment)}</td></tr>`).join('')+'</tbody></table>';
       rows.push(`<tr><td colspan="5" style="background:rgba(127,127,127,.05)">${body}</td></tr>`);
     }
   });
