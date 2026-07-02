@@ -23,7 +23,9 @@ import time
 import settings
 
 _RATE = 8000
-_FRAME = 320          # 20 мс при 8 кГц/16 бит/моно
+# pyVoIP (PCMU/PCMA) работает с 8 кГц/моно/**8 бит unsigned** PCM — НЕ 16-бит!
+# (см. документацию pyVoIP). Отсюда 1 байт = 1 сэмпл, 20 мс = 160 байт.
+_FRAME = 160          # 20 мс при 8 кГц/8 бит unsigned/моно
 
 _phone = None
 _stop = threading.Event()
@@ -51,16 +53,59 @@ def _guess_ip() -> str:
         return "0.0.0.0"
 
 
+def _tts_u8(text: str) -> bytes:
+    """Озвучить текст → PCM 8 кГц/моно/**8 бит unsigned** (формат pyVoIP для PCMU/PCMA).
+    Именно unsigned 8-бит; передача 16-бит вызывает шипение/треск."""
+    import os
+    import subprocess
+    import tempfile
+    text = (text or "").strip()
+    if not text:
+        return b""
+    ogg = tempfile.mktemp(suffix=".ogg")
+    try:
+        import tts
+        if not tts.synthesize(text, ogg) or not os.path.exists(ogg):
+            return b""
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-i", ogg, "-ar", str(_RATE), "-ac", "1",
+             "-f", "u8", "-"], capture_output=True, timeout=120)
+        return r.stdout if r.returncode == 0 else b""
+    except Exception as e:
+        print(f"[sip-reg] TTS→u8: {e}")
+        return b""
+    finally:
+        try:
+            os.remove(ogg)
+        except Exception:
+            pass
+
+
+def _u8_to_s16(data: bytes) -> bytes:
+    """Входящий звук pyVoIP (unsigned 8-бит) → signed 16-бит для RMS/STT (Whisper)."""
+    if not data:
+        return b""
+    try:
+        import audioop
+        signed8 = audioop.bias(data, 1, -128)     # unsigned→signed 8-бит
+        return audioop.lin2lin(signed8, 1, 2)     # 8-бит → 16-бит
+    except Exception:
+        # фолбэк без audioop: (b-128) → 16-бит
+        import array
+        out = array.array("h", (int((b - 128) * 256) for b in data))
+        return out.tobytes()
+
+
 def _play(call, pcm: bytes) -> None:
-    """Проиграть PCM (8 кГц/16 бит/моно) в звонок и подождать окончания."""
+    """Проиграть PCM (8 кГц/8 бит unsigned/моно) в звонок и подождать окончания."""
     if not pcm:
         return
     try:
         call.write_audio(pcm)
     except Exception:
         return
-    # дать буферу проиграться (длительность аудио + небольшой запас)
-    dur = len(pcm) / float(_RATE * 2)
+    # дать буферу проиграться (длительность аудио + небольшой запас); u8 → 1 байт/сэмпл
+    dur = len(pcm) / float(_RATE)
     end = time.time() + dur + 0.2
     while time.time() < end and not _stop.is_set():
         try:
@@ -85,7 +130,7 @@ def _drain(call, seconds: float = 0.3) -> None:
 
 def _on_call(call) -> None:
     """Колбэк pyVoIP на входящий звонок: ответить и вести диалог."""
-    from sip_bridge import _tts_pcm, _stt, _answer, _rms
+    from sip_bridge import _stt, _answer, _rms
     try:
         from pyVoIP.VoIP import CallState, InvalidStateError
     except Exception as e:
@@ -110,16 +155,16 @@ def _on_call(call) -> None:
         call.answer()
         g = _cfg("SIP_GREETING",
                  "Здравствуйте! Это голосовой ассистент компании. Задайте вопрос после сигнала.")
-        _play(call, _tts_pcm(g))
+        _play(call, _tts_u8(g))
         _drain(call, 0.2)
 
-        buf = bytearray()
+        buf = bytearray()          # накапливаем уже в 16-бит (для STT)
         voiced = False
         sil = 0
         started = 0.0
         while call.state == CallState.ANSWERED and not _stop.is_set():
             try:
-                data = call.read_audio(_FRAME, False)
+                data = call.read_audio(_FRAME, False)   # unsigned 8-бит
             except InvalidStateError:
                 break
             except Exception:
@@ -127,6 +172,7 @@ def _on_call(call) -> None:
             if not data:
                 time.sleep(0.02)
                 continue
+            data = _u8_to_s16(data)                      # → 16-бит для RMS/STT
             rms = _rms(data)
             if rms >= silence_rms:
                 if not voiced:
@@ -160,7 +206,7 @@ def _on_call(call) -> None:
                     except Exception:
                         pass
                 ans = _answer(q) or "Извините, не нашёл ответа в документах."
-                _play(call, _tts_pcm(ans))
+                _play(call, _tts_u8(ans))
                 _drain(call, 0.3)
             time.sleep(0.01)
     except InvalidStateError:
