@@ -1706,6 +1706,13 @@ def admin_reindex(payload: dict = Body(default={}),
     return admin_ops.reindex(bool(payload.get("reset")))
 
 
+@app.post("/api/admin/reindex/stop")
+def admin_reindex_stop(x_admin_token: str | None = Header(None)):
+    """Остановить текущую индексацию (прибить процесс ingest и его воркеры)."""
+    _check_admin(x_admin_token)
+    return admin_ops.stop_reindex()
+
+
 @app.post("/api/admin/apply-llm")
 def admin_apply_llm(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

@@ -256,7 +256,7 @@ def _bg(job: dict, label: str, cmds: list, logfile: str, timeout: int = 24 * 360
 
     def run():
         job.update(running=True, started=time.time(), finished=None, ok=None,
-                   log="", logfile=logfile)
+                   log="", logfile=logfile, stopped=False, _proc=None)
         if "summary" in job:
             job["summary"] = ""
         if "label" in job:
@@ -267,12 +267,21 @@ def _bg(job: dict, label: str, cmds: list, logfile: str, timeout: int = 24 * 360
                 for cmd in cmds:
                     fp.write("$ " + " ".join(str(c) for c in cmd) + "\n")
                     fp.flush()
-                    rc = subprocess.Popen(cmd, cwd=ROOT, stdout=fp,
-                                          stderr=subprocess.STDOUT).wait(timeout=timeout)
+                    # start_new_session — чтобы можно было прибить всю группу процессов
+                    # (ingest.py + его воркеры) при остановке
+                    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=fp,
+                                            stderr=subprocess.STDOUT,
+                                            start_new_session=True)
+                    job["_proc"] = proc
+                    rc = proc.wait(timeout=timeout)
+                    job["_proc"] = None
                     if rc != 0:
                         ok = False
                         break
             job["log"] = _tail(logfile)
+            if job.get("stopped"):
+                ok = False
+                job["log"] = (job["log"] + "\n[остановлено пользователем]").strip()
             if "summary" in job:
                 job["summary"] = _extract_summary(job["log"])
             job["ok"] = ok
@@ -1308,6 +1317,41 @@ def reindex(reset: bool = False) -> dict:
     if r.get("ok"):
         r["msg"] = "индексация запущена"
     return r
+
+
+def _stop_job(job: dict) -> dict:
+    """Остановить фоновую задачу: прибить процесс и всю его группу."""
+    import os as _os
+    import signal as _sig
+    if not job.get("running"):
+        return {"ok": False, "msg": "задача не выполняется"}
+    job["stopped"] = True
+    proc = job.get("_proc")
+    if proc is None:
+        return {"ok": True, "msg": "остановка запрошена"}
+    try:
+        # прибиваем всю группу процессов (ingest.py + воркеры)
+        try:
+            _os.killpg(_os.getpgid(proc.pid), _sig.SIGTERM)
+        except Exception:
+            proc.terminate()
+        for _ in range(20):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        if proc.poll() is None:                      # не завершился — жёстко
+            try:
+                _os.killpg(_os.getpgid(proc.pid), _sig.SIGKILL)
+            except Exception:
+                proc.kill()
+    except Exception as e:
+        return {"ok": False, "msg": f"не удалось остановить: {e}"}
+    return {"ok": True, "msg": "индексация останавливается"}
+
+
+def stop_reindex() -> dict:
+    """Остановить текущую индексацию/переиндексацию."""
+    return _stop_job(_job)
 
 
 def apply_llm() -> dict:

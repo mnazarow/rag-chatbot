@@ -1140,6 +1140,7 @@
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
         <button class="act" onclick="reindex(false)">🔄 Переиндексировать</button>
         <button class="act ghost" onclick="reindex(true)">♻️ Переиндексировать с нуля</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="stopReindex()">⏹ Остановить индексацию</button>
         <button class="act ghost" onclick="applyLLM()">🧠 Применить модель LLM (рестарт vLLM)</button>
         <button class="act ghost" onclick="restartSvc()">⏻ Перезапустить сервис</button>
         <button class="act ghost" onclick="loadOps()">Обновить статус</button>
@@ -5232,6 +5233,8 @@ function pollJob(){ clearInterval(pollT); pollT=setInterval(loadOps,4000);
   setTimeout(()=>clearInterval(pollT),300000); }
 async function reindex(reset){ if(reset&&!confirm('Пересоздать индекс с нуля?'))return;
   opsMsg('запуск индексации…'); const r=await adminPost('/api/admin/reindex',{reset}); opsMsg(r.msg||'ок',r.ok!==false); pollJob(); }
+async function stopReindex(){ if(!confirm('Остановить текущую индексацию? Уже проиндексированные файлы останутся; можно продолжить позже.'))return;
+  opsMsg('остановка индексации…'); const r=await adminPost('/api/admin/reindex/stop'); opsMsg(r.msg||'ок',r.ok!==false); pollJob(); }
 async function applyLLM(){ opsMsg('перезапуск vLLM…'); const r=await adminPost('/api/admin/apply-llm'); opsMsg(r.msg||'готово',r.ok!==false); }
 async function restartSvc(){ if(!confirm('Перезапустить сервис API?'))return;
   opsMsg('перезапуск…'); await adminPost('/api/admin/restart'); setTimeout(loadOps,5000); }
