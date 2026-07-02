@@ -1138,8 +1138,14 @@
     <!-- токен -->
     <div class="box">
       <div class="field" style="margin:0"><label>Токен администратора (для применения изменений)</label>
-        <input type="password" id="cfg_token" placeholder="введите токен, если задан на сервере">
-        <div class="note" id="tokennote"></div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input type="password" id="cfg_token" placeholder="введите токен, если задан на сервере" style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')checkToken()">
+          <button class="act" onclick="checkToken()">Проверить токен</button>
+          <span id="tokencheck" class="note"></span>
+        </div>
+        <div class="note" id="tokennote"></div>
+        <div class="note" style="margin-top:4px;line-height:1.5">Это поле — для <b>авторизации действий</b> (сохранение настроек, переиндексация и т. п.). Чтобы <b>сменить сам токен</b>, используйте поле «Токен администратора» в группе настроек «Доступ» ниже и сохраните.</div>
+      </div>
     </div>
 
     <!-- DNS: статические записи имя→IP -->
@@ -4872,6 +4878,18 @@ async function saveVoip(){
   if(m){ m.textContent=ok?'✓ Сохранено (для «restart»-настроек перезапустите/перерегистрируйте)':'✗ '+(j.detail||'ошибка'); m.className=ok?'saved':'note'; }
   if(ok){ await loadConfig(); }
   setTimeout(()=>{if(m)m.textContent='';},5000);
+}
+async function checkToken(){
+  const m=$('#tokencheck'); if(m){ m.textContent='проверка…'; m.className='note'; }
+  let r; try{
+    r=await fetch('/api/admin/check-token?t='+Date.now(),{cache:'no-store',
+      headers:{'X-Admin-Token':$('#cfg_token').value}});
+  }catch(e){ if(m){m.textContent='нет связи с сервером';m.className='note';} return; }
+  if(m){
+    if(r.ok){ m.textContent='✓ токен принят'; m.className='saved'; }
+    else if(r.status===401){ m.textContent='✗ неверный токен'; m.className='note'; m.style.color='#f87171'; }
+    else{ m.textContent='✗ ошибка ('+r.status+')'; m.className='note'; }
+  }
 }
 async function saveConfig(){
   const body={};

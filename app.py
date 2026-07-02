@@ -985,6 +985,13 @@ def api_config():
     }
 
 
+@app.get("/api/admin/check-token")
+def api_check_token(x_admin_token: str | None = Header(None)):
+    """Проверка токена администратора: 200 — принят, 401 — неверный."""
+    _check_admin(x_admin_token)
+    return {"ok": True, "auth_required": bool(settings.get("ADMIN_TOKEN"))}
+
+
 @app.post("/api/config")
 def api_set_config(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
