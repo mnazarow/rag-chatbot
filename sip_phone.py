@@ -97,24 +97,45 @@ def _u8_to_s16(data: bytes) -> bytes:
 
 
 def _play(call, pcm: bytes) -> None:
-    """Проиграть PCM (8 кГц/8 бит unsigned/моно) в звонок и подождать окончания."""
+    """Проиграть PCM (8 кГц/8 бит unsigned/моно) в звонок.
+
+    ВАЖНО: подаём небольшими кусками с точным темпом реального времени и небольшим
+    опережением (LEAD). Один большой write_audio заставляет pyVoIP на каждом 20-мс
+    кадре пересобирать огромный буфер (звук «замедляется» и трещит из-за underrun).
+    Малые куски + постоянный небольшой запас в буфере дают ровный звук."""
     if not pcm:
         return
     try:
-        call.write_audio(pcm)
+        from pyVoIP.VoIP import CallState
     except Exception:
-        return
-    # дать буферу проиграться (длительность аудио + небольшой запас); u8 → 1 байт/сэмпл
-    dur = len(pcm) / float(_RATE)
-    end = time.time() + dur + 0.2
-    while time.time() < end and not _stop.is_set():
+        CallState = None
+    CHUNK = 1600           # 200 мс при 8 кГц/8 бит (1 байт = сэмпл)
+    LEAD = 0.4             # держим ~0.4 c звука в буфере pyVoIP
+    start = time.time()
+    written = 0.0          # сколько секунд звука уже отдано
+    i = 0
+    n = len(pcm)
+    while i < n and not _stop.is_set():
+        frame = pcm[i:i + CHUNK]
+        i += CHUNK
         try:
-            from pyVoIP.VoIP import CallState
-            if call.state != CallState.ANSWERED:
-                break
+            call.write_audio(frame)
         except Exception:
-            break
-        time.sleep(0.02)
+            return
+        written += len(frame) / float(_RATE)
+        target = start + written - LEAD      # не забегать вперёд больше, чем на LEAD
+        while time.time() < target and not _stop.is_set():
+            if CallState is not None:
+                try:
+                    if call.state != CallState.ANSWERED:
+                        return
+                except Exception:
+                    return
+            time.sleep(0.02)
+    # дождаться проигрывания остатка буфера
+    remain = (start + written) - time.time()
+    if remain > 0:
+        time.sleep(min(remain + 0.15, 10.0))
 
 
 def _drain(call, seconds: float = 0.3) -> None:
