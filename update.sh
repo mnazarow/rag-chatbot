@@ -30,7 +30,7 @@ git reset --hard "origin/${BRANCH}"
 NEW="$(git rev-parse --short HEAD)"
 
 log "Обновляю системные пакеты (OCR/конвертеры)..."
-apt-get install -y tesseract-ocr tesseract-ocr-rus libredwg-tools antiword p7zip-full unar 2>/dev/null || true
+apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-rus libredwg-tools antiword p7zip-full unar 2>/dev/null || true   # ffmpeg — TTS/аудио для VoIP (SIP)
 
 log "Обновляю Python-зависимости..."
 ./.venv/bin/pip install -q -r gpu_variant/requirements-gpu.txt || true
