@@ -336,6 +336,8 @@ python query_lightrag.py "вопрос" --mode mix
 | `DOCS_DIR`        | Папка с документами                          | `/opt/db`                          |
 | `LLM_BACKEND`     | `ollama` (Apple) или `openai` (vLLM)         | `ollama`                           |
 | `LLM_MODEL`       | Имя модели для запросов                       | `qwen3.6:35b-a3b-q4_K_M`           |
+| `LLM_MAX_CONCURRENCY` | Очередь к LLM: макс. одновременных запросов (0 — без лимита) | `0` |
+| `LLM_QUEUE_TIMEOUT` / `LLM_REQUEST_DELAY` | Макс. ожидание в очереди, с / пауза между запросами, с | `120` / `0` |
 | `OLLAMA_URL`      | Адрес Ollama                                  | `http://localhost:11434`           |
 | `LLM_BASE_URL`    | Адрес vLLM (OpenAI API)                       | `http://localhost:8001/v1`         |
 | `EMBED_MODEL`     | Модель эмбеддингов                            | `BAAI/bge-m3`                      |
@@ -363,9 +365,14 @@ python query_lightrag.py "вопрос" --mode mix
 | `TELEGRAM_PIPELINE` | Показывать в ответе структуру формирования ответа (этапы) | `1` (вкл)            |
 | `TELEGRAM_SHOW_ANSWER` | Выводить текст ответа LLM в Телеграм (можно отключить) | `1` (вкл)             |
 | `TELEGRAM_FEEDBACK` | Кнопки оценки 👍/👎 и комментария под ответом бота | `1` (вкл)                       |
+| `TELEGRAM_PREVIEWS` / `TELEGRAM_PREVIEW_MAX` | Присылать превью источников (картинки/чертежи/кадры/аудио) / макс. на ответ | `1` / `4` |
 | `TTS_ENGINE` / `TTS_VOICE` | Движок синтеза речи и голос/модель (выбор из списка доступных в UI) | `auto` / пусто        |
 | `OCR_LLM_DESCRIBE` | При пустом/слабом OCR описывать изображение vision-моделью и индексировать описание | `0` (выкл) |
 | `OCR_LLM_MAX_CHUNKS` / `VISION_MODEL` | Порог чанков для описания / имя vision-модели (пусто = основная LLM) | `1` / пусто |
+| `VISION_TIMEOUT` / `VISION_RETRIES` | Таймаут vision-модели, с / число попыток описать изображение | `180` / `2` |
+| `INGEST_MAX_CHUNKS` | Лимит чанков на файл/архив (защита от «разбухания»; 0 — без лимита) | `20000` |
+| `ODA_CONVERTER_PATH` | Путь к ODA File Converter (запасной DWG→DXF; пусто — автопоиск) | пусто |
+| `HIDE_SOURCES_IF_NO_ANSWER` | Не показывать источники, если ответ — честное «нет точного ответа» | `0` (выкл) |
 | `SIP_ENABLED`     | Голосовой бот по SIP/АТС (Asterisk AudioSocket: STT→RAG→TTS) | `0` (выкл)               |
 | `SIP_BRIDGE_HOST` / `SIP_BRIDGE_PORT` | Адрес и порт AudioSocket-моста (указать в диалплане Asterisk) | `0.0.0.0` / `8090` |
 | `SIP_REGISTER_ENABLED` | Нативная SIP-регистрация (без AudioSocket; нужен pyVoIP) | `0` (выкл) |
