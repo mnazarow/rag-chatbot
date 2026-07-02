@@ -81,6 +81,36 @@ def _tts_u8(text: str) -> bytes:
             pass
 
 
+def _beep_u8(freq: int = 1000, ms: int = 250, vol: int = 90) -> bytes:
+    """Короткий сигнал (бип) в формате u8 8 кГц — чтобы абонент знал, когда говорить."""
+    import math
+    n = int(_RATE * ms / 1000)
+    return bytes((128 + int(vol * math.sin(2 * math.pi * freq * i / _RATE))) & 0xFF
+                 for i in range(n))
+
+
+def _caller_ext(call) -> str:
+    """Извлечь добавочный номер звонящего из SIP-заголовка From (best-effort)."""
+    import re
+    raw = ""
+    try:
+        frm = call.request.headers.get("From")
+        if isinstance(frm, dict):
+            raw = frm.get("number") or frm.get("user") or frm.get("raw") or str(frm)
+        else:
+            raw = str(frm)
+    except Exception:
+        try:
+            raw = str(call.request)
+        except Exception:
+            raw = ""
+    m = re.search(r"sip:([^@;>\s]+)@", raw)
+    if m:
+        return "".join(ch for ch in m.group(1) if ch.isdigit()) or m.group(1)
+    m = re.search(r'"?\+?(\d{2,})"?', raw)
+    return m.group(1) if m else ""
+
+
 def _u8_to_s16(data: bytes) -> bytes:
     """Входящий звук pyVoIP (unsigned 8-бит) → signed 16-бит для RMS/STT (Whisper)."""
     if not data:
@@ -159,11 +189,15 @@ def _on_call(call) -> None:
     max_utter = float(_cfg("SIP_MAX_UTTER_SEC", 15))
     need_silence = max(1, silence_ms // 20)
 
+    caller = _caller_ext(call)
+    if caller:
+        print(f"[sip-reg] звонок с добавочного {caller}")
     try:
         call.answer()
         g = _cfg("SIP_GREETING",
                  "Здравствуйте! Это голосовой ассистент компании. Задайте вопрос после сигнала.")
         _play(call, _tts_u8(g))
+        _play(call, _beep_u8())        # сигнал: «говорите»
         _drain(call, 0.2)
 
         buf = bytearray()          # накапливаем уже в 16-бит (для STT)
@@ -213,8 +247,13 @@ def _on_call(call) -> None:
                         activity.update(aid, stage="ответ", detail=q[:60])
                     except Exception:
                         pass
-                ans = _answer(q) or "Извините, не нашёл ответа в документах."
-                _play(call, _tts_u8(ans))
+                ans = _answer(q, caller=caller) or "Извините, не нашёл ответа в документах."
+                # по настройке: озвучить ответ модели или короткую отметку
+                if _cfg("SIP_SPEAK_ANSWER", True):
+                    speak = ans
+                else:
+                    speak = _cfg("SIP_ACK_PHRASE", "Ваш запрос принят и записан. Спасибо.")
+                _play(call, _tts_u8(speak))
                 _drain(call, 0.3)
             time.sleep(0.01)
     except InvalidStateError:

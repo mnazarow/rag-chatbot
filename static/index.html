@@ -661,6 +661,13 @@
         <span id="sipreg_msg" class="note"></span>
       </div>
     </div>
+
+    <div class="box">
+      <h3>📇 История звонков по добавочным <button class="act ghost" onclick="loadVoipCallers()">Обновить</button></h3>
+      <div class="note" style="margin-bottom:8px">Сотрудник определяется по добавочному номеру (поле «Доб.» в справочнике компании). Историю по каждому номеру можно удалить.</div>
+      <div style="overflow:auto;max-height:50vh"><table><thead><tr><th>Добавочный</th><th>Сотрудник</th><th>Запросов</th><th>Последний звонок</th><th></th></tr></thead>
+      <tbody id="voip_callers"></tbody></table></div>
+    </div>
   </section>
 
   <!-- ===== ЗАГРУЗКА СЕРВЕРА ===== -->
@@ -2010,13 +2017,15 @@ function schemaDemo(){
 }
 
 // ---- журнал ----
-function channelTag(ch){ return ch==='telegram'
-  ? '<span class="tag" style="background:#0088cc22;color:#4aa3e0">✈️ Телеграм</span>'
-  : '<span class="tag" style="background:#3b82f622;color:#7aa7f0">🌐 Веб</span>'; }
+function channelTag(ch){
+  if(ch==='telegram') return '<span class="tag" style="background:#0088cc22;color:#4aa3e0">✈️ Телеграм</span>';
+  if(ch==='voip') return '<span class="tag" style="background:#22c55e22;color:#4ade80">📞 VoIP</span>';
+  return '<span class="tag" style="background:#3b82f622;color:#7aa7f0">🌐 Веб</span>'; }
 async function loadLogs(){
   const r = await (await fetch('/api/journal?limit=400')).json();
   $('#logrows').innerHTML = r.map(x=>{
-    const who = (x.channel==='telegram' && x.username) ? ('<div class="note">@'+esc(x.username)+'</div>') : '';
+    const who = (x.channel==='telegram' && x.username) ? ('<div class="note">@'+esc(x.username)+'</div>')
+      : (x.channel==='voip' && x.username) ? ('<div class="note">📞 '+esc(x.username)+'</div>') : '';
     return `<tr><td>${fmtTime(x.ts)}</td><td>${channelTag(x.channel)}</td>
       <td style="max-width:320px">${esc(x.question)}${who}</td>
       <td style="max-width:360px">${answerCell(x.answer)}</td>
@@ -4732,6 +4741,24 @@ async function loadVoip(){
   // синхронизируем токен-поле VoIP с админским
   if($('#voip_token') && $('#cfg_token')) $('#voip_token').value=$('#cfg_token').value;
   await loadConfig();          // рендерит #voip_settings + статусы (loadSip/loadSipReg)
+  loadVoipCallers();
+}
+async function loadVoipCallers(){
+  if(!$('#voip_callers')) return;
+  let d; try{ d=await adminGet('/api/admin/voip/callers'); }catch(e){ return; }
+  const items=(d&&d.items)||[];
+  $('#voip_callers').innerHTML = items.length ? items.map(c=>
+    `<tr><td style="white-space:nowrap"><b>${esc(c.caller||'')}</b></td>
+      <td>${c.username?esc(c.username):'<span class="note">не определён</span>'}</td>
+      <td>${nz(c.n)}</td>
+      <td style="white-space:nowrap">${c.last_ts?fmtTime(c.last_ts):'—'}</td>
+      <td><button class="act ghost" style="padding:3px 9px;border-color:#ef4444;color:#f87171" onclick="voipDelete('${escAttr(c.caller||'')}')">Удалить историю</button></td></tr>`).join('')
+    : '<tr><td colspan="5" class="note">пока нет звонков</td></tr>';
+}
+async function voipDelete(caller){
+  if(!confirm('Удалить всю историю звонков по добавочному '+caller+'?'))return;
+  const r=await adminPost('/api/admin/voip/delete',{caller});
+  if(r&&r.ok) loadVoipCallers();
 }
 async function saveVoip(){
   const body={};

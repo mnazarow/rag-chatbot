@@ -607,6 +607,18 @@ FIELDS: list[dict] = [
     {"key": "SIP_RTP_PORT_HIGH", "label": "RTP-порт: верхний", "group": "Телефония (SIP/АТС)",
      "type": "text", "scope": "restart", "default": str(config.SIP_RTP_PORT_HIGH),
      "desc": "Верхняя граница диапазона UDP-портов для RTP-аудио."},
+    {"key": "SIP_SPEAK_ANSWER", "label": "Озвучивать ответ модели в звонке",
+     "group": "Телефония (SIP/АТС)", "type": "bool", "scope": "live",
+     "default": config.SIP_SPEAK_ANSWER,
+     "desc": "Включено — бот произносит сгенерированный ответ (RAG/LLM). Выключите, чтобы "
+             "бот отвечал только короткой отметкой (см. ниже), не озвучивая содержательный "
+             "ответ — запрос при этом всё равно распознаётся, обрабатывается и попадает в "
+             "журнал VoIP."},
+    {"key": "SIP_ACK_PHRASE", "label": "Короткая отметка (когда ответ не озвучивается)",
+     "group": "Телефония (SIP/АТС)", "type": "text", "scope": "live",
+     "default": config.SIP_ACK_PHRASE,
+     "desc": "Фраза, которую бот произносит вместо ответа, если «Озвучивать ответ модели» "
+             "выключено."},
     {"key": "SIP_DEBUG", "label": "Отладка SIP (подробный лог)", "group": "Телефония (SIP/АТС)",
      "type": "bool", "scope": "restart", "default": config.SIP_DEBUG,
      "desc": "Включает подробный лог pyVoIP — в логе сервиса виден весь обмен SIP (REGISTER и "

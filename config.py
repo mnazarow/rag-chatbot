@@ -83,6 +83,10 @@ SIP_LOCAL_PORT = _int("SIP_LOCAL_PORT", 5060)     # локальный SIP-по�
 SIP_RTP_PORT_LOW = _int("SIP_RTP_PORT_LOW", 10000)
 SIP_RTP_PORT_HIGH = _int("SIP_RTP_PORT_HIGH", 20000)
 SIP_DEBUG = os.getenv("SIP_DEBUG", "0") not in ("0", "false", "")   # подробный лог pyVoIP
+# Озвучивать в звонке ответ модели (LLM/RAG). Выкл — бот произносит короткую отметку
+# (SIP_ACK_PHRASE), но запрос всё равно обрабатывается и попадает в журнал.
+SIP_SPEAK_ANSWER = os.getenv("SIP_SPEAK_ANSWER", "1") not in ("0", "false", "")
+SIP_ACK_PHRASE = os.getenv("SIP_ACK_PHRASE", "Ваш запрос принят и записан. Спасибо.")
 # Ускорение отправки RTP в pyVoIP (TRANSMIT_DELAY_REDUCTION): если звук в звонке
 # «медленный»/с провалами (pyVoIP не успевает слать пакеты в реальном времени),
 # увеличьте (0.5, 1, 2). 0 — штатный темп pyVoIP.

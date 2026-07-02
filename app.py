@@ -660,6 +660,20 @@ def api_sip_register_status(x_admin_token: str | None = Header(None)):
     return sip_phone.status()
 
 
+@app.get("/api/admin/voip/callers")
+def api_voip_callers(x_admin_token: str | None = Header(None)):
+    """История VoIP по добавочным номерам (номер, сотрудник, число запросов)."""
+    _check_admin(x_admin_token)
+    return {"items": db.voip_callers()}
+
+
+@app.post("/api/admin/voip/delete")
+def api_voip_delete(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    """Удалить историю VoIP по добавочному номеру."""
+    _check_admin(x_admin_token)
+    return {"ok": True, "removed": db.voip_delete_by_caller(payload.get("caller", ""))}
+
+
 @app.post("/api/admin/sip/register-restart")
 def api_sip_register_restart(x_admin_token: str | None = Header(None)):
     """Перерегистрировать SIP-аккаунт (после смены настроек)."""

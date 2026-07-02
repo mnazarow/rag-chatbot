@@ -154,11 +154,33 @@ def _stt(pcm: bytes) -> str:
             pass
 
 
-def _answer(question: str) -> str:
+def _answer(question: str, caller: str = "") -> str:
     try:
         import telegram_bot
-        text, _src, _hits = telegram_bot._answer(question)
-        return (text or "").strip()
+        t0 = time.time()
+        text, src, hits = telegram_bot._answer(question)
+        text = (text or "").strip()
+        # идентификация сотрудника по добавочному номеру (для журнала)
+        ext = "".join(ch for ch in str(caller or "") if ch.isdigit())
+        label = ("доб. " + ext) if ext else ""
+        if ext:
+            try:
+                import db
+                emp = db.org_find_by_ext(ext)
+                if emp and emp.get("name"):
+                    label = f"{emp['name']} (доб. {ext})"
+            except Exception:
+                pass
+        try:
+            import db
+            db.log_request(question, "voip", len(hits),
+                           (hits[0].get("score", 0.0) if hits else 0.0),
+                           int((time.time() - t0) * 1000), len(text),
+                           bool(hits), src, answer=text, channel="voip",
+                           caller=ext, username=label)
+        except Exception as e:
+            print(f"[sip] журнал VoIP: {e}")
+        return text
     except Exception as e:
         print(f"[sip] ответ RAG: {e}")
         return ""
@@ -234,7 +256,11 @@ def _handle(sock) -> None:
                     except Exception:
                         pass
                 ans = _answer(q) or "Извините, не нашёл ответа в документах."
-                apcm = _tts_pcm(ans)
+                if _cfg("SIP_SPEAK_ANSWER", True):
+                    speak = ans
+                else:
+                    speak = _cfg("SIP_ACK_PHRASE", "Ваш запрос принят и записан. Спасибо.")
+                apcm = _tts_pcm(speak)
                 if apcm:
                     _send_audio(sock, apcm)
                 # сбрасываем накопившееся за время ответа, чтобы не принять эхо за реплику

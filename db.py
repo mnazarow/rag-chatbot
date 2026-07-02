@@ -225,7 +225,8 @@ def _ddl(d: str) -> list[str]:
                 n_hits INT, top_score DOUBLE, latency_ms INT,
                 answer_chars INT, answered INT, sources MEDIUMTEXT,
                 rating INT, retrieve_ms INT, gen_ms INT, session_id VARCHAR(80),
-                comment MEDIUMTEXT
+                comment MEDIUMTEXT, channel VARCHAR(16),
+                caller VARCHAR(64), username VARCHAR(255)
                 ) CHARACTER SET utf8mb4""",
             """CREATE TABLE IF NOT EXISTS tg_users(
                 chat_id BIGINT PRIMARY KEY, username VARCHAR(255), first_name VARCHAR(255),
@@ -289,7 +290,7 @@ def _ddl(d: str) -> list[str]:
                 n_hits INTEGER, top_score DOUBLE PRECISION, latency_ms INTEGER,
                 answer_chars INTEGER, answered INTEGER, sources TEXT,
                 rating INTEGER, retrieve_ms INTEGER, gen_ms INTEGER, session_id TEXT,
-                comment TEXT)""",
+                comment TEXT, channel TEXT, caller TEXT, username TEXT)""",
             """CREATE TABLE IF NOT EXISTS tg_users(
                 chat_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT,
                 status TEXT, created DOUBLE PRECISION, updated DOUBLE PRECISION,
@@ -346,7 +347,7 @@ def _ddl(d: str) -> list[str]:
             n_hits INTEGER, top_score REAL, latency_ms INTEGER,
             answer_chars INTEGER, answered INTEGER, sources TEXT,
             rating INTEGER, retrieve_ms INTEGER, gen_ms INTEGER, session_id TEXT,
-            comment TEXT)""",
+            comment TEXT, channel TEXT, caller TEXT, username TEXT)""",
         """CREATE TABLE IF NOT EXISTS tg_users(
             chat_id INTEGER PRIMARY KEY,
             username TEXT, first_name TEXT, status TEXT,
@@ -459,6 +460,20 @@ def init(dialect: str | None = None) -> None:
             cur.execute(f"ALTER TABLE requests ADD COLUMN answer {_ans_t}")
         except Exception:
             pass
+        # миграция: канал запроса (web/voip) — чтобы различать веб-чат и звонки
+        _ch_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        try:
+            cur.execute(f"ALTER TABLE requests ADD COLUMN channel {_ch_t}")
+        except Exception:
+            pass
+        # миграция: VoIP — добавочный номер (caller) и подпись сотрудника (username)
+        _cl_t = {"mysql": "VARCHAR(64)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        _un_t = {"mysql": "VARCHAR(255)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+        for _c, _t in (("caller", _cl_t), ("username", _un_t)):
+            try:
+                cur.execute(f"ALTER TABLE requests ADD COLUMN {_c} {_t}")
+            except Exception:
+                pass
         if dd == "sqlite":
             conn.commit()
     finally:
@@ -477,7 +492,8 @@ def log_request(question: str, category: str | None, n_hits: int,
                 top_score: float, latency_ms: int, answer_chars: int,
                 answered: bool, sources: list,
                 retrieve_ms: int = 0, gen_ms: int = 0,
-                session_id: str = "", answer: str = "") -> int:
+                session_id: str = "", answer: str = "", channel: str = "web",
+                caller: str = "", username: str = "") -> int:
     now = datetime.now()
     ans = (answer or "")[:20000]   # текст ответа (для журнала); ограничиваем размер
     try:
@@ -485,12 +501,14 @@ def log_request(question: str, category: str | None, n_hits: int,
             rid = _insert(
                 """INSERT INTO requests
                    (ts,day,question,answer,category,n_hits,top_score,latency_ms,
-                    answer_chars,answered,sources,retrieve_ms,gen_ms,session_id)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    answer_chars,answered,sources,retrieve_ms,gen_ms,session_id,channel,
+                    caller,username)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (now.timestamp(), now.strftime("%Y-%m-%d"), question, ans, category,
                  n_hits, round(top_score, 4), latency_ms, answer_chars,
                  int(answered), json.dumps(sources, ensure_ascii=False),
-                 int(retrieve_ms), int(gen_ms), session_id or ""),
+                 int(retrieve_ms), int(gen_ms), session_id or "", channel or "web",
+                 (caller or "")[:64], (username or "")[:255]),
             )
         _bump()
         return rid or 0
@@ -530,10 +548,11 @@ def recent_all(limit: int = 100) -> list[dict]:
     out = []
     try:
         web = _all("SELECT id, ts, question, answer, answered, top_score, rating, "
-                   "comment FROM requests ORDER BY id DESC LIMIT ?", (lim,))
+                   "comment, channel, caller, username FROM requests "
+                   "ORDER BY id DESC LIMIT ?", (lim,))
         for w in web:
-            w["channel"] = "web"
-            w["username"] = None
+            w["channel"] = w.get("channel") or "web"   # web | voip
+            # для VoIP username = подпись сотрудника/добавочный (для отображения)
         out += web
     except Exception as e:
         print(f"[db] recent_all web: {e}")
@@ -547,6 +566,36 @@ def recent_all(limit: int = 100) -> list[dict]:
         print(f"[db] recent_all tg: {e}")
     out.sort(key=lambda x: x.get("ts") or 0, reverse=True)
     return out[:lim]
+
+
+def voip_callers() -> list[dict]:
+    """Сводка истории VoIP по добавочным номерам: номер, подпись сотрудника,
+    число запросов, время последнего звонка."""
+    try:
+        rows = _all(
+            "SELECT caller, MAX(username) username, COUNT(*) n, MAX(ts) last_ts "
+            "FROM requests WHERE channel='voip' AND caller IS NOT NULL AND caller<>'' "
+            "GROUP BY caller ORDER BY last_ts DESC")
+        return [{"caller": r.get("caller"), "username": r.get("username") or "",
+                 "n": int(r.get("n") or 0), "last_ts": r.get("last_ts")} for r in rows]
+    except Exception as e:
+        print(f"[db] voip_callers: {e}")
+        return []
+
+
+def voip_delete_by_caller(caller: str) -> int:
+    """Удалить всю историю VoIP по добавочному номеру. Возвращает число удалённых."""
+    caller = (caller or "").strip()
+    if not caller:
+        return 0
+    try:
+        with _LOCK:
+            n = _exec("DELETE FROM requests WHERE channel='voip' AND caller=?", (caller,))
+        _bump()
+        return n
+    except Exception as e:
+        print(f"[db] voip_delete_by_caller: {e}")
+        return 0
 
 
 def rating_stats() -> dict:
@@ -907,7 +956,8 @@ def tg_clear_history() -> int:
 _TABLES = {
     "requests": ["id", "ts", "day", "question", "answer", "category", "n_hits",
                  "top_score", "latency_ms", "answer_chars", "answered", "sources",
-                 "rating", "retrieve_ms", "gen_ms", "session_id", "comment"],
+                 "rating", "retrieve_ms", "gen_ms", "session_id", "comment", "channel",
+                 "caller", "username"],
     "tg_users": ["chat_id", "username", "first_name", "status", "created", "updated",
                  "n_requests", "can_train", "mode", "emp_email", "emp_name", "emp_info"],
     "tg_requests": ["id", "ts", "day", "chat_id", "username", "question", "answer",
@@ -1765,6 +1815,38 @@ def org_clear() -> int:
         n = 0
     _bump()
     return n
+
+
+def org_find_by_ext(ext: str) -> dict | None:
+    """Найти сотрудника по добавочному номеру (phone_ext). Сначала точное совпадение,
+    затем по «хвосту» (номер оканчивается на этот добавочный). Возвращает
+    {name, job_title, department, ext} или None."""
+    ext = "".join(ch for ch in str(ext or "") if ch.isdigit())
+    if not ext:
+        return None
+    try:
+        rows = _all("SELECT last_name, first_name, middle_name, job_title, department, "
+                    "phone_ext FROM org_employees WHERE phone_ext IS NOT NULL "
+                    "AND phone_ext<>''")
+    except Exception:
+        return None
+    exact, tail = None, None
+    for r in rows:
+        digits = "".join(ch for ch in str(r.get("phone_ext") or "") if ch.isdigit())
+        if not digits:
+            continue
+        if digits == ext:
+            exact = r
+            break
+        if len(ext) >= 3 and digits.endswith(ext):
+            tail = tail or r
+    r = exact or tail
+    if not r:
+        return None
+    name = " ".join(x for x in (r.get("last_name"), r.get("first_name"),
+                                r.get("middle_name")) if x).strip()
+    return {"name": name, "job_title": r.get("job_title") or "",
+            "department": r.get("department") or "", "ext": r.get("phone_ext") or ext}
 
 
 # ===================== Синонимы =====================
