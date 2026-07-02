@@ -179,6 +179,7 @@
     <button data-t="analytics">📈 Аналитика</button>
     <button data-t="system">🧩 Система</button>
     <button data-t="telegram">✈️ Телеграм</button>
+    <button data-t="voip">📞 VoIP</button>
     <button data-t="server">🖥 Загрузка сервера</button>
     <button data-t="components">🔬 Аналитика+</button>
     <button data-t="bench">⚡ Бенчмарк</button>
@@ -591,6 +592,73 @@
       <div style="max-height:46vh;overflow:auto;margin-top:10px">
         <table><thead><tr><th>Время</th><th>Пользователь</th><th>Вопрос</th><th>Ответ</th><th>Статус</th><th>Оценка</th><th>Комментарий</th></tr></thead>
         <tbody id="tg_rows"></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== VoIP (ТЕЛЕФОНИЯ) ===== -->
+  <section id="voip">
+    <h1>VoIP — телефония</h1>
+    <div class="sub">Голосовой бот по телефону: AudioSocket-мост (Asterisk) и/или нативная SIP-регистрация. Распознавание — Whisper, синтез — TTS.</div>
+
+    <div class="box">
+      <h3>🔑 Токен администратора</h3>
+      <div class="note" style="margin-bottom:6px">Нужен для сохранения настроек и управления. Тот же токен, что в разделе «Администратор».</div>
+      <input type="password" id="voip_token" placeholder="admin token" style="padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);min-width:240px"
+        oninput="if($('#cfg_token'))$('#cfg_token').value=this.value">
+    </div>
+
+    <div class="box">
+      <h3>⚙️ Настройки телефонии</h3>
+      <div id="voip_settings"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <button class="act" onclick="saveVoip()">💾 Сохранить настройки телефонии</button>
+        <span id="voip_savemsg" class="note"></span>
+      </div>
+    </div>
+
+    <!-- телефония: AudioSocket + SIP-регистрация (статус/управление) -->
+    <div class="box">
+      <h3>📞 Телефония (SIP/АТС) <span id="sip_badge" class="tag"></span></h3>
+      <div class="note" style="line-height:1.5">Голосовой бот по телефону: Asterisk (или АТС поверх него) бриджит аудио звонка на этот сервис через <b>AudioSocket</b>, бот распознаёт речь (Whisper), отвечает по базе знаний (как в чате) и озвучивает ответ (TTS). Включение и параметры — в настройках выше. Нужны <b>Asterisk c AudioSocket</b>, <code>ffmpeg</code>, рабочие Whisper и TTS.</div>
+      <div id="sip_status" class="note" style="margin:8px 0"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="sipRestart()">↻ Перезапустить мост</button>
+        <button class="act ghost" onclick="loadSip()">Обновить статус</button>
+        <span id="sip_msg" class="note"></span>
+      </div>
+      <div class="note" style="margin-top:10px">Пример диалплана Asterisk (<code>extensions.conf</code>) — направить звонок боту:</div>
+      <pre id="sip_dialplan" style="background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap"></pre>
+      <div class="note" style="line-height:1.5">Если в Asterisk нет AudioSocket (модули <code>app_audiosocket</code>/<code>res_audiosocket</code>) — используйте режим <b>SIP-регистрации</b> ниже: бот сам зарегистрируется как SIP-аккаунт и будет принимать звонки напрямую.</div>
+
+      <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+      <h3 style="margin-top:0">☎️ Подключение по SIP (регистрация) <span id="sipreg_badge" class="tag"></span></h3>
+      <div class="note" style="line-height:1.5">Бот <b>регистрируется как SIP-аккаунт</b> на АТС/провайдере (логин/пароль) и принимает звонки напрямую — без AudioSocket и диалплана. Нужны пакет <code>pyVoIP</code>, <code>ffmpeg</code>, рабочие Whisper и TTS, открытые порт <b>5060/UDP</b> и диапазон <b>RTP-портов</b>.</div>
+      <div class="clb-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+        <div class="field" style="margin:0"><label class="note">SIP-сервер (АТС/провайдер)</label>
+          <input type="text" id="sipreg_server" placeholder="sip.provider.ru или IP Asterisk"></div>
+        <div class="field" style="margin:0"><label class="note">Порт</label>
+          <input type="text" id="sipreg_port" placeholder="5060"></div>
+        <div class="field" style="margin:0"><label class="note">Логин (аккаунт/номер)</label>
+          <input type="text" id="sipreg_user" placeholder="1001"></div>
+        <div class="field" style="margin:0"><label class="note">Пароль</label>
+          <input type="password" id="sipreg_pass" placeholder="••••••• (пусто — не менять)"></div>
+        <div class="field" style="margin:0"><label class="note">Локальный IP для SDP (опц.)</label>
+          <input type="text" id="sipreg_lip" placeholder="авто / внешний IP за NAT"></div>
+        <div class="field" style="margin:0"><label class="note">Локальный SIP-порт</label>
+          <input type="text" id="sipreg_lport" placeholder="5060"></div>
+        <div class="field" style="margin:0"><label class="note">RTP-порт: нижний</label>
+          <input type="text" id="sipreg_rtplo" placeholder="10000"></div>
+        <div class="field" style="margin:0"><label class="note">RTP-порт: верхний</label>
+          <input type="text" id="sipreg_rtphi" placeholder="20000"></div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:10px 0">
+        <input type="checkbox" id="sipreg_enabled"> <b>Включить SIP-регистрацию</b></label>
+      <div id="sipreg_status" class="note" style="margin:8px 0"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act" onclick="sipRegSave()">💾 Сохранить и перерегистрировать</button>
+        <button class="act ghost" onclick="loadSipReg()">Обновить статус</button>
+        <span id="sipreg_msg" class="note"></span>
       </div>
     </div>
   </section>
@@ -1087,51 +1155,6 @@
       <h3>💲 Прайс-папка <span id="price_badge" class="tag"></span></h3>
       <div class="note" style="line-height:1.5">На «ценовых» вопросах (цена, стоимость, прайс…) ответ дополняется содержимым этой папки <b>без индексации</b> — файлы читаются по требованию и реранкуются под вопрос. Включение и путь — в настройках выше (группа «Поиск и генерация»: «Прайс-папка для ценовых вопросов» и «Папка с прайс-листами»). Удобно для часто меняющихся прайсов: переиндексация не нужна.</div>
       <div id="price_status" class="note" style="margin-top:8px"></div>
-    </div>
-
-    <!-- телефония: SIP/АТС -->
-    <div class="box">
-      <h3>📞 Телефония (SIP/АТС) <span id="sip_badge" class="tag"></span></h3>
-      <div class="note" style="line-height:1.5">Голосовой бот по телефону: Asterisk (или АТС поверх него) бриджит аудио звонка на этот сервис через <b>AudioSocket</b>, бот распознаёт речь (Whisper), отвечает по базе знаний (как в чате) и озвучивает ответ (TTS). Включение и параметры — в настройках выше (группа «Телефония (SIP/АТС)»). Нужны <b>Asterisk c AudioSocket</b>, <code>ffmpeg</code>, рабочие Whisper и TTS.</div>
-      <div id="sip_status" class="note" style="margin:8px 0"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button class="act" onclick="sipRestart()">↻ Перезапустить мост</button>
-        <button class="act ghost" onclick="loadSip()">Обновить статус</button>
-        <span id="sip_msg" class="note"></span>
-      </div>
-      <div class="note" style="margin-top:10px">Пример диалплана Asterisk (<code>extensions.conf</code>) — направить звонок боту:</div>
-      <pre id="sip_dialplan" style="background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;overflow:auto;white-space:pre-wrap"></pre>
-      <div class="note" style="line-height:1.5">Если в Asterisk нет AudioSocket (модули <code>app_audiosocket</code>/<code>res_audiosocket</code>) — используйте режим <b>SIP-регистрации</b> ниже: бот сам зарегистрируется как SIP-аккаунт и будет принимать звонки напрямую.</div>
-
-      <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
-      <h3 style="margin-top:0">☎️ Подключение по SIP (регистрация) <span id="sipreg_badge" class="tag"></span></h3>
-      <div class="note" style="line-height:1.5">Бот <b>регистрируется как SIP-аккаунт</b> на АТС/провайдере (логин/пароль) и принимает звонки напрямую — без AudioSocket и диалплана. Нужны пакет <code>pyVoIP</code>, <code>ffmpeg</code>, рабочие Whisper и TTS, открытые порт <b>5060/UDP</b> и диапазон <b>RTP-портов</b>.</div>
-      <div class="clb-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
-        <div class="field" style="margin:0"><label class="note">SIP-сервер (АТС/провайдер)</label>
-          <input type="text" id="sipreg_server" placeholder="sip.provider.ru или IP Asterisk"></div>
-        <div class="field" style="margin:0"><label class="note">Порт</label>
-          <input type="text" id="sipreg_port" placeholder="5060"></div>
-        <div class="field" style="margin:0"><label class="note">Логin (аккаунт/номер)</label>
-          <input type="text" id="sipreg_user" placeholder="1001"></div>
-        <div class="field" style="margin:0"><label class="note">Пароль</label>
-          <input type="password" id="sipreg_pass" placeholder="••••••• (пусто — не менять)"></div>
-        <div class="field" style="margin:0"><label class="note">Локальный IP для SDP (опц.)</label>
-          <input type="text" id="sipreg_lip" placeholder="авто / внешний IP за NAT"></div>
-        <div class="field" style="margin:0"><label class="note">Локальный SIP-порт</label>
-          <input type="text" id="sipreg_lport" placeholder="5060"></div>
-        <div class="field" style="margin:0"><label class="note">RTP-порт: нижний</label>
-          <input type="text" id="sipreg_rtplo" placeholder="10000"></div>
-        <div class="field" style="margin:0"><label class="note">RTP-порт: верхний</label>
-          <input type="text" id="sipreg_rtphi" placeholder="20000"></div>
-      </div>
-      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin:10px 0">
-        <input type="checkbox" id="sipreg_enabled"> <b>Включить SIP-регистрацию</b></label>
-      <div id="sipreg_status" class="note" style="margin:8px 0"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button class="act" onclick="sipRegSave()">💾 Сохранить и перерегистрировать</button>
-        <button class="act ghost" onclick="loadSipReg()">Обновить статус</button>
-        <span id="sipreg_msg" class="note"></span>
-      </div>
     </div>
 
     <!-- операции -->
@@ -1633,7 +1656,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t!=='obsidian') obsStop();                    // граф — гасим анимацию вне вкладки
   if(b.dataset.t!=='telegram') tgWorkflowStop();             // workflow-граф — гасим вне вкладки
   document.body.classList.toggle('obs-full', b.dataset.t==='obsidian');  // граф во всю ширину
-  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
+  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,voip:loadVoip,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
   if(b.dataset.t==='dash') startActivityPoll();
 });
 
@@ -1737,12 +1760,14 @@ async function loadLlmActivity(){
   if(tc){
     const pt=d.total_prompt_tokens||0, ct=d.total_completion_tokens||0, tt=d.total_tokens||0;
     const fmtK=n=>n>=1000?(n/1000).toFixed(n>=100000?0:1)+'K':(''+n);
+    const mspt=d.avg_ms_per_token;
     tc.innerHTML=[
       ['Вызовов к LLM', nz(d.total_calls)],
+      ['Сгенерировано токенов', fmtK(ct)],
       ['Токенов запросов', fmtK(pt)],
-      ['Токенов ответов', fmtK(ct)],
       ['Всего токенов', fmtK(tt)],
       ['Скорость (сред.)', (d.avg_tps!=null?(d.avg_tps+' <small>ток/с</small>'):'—')],
+      ['Среднее время/токен', (mspt!=null?(mspt+' <small>мс</small>'):'—')],
       ['Ошибок', nz(d.total_errors)],
     ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
   }
@@ -3307,17 +3332,20 @@ async function loadConfig(){
   $('#tokennote').textContent = c.auth_required
     ? 'На сервере задан токен — без него изменения и операции не выполнятся.'
     : 'Токен на сервере не задан — поле можно оставить пустым.';
+  const VOIP_GROUP='Телефония (SIP/АТС)';   // выносим в отдельный раздел VoIP
   const groups={};
   c.fields.forEach(f=>{(groups[f.group]=groups[f.group]||[]).push(f);});
-  let html='';
+  let html='', voipHtml='';
   for(const g in groups){
-    html+=`<div class="box"><h3>${esc(g)}</h3>`;
-    if(GROUP_HELP[g]) html+=GROUP_HELP[g];
-    groups[g].forEach(f=>{ html+=renderField(f,c.values[f.key],c.admin_token_set); });
-    html+='</div>';
+    let block=`<div class="box"><h3>${esc(g)}</h3>`;
+    if(GROUP_HELP[g]) block+=GROUP_HELP[g];
+    groups[g].forEach(f=>{ block+=renderField(f,c.values[f.key],c.admin_token_set); });
+    block+='</div>';
+    if(g===VOIP_GROUP) voipHtml+=block; else html+=block;
   }
   $('#cfgroot').innerHTML=html;
-  c.fields.forEach(f=>{ if(f.type==='range'){ const el=$('#f_'+f.key); el.oninput=()=>$('#o_'+f.key).textContent=el.value; }});
+  if($('#voip_settings')) $('#voip_settings').innerHTML=voipHtml;
+  c.fields.forEach(f=>{ if(f.type==='range'){ const el=$('#f_'+f.key); if(el) el.oninput=()=>{const o=$('#o_'+f.key); if(o)o.textContent=el.value;}; }});
   renderEngine(c.values);
   renderGenModel(c.values);
   if($('#cal_auto')) $('#cal_auto').checked=!!c.values.AUTO_CALIBRATE;
@@ -4698,6 +4726,29 @@ async function setMode(key){
   const j=await r.json().catch(()=>({}));
   if(r.ok){ opsMsg('✓ Режим: '+modeLabel(j.current)); loadMode(); loadConfig(); }
   else { opsMsg('✗ '+(j.detail||'ошибка'),false); }
+}
+// ---- VoIP (телефония) — отдельный раздел ----
+async function loadVoip(){
+  // синхронизируем токен-поле VoIP с админским
+  if($('#voip_token') && $('#cfg_token')) $('#voip_token').value=$('#cfg_token').value;
+  await loadConfig();          // рендерит #voip_settings + статусы (loadSip/loadSipReg)
+}
+async function saveVoip(){
+  const body={};
+  (FIELDS||[]).filter(f=>f.group==='Телефония (SIP/АТС)').forEach(f=>{
+    const el=$('#f_'+f.key); if(!el)return;
+    if(f.type==='bool') body[f.key]=el.checked;
+    else if(f.type==='range'||f.type==='int') body[f.key]=+el.value;
+    else body[f.key]=el.value;
+  });
+  const m=$('#voip_savemsg'); if(m){m.textContent='сохранение…';m.className='note';}
+  const r=await fetch('/api/config',{method:'POST',
+    headers:{'Content-Type':'application/json','X-Admin-Token':tok()},
+    body:JSON.stringify(body)});
+  const ok=r.ok; const j=await r.json().catch(()=>({}));
+  if(m){ m.textContent=ok?'✓ Сохранено (для «restart»-настроек перезапустите/перерегистрируйте)':'✗ '+(j.detail||'ошибка'); m.className=ok?'saved':'note'; }
+  if(ok){ await loadConfig(); }
+  setTimeout(()=>{if(m)m.textContent='';},5000);
 }
 async function saveConfig(){
   const body={};

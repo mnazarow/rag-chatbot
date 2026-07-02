@@ -150,6 +150,31 @@ def _describe_image_part(img, page=None):
     return None
 
 
+def describe_file_llm(source: str, text: str) -> str:
+    """Краткое LLM-описание файла по его тексту (для опции INDEX_LLM_DESCRIBE)."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    try:
+        maxc = int(settings.get("INDEX_LLM_DESCRIBE_MAXCHARS") or 6000)
+    except Exception:
+        maxc = 6000
+    snippet = text[:max(200, maxc)]
+    prompt = (
+        f"Ниже содержимое документа «{source}». Составь краткое деловое описание: о чём "
+        f"документ, ключевые сущности (продукты, артикулы, параметры, стороны, даты, цены), "
+        f"его назначение. 3–6 предложений, по-русски, без вступлений.\n\n"
+        f"ДОКУМЕНТ:\n{snippet}")
+    try:
+        import llm_backend
+        out = llm_backend.chat([{"role": "user", "content": prompt}],
+                               temperature=0.2, kind="doc-describe", label=source)
+        return (out or "").strip()
+    except Exception as e:
+        print(f"  ~ LLM-описание файла не удалось ({source}): {e}")
+        return ""
+
+
 def _ocr_pdf_page(page, i):
     """Распознать «картиночную» страницу PDF (текст нарисован графикой): рендерим
     страницу в изображение и прогоняем через OCR. Возвращает {'text','page'}.

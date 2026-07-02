@@ -139,6 +139,10 @@ OCR_MIN_CHARS = _int("OCR_MIN_CHARS", 25)
 # vision-модели за описанием и тоже добавить его в базу знаний.
 OCR_LLM_DESCRIBE = _bool("OCR_LLM_DESCRIBE", False)
 OCR_LLM_MAX_CHUNKS = _int("OCR_LLM_MAX_CHUNKS", 1)
+# Описывать КАЖДЫЙ файл при индексации: LLM делает краткое описание/summary документа,
+# оно тоже добавляется в базу знаний (улучшает поиск). Медленно (вызов LLM на файл).
+INDEX_LLM_DESCRIBE = _bool("INDEX_LLM_DESCRIBE", False)
+INDEX_LLM_DESCRIBE_MAXCHARS = _int("INDEX_LLM_DESCRIBE_MAXCHARS", 6000)  # сколько текста слать LLM
 VISION_MODEL = os.getenv("VISION_MODEL", "")   # vision-модель (пусто = основная LLM)
 VISION_TIMEOUT = _int("VISION_TIMEOUT", 180)   # таймаут запроса к vision-модели, сек
 VISION_RETRIES = _int("VISION_RETRIES", 2)     # число попыток описать изображение

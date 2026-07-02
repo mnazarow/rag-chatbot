@@ -88,6 +88,30 @@ def chunk_text(text: str, size: int, overlap: int) -> list[str]:
     return [c for c in chunks if c]
 
 
+def _append_llm_desc(points, source, file_text, chunk_size, chunk_overlap, capped):
+    """Опция INDEX_LLM_DESCRIBE: добавить в индекс краткое LLM-описание файла."""
+    if capped or not points or not file_text.strip():
+        return
+    try:
+        if not settings.get("INDEX_LLM_DESCRIBE"):
+            return
+    except Exception:
+        return
+    try:
+        import loaders
+        desc = loaders.describe_file_llm(source, file_text)
+    except Exception as e:
+        print(f"  ~ LLM-описание файла не удалось ({source}): {e}", flush=True)
+        return
+    if not desc:
+        return
+    body = "Описание документа (LLM):\n" + desc
+    for chunk in chunk_text(body, chunk_size, chunk_overlap):
+        points.append({"chunk": chunk, "page": None, "t_start": None,
+                       "t_end": None, "vision_desc": None})
+    print(f"    ~ {source}: добавлено LLM-описание документа", flush=True)
+
+
 def file_hash(path: Path) -> str:
     h = hashlib.sha256()
     h.update(str(path.stat().st_mtime_ns).encode())
@@ -156,6 +180,10 @@ def main():
         max_chunks = int(settings.get("INGEST_MAX_CHUNKS") or 0)
     except Exception:
         max_chunks = 0
+    try:
+        llm_desc_on = bool(settings.get("INDEX_LLM_DESCRIBE"))
+    except Exception:
+        llm_desc_on = False
 
     # --- фатальные ошибки инициализации: понятное сообщение и выход ---
     print(f"Документы: {DOCS_DIR}")
@@ -324,7 +352,10 @@ def main():
                 meta_path = path
             points = []
             _capped = False
+            _ftext = []          # накопитель текста файла для LLM-описания
             for part in load_file(path):
+                if llm_desc_on and sum(len(x) for x in _ftext) < 20000:
+                    _ftext.append(part.get("text", "") or "")
                 for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
                     points.append({"chunk": chunk, "page": part["page"],
                                    "t_start": part.get("t_start"),
@@ -340,6 +371,8 @@ def main():
                       f"({max_chunks}) — проиндексирована только часть "
                       f"(увеличьте INGEST_MAX_CHUNKS или уберите огромный архив)",
                       flush=True)
+            _append_llm_desc(points, source, "\n".join(_ftext),
+                             chunk_size, chunk_overlap, _capped)
             if not points:
                 return {"status": "empty", "tmp": tmp_path}
             return {"status": "ok", "source": source, "fhash": fhash, "points": points,
@@ -411,7 +444,10 @@ def main():
                 t_parse = time.time()
                 points = []
                 _capped = False
+                _ftext = []
                 for part in load_file(path):
+                    if llm_desc_on and sum(len(x) for x in _ftext) < 20000:
+                        _ftext.append(part.get("text", "") or "")
                     for chunk in chunk_text(part["text"], chunk_size, chunk_overlap):
                         points.append({"chunk": chunk, "page": part["page"],
                                        "t_start": part.get("t_start"),
@@ -427,6 +463,8 @@ def main():
                           f"({max_chunks}) — проиндексирована только часть "
                           f"(увеличьте INGEST_MAX_CHUNKS или уберите огромный архив)",
                           flush=True)
+                _append_llm_desc(points, source, "\n".join(_ftext),
+                                 chunk_size, chunk_overlap, _capped)
                 if use_alarm:
                     signal.alarm(0)
                 parse_ms = int((time.time() - t_parse) * 1000)

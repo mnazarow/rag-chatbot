@@ -255,7 +255,9 @@ def _assemble(items: list[dict], limit: int, calls: int, errors: int,
     finished.sort(key=lambda x: x.get("finished", 0), reverse=True)
     views = [_view(v) for v in running] + [_view(v) for v in finished[:limit]]
     avg_tps = round(ctok / (genms / 1000.0), 1) if (ctok > 0 and genms > 0) else None
+    avg_ms_per_token = round(genms / ctok, 1) if (ctok > 0 and genms > 0) else None
     return {"items": views, "running": len(running),
             "total_calls": calls, "total_errors": errors,
             "total_prompt_tokens": ptok, "total_completion_tokens": ctok,
-            "total_tokens": ptok + ctok, "avg_tps": avg_tps}
+            "total_tokens": ptok + ctok, "avg_tps": avg_tps,
+            "avg_ms_per_token": avg_ms_per_token, "total_gen_ms": genms}
