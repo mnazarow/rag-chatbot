@@ -1186,6 +1186,105 @@ def admin_tts_voices(engine: str = "", x_admin_token: str | None = Header(None))
     return {"engine": eng, "voices": tts.voices(eng)}
 
 
+# ---- Клонирование голоса (XTTS): «обучение» вывода на образце ----
+@app.get("/api/admin/tts/clone")
+def admin_tts_clone_status(x_admin_token: str | None = Header(None)):
+    """Готовность клонирования голоса: установлен ли пакет, есть ли образец."""
+    _check_admin(x_admin_token)
+    import tts
+    return tts.xtts_status()
+
+
+@app.post("/api/admin/tts/clone/sample")
+async def admin_tts_clone_sample(file: UploadFile = File(...),
+                                 x_admin_token: str | None = Header(None)):
+    """Загрузить образец голоса (любой аудиоформат) — нормализуется в WAV 16 кГц/моно,
+    сохраняется как образец, путь прописывается в XTTS_SAMPLE, движок → xtts."""
+    _check_admin(x_admin_token)
+    import tempfile
+    import tts
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    suffix = os.path.splitext(file.filename or "")[1] or ".bin"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        tmp.write(data)
+        tmp.close()
+        res = tts.save_voice_sample(tmp.name)
+    finally:
+        try:
+            os.remove(tmp.name)
+        except Exception:
+            pass
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("msg", "ошибка обработки образца"))
+    # запомнить путь к образцу и включить движок клонирования
+    settings.update({"XTTS_SAMPLE": res["path"], "TTS_ENGINE": "xtts"})
+    return {"ok": True, "seconds": res.get("seconds", 0.0),
+            "status": tts.xtts_status()}
+
+
+@app.post("/api/admin/tts/clone/delete")
+def admin_tts_clone_delete(x_admin_token: str | None = Header(None)):
+    """Удалить образец голоса и вернуть движок TTS в auto."""
+    _check_admin(x_admin_token)
+    import tts
+    p = tts.clone_sample_path()
+    removed = False
+    try:
+        if p and os.path.exists(p):
+            os.remove(p)
+            removed = True
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"не удалось удалить образец: {e}")
+    changes = {"XTTS_SAMPLE": ""}
+    if (settings.get("TTS_ENGINE") or "") == "xtts":
+        changes["TTS_ENGINE"] = "auto"
+    settings.update(changes)
+    return {"ok": True, "removed": removed, "status": tts.xtts_status()}
+
+
+@app.post("/api/admin/tts/clone/install")
+def admin_tts_clone_install(x_admin_token: str | None = Header(None)):
+    """Установить пакет Coqui XTTS (pip) в окружение сервиса."""
+    _check_admin(x_admin_token)
+    return admin_ops.xtts_install()
+
+
+@app.post("/api/admin/tts/preview")
+def admin_tts_preview(payload: dict = Body(default={}),
+                      x_admin_token: str | None = Header(None)):
+    """Синтезировать пробную фразу текущим движком/голосом и вернуть OGG для прослушки."""
+    _check_admin(x_admin_token)
+    import tempfile
+    import tts
+    text = (payload.get("text") or "Здравствуйте! Это пример синтезированного голоса.").strip()
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=".ogg")
+    out.close()
+    ok = False
+    try:
+        ok = tts.synthesize(text, out.name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"синтез не удался: {e}")
+    if not ok or not os.path.exists(out.name) or os.path.getsize(out.name) == 0:
+        try:
+            os.remove(out.name)
+        except Exception:
+            pass
+        raise HTTPException(status_code=400,
+                            detail="синтез недоступен: проверьте движок TTS, образец и ffmpeg")
+    return FileResponse(out.name, media_type="audio/ogg", filename="preview.ogg",
+                        background=BackgroundTask(lambda: _safe_unlink(out.name)))
+
+
+def _safe_unlink(p: str):
+    try:
+        os.remove(p)
+    except Exception:
+        pass
+
+
 @app.get("/api/admin/telegram/users")
 def admin_tg_users(status: str = "", x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

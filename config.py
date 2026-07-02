@@ -182,11 +182,20 @@ TELEGRAM_FEEDBACK = _bool("TELEGRAM_FEEDBACK", True)
 # как карточки-превью в веб-чате. Кол-во превью на ответ — TELEGRAM_PREVIEW_MAX.
 TELEGRAM_PREVIEWS = _bool("TELEGRAM_PREVIEWS", True)
 TELEGRAM_PREVIEW_MAX = _int("TELEGRAM_PREVIEW_MAX", 4)
-# Движок синтеза речи: auto (пробует доступные) | piper | say (macOS) | espeak | off.
+# Движок синтеза речи: auto (пробует доступные) | xtts | piper | say (macOS) | espeak | off.
 TTS_ENGINE = os.getenv("TTS_ENGINE", "auto")
 # Голос/модель: для macOS `say` — имя голоса (напр. Milena/Yuri); для piper — путь к .onnx;
 # для espeak — код языка (напр. ru). Пусто = по умолчанию для движка.
 TTS_VOICE = os.getenv("TTS_VOICE", "")
+
+# --- Клонирование голоса (Coqui XTTS-v2): «обучение» голосового вывода по образцу ---
+# Zero-shot: загружается короткий (6–30 c) чистый образец речи, и синтез идёт этим
+# голосом (в т.ч. русский). Пакет `coqui-tts` ставится по кнопке в админке (тяжёлый,
+# тянет torch). Модель скачивается автоматически при первом запуске.
+XTTS_MODEL = os.getenv("XTTS_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2")
+XTTS_SAMPLE = os.getenv("XTTS_SAMPLE", "")        # путь к WAV-образцу голоса (16 кГц моно)
+XTTS_LANGUAGE = os.getenv("XTTS_LANGUAGE", "ru")  # язык синтеза (ru/en/…)
+XTTS_USE_GPU = _bool("XTTS_USE_GPU", False)       # использовать GPU (CUDA) при синтезе
 
 # --- Парсинг сайтов в базу знаний ---
 # Глубина обхода ссылок (0 = только указанная страница), лимит страниц на сайт,

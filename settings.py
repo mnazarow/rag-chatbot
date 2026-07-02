@@ -533,19 +533,41 @@ FIELDS: list[dict] = [
              "Нужен установленный TTS-движок и ffmpeg (см. ниже). Если синтез недоступен — "
              "отправляется только текст."},
     {"key": "TTS_ENGINE", "label": "Движок синтеза речи (TTS)", "group": "Телеграм-бот",
-     "type": "select", "scope": "live", "options": ["auto", "piper", "say", "espeak", "off"],
+     "type": "select", "scope": "live", "options": ["auto", "xtts", "piper", "say", "espeak", "off"],
      "default": config.TTS_ENGINE,
      "desc": "Локальный синтез речи для голосовых ответов: <code>auto</code> — выбрать доступный; "
-             "<code>piper</code> — нейросетевой TTS (нужна модель .onnx, лучшее качество, в т.ч. "
-             "русский); <code>say</code> — встроенный синтез macOS; <code>espeak</code> — espeak-ng "
-             "(Linux, робот-голос); <code>off</code> — выключить. Результат конвертируется в OGG/Opus "
-             "(ffmpeg) для отправки голосовым."},
+             "<code>xtts</code> — клонирование голоса по образцу (Coqui XTTS-v2, см. блок «Клонирование "
+             "голоса» в разделе VoIP); <code>piper</code> — нейросетевой TTS (нужна модель .onnx, лучшее "
+             "качество, в т.ч. русский); <code>say</code> — встроенный синтез macOS; <code>espeak</code> — "
+             "espeak-ng (Linux, робот-голос); <code>off</code> — выключить. Результат конвертируется в "
+             "OGG/Opus (ffmpeg) для отправки голосовым."},
     {"key": "TTS_VOICE", "label": "Голос / модель TTS", "group": "Телеграм-бот",
      "type": "text", "scope": "live", "default": config.TTS_VOICE,
      "desc": "Для <code>say</code> — имя голоса (например <code>Milena</code> или <code>Yuri</code> для "
              "русского); для <code>piper</code> — путь к файлу модели <code>.onnx</code>; для "
              "<code>espeak</code> — код языка (например <code>ru</code>). Пусто = значение по умолчанию "
              "для движка."},
+
+    # --- Клонирование голоса (Coqui XTTS-v2): «обучение» вывода на образце голоса ---
+    {"key": "XTTS_LANGUAGE", "label": "Язык синтеза (клонирование голоса)", "group": "Телеграм-бот",
+     "type": "select", "scope": "live",
+     "options": ["ru", "en", "uk", "de", "fr", "es", "it", "pl", "tr", "pt", "cs", "nl", "ar", "zh-cn"],
+     "default": config.XTTS_LANGUAGE,
+     "desc": "Язык, на котором XTTS произносит текст голосом-клоном. Для русского — <code>ru</code>."},
+    {"key": "XTTS_USE_GPU", "label": "XTTS на GPU (CUDA)", "group": "Телеграм-бот",
+     "type": "bool", "scope": "live", "default": config.XTTS_USE_GPU,
+     "desc": "Синтезировать на GPU (быстрее). Требуется CUDA-сборка torch. На CPU тоже работает, "
+             "но медленнее (несколько секунд на фразу)."},
+    {"key": "XTTS_SAMPLE", "label": "Образец голоса (WAV)", "group": "Телеграм-бот",
+     "type": "text", "scope": "live", "default": config.XTTS_SAMPLE,
+     "desc": "Путь к образцу голоса (WAV 16 кГц/моно). Обычно задаётся автоматически при загрузке "
+             "образца в блоке «Клонирование голоса» (раздел VoIP). Пусто = образец рядом с проектом "
+             "(<code>voice_samples/clone.wav</code>)."},
+    {"key": "XTTS_MODEL", "label": "Модель XTTS", "group": "Телеграм-бот",
+     "type": "text", "scope": "live", "default": config.XTTS_MODEL,
+     "desc": "Идентификатор модели Coqui для клонирования. По умолчанию "
+             "<code>tts_models/multilingual/multi-dataset/xtts_v2</code> (скачивается автоматически "
+             "при первом синтезе)."},
 
     # --- Телефония (SIP/АТС): голосовой бот по телефону (AudioSocket-мост и/или
     #     нативная SIP-регистрация). STT — Whisper («Транскрибация»), синтез — TTS (выше). ---

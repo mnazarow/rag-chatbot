@@ -711,6 +711,24 @@
     </div>
 
     <div class="box">
+      <h3>🎙️ Клонирование голоса (обучение вывода по образцу)</h3>
+      <div class="note" style="margin-bottom:8px">Загрузите короткий чистый образец речи (6–30 c, WAV/MP3/M4A/OGG) — бот будет отвечать голосом с этого образца (движок Coqui XTTS-v2, локально). Голос применяется и в звонках, и в голосовых Телеграма.</div>
+      <div id="clone_status" class="note" style="margin:6px 0">Проверка…</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0">
+        <input type="file" id="clone_file" accept="audio/*" style="max-width:320px">
+        <button class="act" onclick="cloneUpload()">⬆️ Загрузить образец</button>
+        <button class="act ghost" onclick="cloneDelete()">🗑 Удалить образец</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0">
+        <input type="text" id="clone_text" placeholder="Текст для прослушки" style="flex:1;min-width:240px" value="Здравствуйте! Это пример синтезированного голоса.">
+        <button class="act ghost" onclick="clonePreview()">▶️ Прослушать</button>
+        <button class="act ghost" onclick="cloneInstall()">⚙️ Установить XTTS</button>
+      </div>
+      <audio id="clone_audio" controls style="display:none;width:100%;margin-top:6px"></audio>
+      <div id="clone_msg" class="note" style="margin-top:6px"></div>
+    </div>
+
+    <div class="box">
       <h3>📇 История звонков по добавочным <button class="act ghost" onclick="loadVoipCallers()">Обновить</button></h3>
       <div class="note" style="margin-bottom:8px">Сотрудник определяется по добавочному номеру (поле «Доб.» в справочнике компании). Историю по каждому номеру можно удалить.</div>
       <div style="overflow:auto;max-height:50vh"><table><thead><tr><th>Добавочный</th><th>Сотрудник</th><th>Запросов</th><th>Последний звонок</th><th></th></tr></thead>
@@ -4812,6 +4830,56 @@ async function loadVoip(){
   if($('#voip_token') && $('#cfg_token')) $('#voip_token').value=$('#cfg_token').value;
   await loadConfig();          // рендерит #voip_settings + статусы (loadSip/loadSipReg)
   loadVoipCallers();
+  loadClone();
+}
+// ---- Клонирование голоса (XTTS) ----
+function cloneMsg(t,ok=true){ const e=$('#clone_msg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+async function loadClone(){
+  const box=$('#clone_status'); if(!box) return;
+  let s; try{ s=await adminGet('/api/admin/tts/clone'); }catch(e){ box.textContent='нет связи'; return; }
+  if(!s){ box.textContent='нет данных'; return; }
+  const parts=[];
+  parts.push(s.installed?'✅ пакет XTTS установлен':'⚠️ пакет XTTS не установлен (кнопка «Установить XTTS»)');
+  if(s.sample&&s.sample.exists) parts.push(`🎙️ образец загружен (${s.sample.seconds} c)`);
+  else parts.push('образец не загружен');
+  if(!s.ffmpeg) parts.push('⚠️ нет ffmpeg');
+  parts.push(s.ready?'— готово к синтезу':'— не готово');
+  box.innerHTML=parts.join(' · ');
+}
+async function cloneUpload(){
+  const f=$('#clone_file'); if(!f||!f.files||!f.files[0]){ cloneMsg('выберите аудиофайл',false); return; }
+  cloneMsg('загрузка и обработка образца…');
+  const fd=new FormData(); fd.append('file',f.files[0]);
+  let r,j;
+  try{ r=await fetch('/api/admin/tts/clone/sample',{method:'POST',headers:{'X-Admin-Token':tok()},body:fd});
+       j=await r.json().catch(()=>({})); }catch(e){ cloneMsg('ошибка сети',false); return; }
+  if(r.ok){ cloneMsg(`✓ образец сохранён (${(j.seconds||0)} c). Движок TTS переключён на «xtts».`); loadClone(); }
+  else cloneMsg('✗ '+(j.detail||'ошибка загрузки'),false);
+}
+async function cloneDelete(){
+  if(!confirm('Удалить образец голоса? Синтез вернётся к обычному движку.')) return;
+  const j=await adminPost('/api/admin/tts/clone/delete');
+  if(j&&j.ok){ cloneMsg('✓ образец удалён'); const a=$('#clone_audio'); if(a){a.style.display='none';a.removeAttribute('src');} loadClone(); }
+  else cloneMsg('✗ '+((j&&j.detail)||'ошибка'),false);
+}
+async function clonePreview(){
+  cloneMsg('синтез примера…');
+  const text=$('#clone_text')?$('#clone_text').value:'';
+  let r;
+  try{ r=await fetch('/api/admin/tts/preview',{method:'POST',
+        headers:{'Content-Type':'application/json','X-Admin-Token':tok()},body:JSON.stringify({text})}); }
+  catch(e){ cloneMsg('ошибка сети',false); return; }
+  if(!r.ok){ let j={}; try{j=await r.json();}catch(_){} cloneMsg('✗ '+(j.detail||'синтез недоступен'),false); return; }
+  const blob=await r.blob(); const a=$('#clone_audio');
+  if(a){ a.src=URL.createObjectURL(blob); a.style.display='block'; a.play().catch(()=>{}); }
+  cloneMsg('✓ готово');
+}
+async function cloneInstall(){
+  if(!confirm('Установить пакет Coqui XTTS? Это тяжёлая зависимость (тянет torch), установка может занять несколько минут.')) return;
+  cloneMsg('установка XTTS… это может занять несколько минут');
+  const j=await adminPost('/api/admin/tts/clone/install');
+  if(j&&j.ok){ cloneMsg('✓ '+(j.msg||'установлено')); loadClone(); }
+  else cloneMsg('✗ '+((j&&(j.msg||j.detail))||'ошибка установки'),false);
 }
 const _voipOpen=new Set();
 async function loadVoipCallers(){

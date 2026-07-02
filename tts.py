@@ -1,9 +1,10 @@
-"""Локальный синтез речи (TTS) для голосовых ответов Телеграм-бота.
+"""Локальный синтез речи (TTS) для голосовых ответов Телеграм-бота и VoIP.
 
 Пробует доступные офлайн-движки в порядке предпочтения:
-  1. piper    — нейросетевой TTS (нужна модель .onnx; лучшее качество, в т.ч. русский);
-  2. say      — встроенный синтез macOS;
-  3. espeak   — espeak-ng / espeak (Linux; «робот-голос»).
+  1. xtts     — клонирование голоса по образцу (Coqui XTTS-v2; zero-shot, в т.ч. русский);
+  2. piper    — нейросетевой TTS (нужна модель .onnx; лучшее качество, в т.ч. русский);
+  3. say      — встроенный синтез macOS;
+  4. espeak   — espeak-ng / espeak (Linux; «робот-голос»).
 Результат конвертируется в OGG/Opus через ffmpeg — формат, который Telegram
 принимает как голосовое сообщение (sendVoice). Всё локально, без облачных сервисов.
 
@@ -16,11 +17,137 @@ import re
 import shutil
 import subprocess
 
+import config
 import settings
 
 
 def _which(x):
     return shutil.which(x)
+
+
+# ------------------------- Клонирование голоса (XTTS) -------------------------
+# Coqui XTTS-v2: «обучение» голосового вывода на коротком образце (zero-shot).
+_XTTS = None            # кэш загруженной модели (тяжёлая — грузим один раз)
+_XTTS_KEY = None        # (модель, gpu) — чтобы пересоздать при смене настроек
+
+
+def _xtts_importable() -> bool:
+    """Установлен ли пакет Coqui TTS (import TTS)."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("TTS") is not None
+    except Exception:
+        return False
+
+
+def clone_sample_path() -> str:
+    """Путь к текущему образцу голоса (WAV) — из настроек или дефолтный."""
+    p = (settings.get("XTTS_SAMPLE") or "").strip()
+    if p:
+        return os.path.expanduser(p)
+    # дефолт рядом с проектом
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "voice_samples", "clone.wav")
+
+
+def sample_info() -> dict:
+    """Сведения о текущем образце: наличие, путь, длительность (сек)."""
+    p = clone_sample_path()
+    if not (p and os.path.exists(p)):
+        return {"exists": False, "path": p, "seconds": 0.0}
+    sec = 0.0
+    try:
+        pr = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", p],
+            capture_output=True, text=True, timeout=15)
+        sec = round(float((pr.stdout or "0").strip() or 0), 1)
+    except Exception:
+        pass
+    return {"exists": True, "path": p, "seconds": sec}
+
+
+def xtts_status() -> dict:
+    """Готовность клонирования голоса: пакет, образец, ffmpeg."""
+    info = sample_info()
+    return {
+        "installed": _xtts_importable(),
+        "sample": info,
+        "ffmpeg": bool(_which("ffmpeg")),
+        "ready": _xtts_importable() and info["exists"] and bool(_which("ffmpeg")),
+        "language": (settings.get("XTTS_LANGUAGE") or "ru"),
+        "gpu": bool(settings.get("XTTS_USE_GPU")),
+    }
+
+
+def save_voice_sample(src_path: str, dst_path: str | None = None) -> dict:
+    """Нормализовать загруженный образец (любой формат) в WAV 16 кГц/моно через
+    ffmpeg и сохранить как образец голоса. Возвращает {ok, path, seconds, msg}."""
+    if not _which("ffmpeg"):
+        return {"ok": False, "msg": "ffmpeg не найден — установите ffmpeg"}
+    dst = dst_path or clone_sample_path()
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    ok = _run(["ffmpeg", "-y", "-i", src_path, "-ac", "1", "-ar", "16000",
+               "-c:a", "pcm_s16le", dst])
+    if not ok or not os.path.exists(dst):
+        return {"ok": False, "msg": "не удалось преобразовать образец (проверьте файл)"}
+    info = sample_info()
+    return {"ok": True, "path": dst, "seconds": info.get("seconds", 0.0),
+            "msg": "образец сохранён"}
+
+
+def _load_xtts():
+    """Лениво загрузить модель XTTS (кэшируется). None, если недоступна."""
+    global _XTTS, _XTTS_KEY
+    model = (settings.get("XTTS_MODEL") or config.XTTS_MODEL).strip()
+    use_gpu = bool(settings.get("XTTS_USE_GPU"))
+    key = (model, use_gpu)
+    if _XTTS is not None and _XTTS_KEY == key:
+        return _XTTS
+    try:
+        os.environ.setdefault("COQUI_TOS_AGREED", "1")  # без интерактивного вопроса лицензии
+        from TTS.api import TTS as _CoquiTTS
+        t = _CoquiTTS(model)
+        try:
+            t.to("cuda" if use_gpu else "cpu")
+        except Exception:
+            pass
+        _XTTS, _XTTS_KEY = t, key
+        return _XTTS
+    except Exception as e:
+        print(f"[tts] XTTS не загрузилась: {e}")
+        return None
+
+
+def _synth_xtts(text: str, out_ogg: str) -> bool:
+    """Синтез голосом-клоном (XTTS) → WAV → OGG/Opus."""
+    sample = clone_sample_path()
+    if not (sample and os.path.exists(sample)):
+        print("[tts] xtts: не задан образец голоса (XTTS_SAMPLE)")
+        return False
+    model = _load_xtts()
+    if model is None:
+        return False
+    wav = out_ogg + ".wav"
+    try:
+        model.tts_to_file(
+            text=text, speaker_wav=sample,
+            language=(settings.get("XTTS_LANGUAGE") or "ru").strip() or "ru",
+            file_path=wav)
+    except Exception as e:
+        print(f"[tts] xtts синтез не удался: {e}")
+        return False
+    try:
+        if not os.path.exists(wav):
+            return False
+        ok = _run(["ffmpeg", "-y", "-i", wav, "-c:a", "libopus", "-b:a", "32k", out_ogg])
+        return ok and os.path.exists(out_ogg)
+    finally:
+        if os.path.exists(wav):
+            try:
+                os.remove(wav)
+            except Exception:
+                pass
 
 
 # Варианты голоса espeak-ng (один язык → разные тембры) — даёт «много голосов»
@@ -96,6 +223,11 @@ def available() -> dict:
     if eng == "off":
         return {"ok": False, "engine": None, "candidates": [], "ffmpeg": ff}
     cand = []
+    # xtts (клонирование голоса) — только если пакет установлен и задан образец;
+    # в режиме auto используется, когда всё готово (лучшее качество + нужный голос)
+    _xr = _xtts_importable() and sample_info().get("exists")
+    if eng == "xtts" or (eng == "auto" and _xr):
+        cand.append("xtts")
     if eng in ("auto", "piper") and _which("piper"):
         cand.append("piper")
     if eng in ("auto", "say") and _which("say"):
@@ -125,6 +257,8 @@ def synthesize(text: str, out_ogg: str) -> bool:
     if not info["ok"]:
         return False
     eng = info["engine"]
+    if eng == "xtts":
+        return _synth_xtts(text, out_ogg)
     voice = (settings.get("TTS_VOICE") or "").strip()
     tmp = None
     try:

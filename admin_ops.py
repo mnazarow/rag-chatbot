@@ -3039,6 +3039,54 @@ def redis_install() -> dict:
             "log": "\n".join(log)}
 
 
+def xtts_install() -> dict:
+    """Установить пакет Coqui XTTS (клонирование голоса) в текущее окружение
+    через pip. Тяжёлая зависимость (тянет torch). Возвращает {ok, msg, log}."""
+    import sys
+    log: list[str] = []
+
+    def run(cmd, **kw):
+        log.append("$ " + " ".join(cmd))
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, **kw)
+            out = (p.stdout or "") + (p.stderr or "")
+            if out.strip():
+                log.append(out.strip()[-4000:])
+            return p.returncode
+        except Exception as e:
+            log.append(f"[ошибка запуска] {e}")
+            return 1
+
+    # уже установлен?
+    try:
+        import importlib.util
+        if importlib.util.find_spec("TTS") is not None:
+            log.append("Пакет TTS уже установлен.")
+            return {"ok": True, "msg": "Coqui XTTS уже установлен", "log": "\n".join(log)}
+    except Exception:
+        pass
+
+    # ставим поддерживаемый форк coqui-tts в текущий интерпретатор (venv сервиса)
+    rc = run([sys.executable, "-m", "pip", "install", "-U", "coqui-tts"])
+    ok = False
+    try:
+        import importlib
+        importlib.invalidate_caches()
+        import importlib.util
+        ok = importlib.util.find_spec("TTS") is not None
+    except Exception:
+        ok = (rc == 0)
+    if ok:
+        log.append("Coqui XTTS установлен. Модель скачается при первом синтезе.")
+        return {"ok": True,
+                "msg": "Coqui XTTS установлен. Загрузите образец голоса и выберите движок «xtts».",
+                "log": "\n".join(log)}
+    return {"ok": False,
+            "msg": "не удалось установить coqui-tts — проверьте доступ к PyPI и версию Python "
+                   "(нужен 3.9–3.12)",
+            "log": "\n".join(log)}
+
+
 # ----- Каталог документов в PostgreSQL -----
 
 _CAT_JOB: dict = {"running": False, "ok": None, "processed": 0, "total": 0,
