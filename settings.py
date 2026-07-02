@@ -594,6 +594,11 @@ FIELDS: list[dict] = [
     {"key": "SIP_RTP_PORT_HIGH", "label": "RTP-порт: верхний", "group": "Телефония (SIP/АТС)",
      "type": "text", "scope": "restart", "default": str(config.SIP_RTP_PORT_HIGH),
      "desc": "Верхняя граница диапазона UDP-портов для RTP-аудио."},
+    {"key": "SIP_DEBUG", "label": "Отладка SIP (подробный лог)", "group": "Телефония (SIP/АТС)",
+     "type": "bool", "scope": "restart", "default": config.SIP_DEBUG,
+     "desc": "Включает подробный лог pyVoIP — в логе сервиса виден весь обмен SIP (REGISTER и "
+             "ответы АТС: 401/403/200). Помогает понять, почему бот не регистрируется. После "
+             "включения перезапустите/перерегистрируйте и смотрите лог. Выключайте в норме."},
 
     # --- База данных и кэш ---
     {"key": "DB_BACKEND", "label": "Активная база данных", "group": "База данных и кэш",

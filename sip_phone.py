@@ -202,8 +202,22 @@ def start() -> dict:
         rtp_lo = int(_cfg("SIP_RTP_PORT_LOW", 10000) or 10000)
         rtp_hi = int(_cfg("SIP_RTP_PORT_HIGH", 20000) or 20000)
         _stop.clear()
+        # диагностика: по SIP_DEBUG включаем подробный лог pyVoIP (виден обмен REGISTER)
+        if _cfg("SIP_DEBUG"):
+            try:
+                import logging
+                lg = logging.getLogger("pyVoIP")
+                lg.setLevel(logging.DEBUG)
+                if not lg.handlers:
+                    h = logging.StreamHandler()
+                    h.setFormatter(logging.Formatter("[pyVoIP] %(message)s"))
+                    lg.addHandler(h)
+            except Exception:
+                pass
         try:
             from pyVoIP.VoIP import VoIPPhone
+            print(f"[sip-reg] REGISTER → {server}:{port} как {user} "
+                  f"(myIP={myip}, локальный порт {sipport})")
             _phone = VoIPPhone(server, port, user, pwd, myIP=myip,
                                sipPort=sipport, rtpPortLow=rtp_lo, rtpPortHigh=rtp_hi,
                                callCallback=_on_call)
