@@ -250,6 +250,15 @@
       #schemawrap .sch-node.demo rect{stroke:var(--accent);fill:rgba(59,130,246,.18)}
       #schlegend span{display:inline-flex;align-items:center;gap:6px;margin-right:16px}
       .sch-dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+      /* --- анимированная схема работы VoIP --- */
+      .voipwf-edge{fill:none;stroke:var(--accent2);stroke-width:2.4;stroke-dasharray:7 6}
+      .voipwf-edge.anim{animation:voipflow 1s linear infinite}
+      .voipwf-fb{fill:none;stroke:#f59e0b;stroke-width:2;stroke-dasharray:5 6;opacity:.9}
+      .voipwf-fb.anim{animation:voipflow 1.4s linear infinite}
+      @keyframes voipflow{to{stroke-dashoffset:-13}}
+      .voipwf-node rect{fill:var(--panel2);stroke:var(--accent);stroke-width:1.5}
+      .voipwf.anim .voipwf-node rect{animation:schpulse 2.2s ease-in-out infinite}
+      .voipwf-node text{fill:var(--txt)}
     </style>
     <h1>Схема работы</h1>
     <div class="sub">Живая архитектура: реальные настройки, статусы компонентов и доступные
@@ -599,7 +608,41 @@
   <!-- ===== VoIP (ТЕЛЕФОНИЯ) ===== -->
   <section id="voip">
     <h1>VoIP — телефония</h1>
-    <div class="sub">Голосовой бот по телефону: AudioSocket-мост (Asterisk) и/или нативная SIP-регистрация. Распознавание — Whisper, синтез — TTS.</div>
+    <div class="sub" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>Голосовой бот по телефону: AudioSocket-мост (Asterisk) и/или нативная SIP-регистрация. Распознавание — Whisper, синтез — TTS.</span>
+      <span style="flex:1"></span>
+      <label class="note" style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="voipwf_anim" checked onchange="document.getElementById('voipwf').classList.toggle('anim',this.checked)"> анимация</label>
+    </div>
+
+    <div class="box">
+      <h3>🛠 Схема работы VoIP</h3>
+      <div style="overflow-x:auto">
+      <svg id="voipwf" class="voipwf anim" viewBox="0 0 1180 250" width="100%" style="min-width:900px" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="voipar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" style="fill:var(--accent2)"/></marker>
+          <marker id="voipar2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" style="fill:#f59e0b"/></marker></defs>
+        <!-- рёбра прямого потока -->
+        <path class="voipwf-edge anim" d="M150,80 L190,80" marker-end="url(#voipar)"/>
+        <path class="voipwf-edge anim" d="M330,80 L370,80" marker-end="url(#voipar)"/>
+        <path class="voipwf-edge anim" d="M510,80 L550,80" marker-end="url(#voipar)"/>
+        <path class="voipwf-edge anim" d="M690,80 L730,80" marker-end="url(#voipar)"/>
+        <path class="voipwf-edge anim" d="M870,80 L910,80" marker-end="url(#voipar)"/>
+        <path class="voipwf-edge anim" d="M1000,110 L1000,150 L70,150 L70,110" marker-end="url(#voipar)"/>
+        <!-- ребро обратной связи (оценка/комментарий голосом) -->
+        <path class="voipwf-fb anim" d="M1000,50 C1000,-5 260,-5 260,55" marker-end="url(#voipar2)"/>
+        <text x="620" y="14" text-anchor="middle" font-size="11" fill="#f59e0b">голосом: «хорошо/плохо» → оценка · «добавь комментарий» → отзыв</text>
+        <!-- узлы -->
+        <g class="voipwf-node"><rect x="20" y="55" width="130" height="50" rx="11"/><text x="85" y="78" text-anchor="middle" font-size="13" font-weight="700">📞 Абонент</text><text x="85" y="95" text-anchor="middle" font-size="10.5" fill="var(--muted)">АТС / добавочный</text></g>
+        <g class="voipwf-node"><rect x="192" y="55" width="138" height="50" rx="11"/><text x="261" y="78" text-anchor="middle" font-size="12.5" font-weight="700">🔌 SIP / RTP</text><text x="261" y="95" text-anchor="middle" font-size="10.5" fill="var(--muted)">регистрация/AudioSocket</text></g>
+        <g class="voipwf-node"><rect x="372" y="55" width="138" height="50" rx="11"/><text x="441" y="78" text-anchor="middle" font-size="13" font-weight="700">🎙 STT</text><text x="441" y="95" text-anchor="middle" font-size="10.5" fill="var(--muted)">Whisper (речь→текст)</text></g>
+        <g class="voipwf-node"><rect x="552" y="55" width="138" height="50" rx="11"/><text x="621" y="78" text-anchor="middle" font-size="13" font-weight="700">🔎 RAG-поиск</text><text x="621" y="95" text-anchor="middle" font-size="10.5" fill="var(--muted)">Qdrant + реранк</text></g>
+        <g class="voipwf-node"><rect x="732" y="55" width="138" height="50" rx="11"/><text x="801" y="78" text-anchor="middle" font-size="13" font-weight="700">🧠 LLM</text><text x="801" y="95" text-anchor="middle" font-size="10.5" fill="var(--muted)">генерация ответа</text></g>
+        <g class="voipwf-node"><rect x="912" y="55" width="120" height="50" rx="11"/><text x="972" y="78" text-anchor="middle" font-size="13" font-weight="700">🔊 TTS</text><text x="972" y="95" text-anchor="middle" font-size="10.5" fill="var(--muted)">синтез речи</text></g>
+        <g class="voipwf-node"><rect x="20" y="163" width="150" height="46" rx="11"/><text x="95" y="184" text-anchor="middle" font-size="12.5" font-weight="700">📞 Ответ в трубку</text><text x="95" y="200" text-anchor="middle" font-size="10.5" fill="var(--muted)">+ запись в журнал</text></g>
+        <text x="620" y="200" text-anchor="middle" font-size="11" fill="var(--muted)">каждый звонок распознаётся, отвечается по базе знаний и логируется (журнал · история по добавочным)</text>
+      </svg>
+      </div>
+      <div class="note" style="margin-top:6px">Абонент звонит → распознавание речи → поиск по базе → ответ модели → синтез и озвучка в трубку. После ответа можно голосом поставить оценку и оставить комментарий.</div>
+    </div>
 
     <div class="box">
       <h3>🔑 Токен администратора</h3>

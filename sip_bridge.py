@@ -154,7 +154,9 @@ def _stt(pcm: bytes) -> str:
             pass
 
 
-def _answer(question: str, caller: str = "") -> str:
+def _answer(question: str, caller: str = ""):
+    """Ответ RAG + запись в журнал VoIP. Возвращает (text, rid) — rid нужен, чтобы
+    потом проставить голосовую оценку/комментарий этому ответу."""
     try:
         import telegram_bot
         t0 = time.time()
@@ -171,19 +173,44 @@ def _answer(question: str, caller: str = "") -> str:
                     label = f"{emp['name']} (доб. {ext})"
             except Exception:
                 pass
+        rid = 0
         try:
             import db
-            db.log_request(question, "voip", len(hits),
-                           (hits[0].get("score", 0.0) if hits else 0.0),
-                           int((time.time() - t0) * 1000), len(text),
-                           bool(hits), src, answer=text, channel="voip",
-                           caller=ext, username=label)
+            rid = db.log_request(question, "voip", len(hits),
+                                 (hits[0].get("score", 0.0) if hits else 0.0),
+                                 int((time.time() - t0) * 1000), len(text),
+                                 bool(hits), src, answer=text, channel="voip",
+                                 caller=ext, username=label)
         except Exception as e:
             print(f"[sip] журнал VoIP: {e}")
-        return text
+        return text, rid
     except Exception as e:
         print(f"[sip] ответ RAG: {e}")
-        return ""
+        return "", 0
+
+
+# слова-оценки и фраза запроса комментария для голосовой обратной связи по звонку
+_FB_GOOD = ("хорошо", "отлично", "хороший", "отличный", "прекрасно", "супер",
+            "класс", "замечательно", "спасибо")
+_FB_BAD = ("плохо", "плоха", "плохой", "ужасно", "ужасный", "неверно",
+           "неправильно", "не верно", "не правильно")
+_FB_COMMENT = ("добавь коммент", "добавить коммент", "оставить коммент",
+               "оставь коммент", "комментарий")
+
+
+def feedback_intent(q: str) -> str:
+    """Намерение реплики абонента после ответа: 'good'|'bad'|'comment'|'ask'.
+    Оценкой считаем только короткие реплики (до 3 слов), чтобы не путать с вопросом."""
+    ql = (q or "").lower().strip(" .!?,-")
+    if any(p in ql for p in _FB_COMMENT):
+        return "comment"
+    words = [w.strip(".,!?") for w in ql.split()]
+    if len(words) <= 3:
+        if any(w in _FB_GOOD for w in words):
+            return "good"
+        if any(w in _FB_BAD for w in words):
+            return "bad"
+    return "ask"
 
 
 def _handle(sock) -> None:
@@ -207,6 +234,8 @@ def _handle(sock) -> None:
     voiced = False
     sil = 0
     utter_started = 0.0
+    last_rid = 0
+    await_comment = False
     try:
         while not _stop.is_set():
             kind, payload = _read_msg(sock)
@@ -249,13 +278,47 @@ def _handle(sock) -> None:
                 q = _stt(pcm)
                 if not q:
                     continue
+
+                # голосовая обратная связь по предыдущему ответу
+                if await_comment and last_rid:
+                    try:
+                        import db
+                        db.set_comment(last_rid, q)
+                    except Exception:
+                        pass
+                    await_comment = False
+                    apcm = _tts_pcm("Комментарий сохранён. Спасибо.")
+                    if apcm:
+                        _send_audio(sock, apcm)
+                    continue
+                intent = feedback_intent(q) if last_rid else "ask"
+                if intent in ("good", "bad"):
+                    try:
+                        import db
+                        db.set_rating(last_rid, 1 if intent == "good" else -1)
+                    except Exception:
+                        pass
+                    apcm = _tts_pcm("Спасибо, оценка сохранена. Скажите «добавь "
+                                    "комментарий», если хотите оставить отзыв.")
+                    if apcm:
+                        _send_audio(sock, apcm)
+                    continue
+                if intent == "comment":
+                    await_comment = True
+                    apcm = _tts_pcm("Говорите комментарий.")
+                    if apcm:
+                        _send_audio(sock, apcm)
+                    continue
+
                 if aid is not None:
                     try:
                         import activity
                         activity.update(aid, stage="ответ", detail=q[:60])
                     except Exception:
                         pass
-                ans = _answer(q) or "Извините, не нашёл ответа в документах."
+                ans, last_rid = _answer(q)
+                if not ans:
+                    ans = "Извините, не нашёл ответа в документах."
                 if _cfg("SIP_SPEAK_ANSWER", True):
                     speak = ans
                 else:

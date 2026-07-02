@@ -168,7 +168,7 @@ def _drain(call, seconds: float = 0.3) -> None:
 
 def _on_call(call) -> None:
     """Колбэк pyVoIP на входящий звонок: ответить и вести диалог."""
-    from sip_bridge import _stt, _answer, _rms
+    from sip_bridge import _stt, _answer, _rms, feedback_intent
     try:
         from pyVoIP.VoIP import CallState, InvalidStateError
     except Exception as e:
@@ -204,6 +204,8 @@ def _on_call(call) -> None:
         voiced = False
         sil = 0
         started = 0.0
+        last_rid = 0               # id последнего ответа (для голосовой оценки)
+        await_comment = False      # ждём произнесённый комментарий
         dbg = bool(_cfg("SIP_DEBUG"))
         _peak = 0.0
         _dbg_t = time.time()
@@ -254,13 +256,48 @@ def _on_call(call) -> None:
                           + (repr(q) if q else "— пусто (речь не распознана)"))
                 if not q:
                     continue
+
+                # 1) ждём произнесённый комментарий к последнему ответу
+                if await_comment and last_rid:
+                    try:
+                        import db
+                        db.set_comment(last_rid, q)
+                    except Exception as e:
+                        print(f"[sip-reg] комментарий: {e}")
+                    await_comment = False
+                    _play(call, _tts_u8("Комментарий сохранён. Спасибо."))
+                    _drain(call, 0.3)
+                    continue
+
+                # 2) голосовая обратная связь по предыдущему ответу
+                intent = feedback_intent(q) if last_rid else "ask"
+                if intent in ("good", "bad"):
+                    try:
+                        import db
+                        db.set_rating(last_rid, 1 if intent == "good" else -1)
+                    except Exception as e:
+                        print(f"[sip-reg] оценка: {e}")
+                    _play(call, _tts_u8("Спасибо, оценка сохранена. "
+                                        "Скажите «добавь комментарий», если хотите оставить отзыв."))
+                    _drain(call, 0.3)
+                    continue
+                if intent == "comment":
+                    await_comment = True
+                    _play(call, _tts_u8("Говорите комментарий после сигнала."))
+                    _play(call, _beep_u8())
+                    _drain(call, 0.2)
+                    continue
+
+                # 3) обычный вопрос
                 if aid is not None:
                     try:
                         import activity
                         activity.update(aid, stage="ответ", detail=q[:60])
                     except Exception:
                         pass
-                ans = _answer(q, caller=caller) or "Извините, не нашёл ответа в документах."
+                ans, last_rid = _answer(q, caller=caller)
+                if not ans:
+                    ans = "Извините, не нашёл ответа в документах."
                 # по настройке: озвучить ответ модели или короткую отметку
                 if _cfg("SIP_SPEAK_ANSWER", True):
                     speak = ans
@@ -268,7 +305,7 @@ def _on_call(call) -> None:
                     speak = _cfg("SIP_ACK_PHRASE", "Ваш запрос принят и записан. Спасибо.")
                 apcm = _tts_u8(speak)
                 if dbg:
-                    print(f"[sip-reg] ответ ({len(ans)} симв.), озвучка "
+                    print(f"[sip-reg] ответ ({len(ans)} симв.), rid={last_rid}, озвучка "
                           f"{'вкл' if _cfg('SIP_SPEAK_ANSWER', True) else 'выкл'}, "
                           f"TTS {len(apcm)} байт u8")
                 _play(call, apcm)
