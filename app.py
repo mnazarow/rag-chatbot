@@ -667,6 +667,13 @@ def api_voip_callers(x_admin_token: str | None = Header(None)):
     return {"items": db.voip_callers()}
 
 
+@app.get("/api/admin/voip/history")
+def api_voip_history(caller: str, x_admin_token: str | None = Header(None)):
+    """Все запросы и ответы VoIP по добавочному номеру (для раскрытия строки)."""
+    _check_admin(x_admin_token)
+    return {"items": db.voip_history(caller)}
+
+
 @app.post("/api/admin/voip/delete")
 def api_voip_delete(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     """Удалить историю VoIP по добавочному номеру."""

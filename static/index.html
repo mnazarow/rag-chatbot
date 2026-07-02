@@ -4743,22 +4743,53 @@ async function loadVoip(){
   await loadConfig();          // рендерит #voip_settings + статусы (loadSip/loadSipReg)
   loadVoipCallers();
 }
+const _voipOpen=new Set();
 async function loadVoipCallers(){
   if(!$('#voip_callers')) return;
   let d; try{ d=await adminGet('/api/admin/voip/callers'); }catch(e){ return; }
   const items=(d&&d.items)||[];
-  $('#voip_callers').innerHTML = items.length ? items.map(c=>
-    `<tr><td style="white-space:nowrap"><b>${esc(c.caller||'')}</b></td>
+  if(!items.length){ $('#voip_callers').innerHTML='<tr><td colspan="5" class="note">пока нет звонков</td></tr>'; return; }
+  const rows=[];
+  items.forEach(c=>{
+    const cid=c.caller||'', open=_voipOpen.has(cid);
+    rows.push(`<tr style="cursor:pointer" onclick="voipToggle('${escAttr(cid)}')" title="Показать все запросы и ответы">
+      <td style="white-space:nowrap"><span class="note">${open?'▼':'▶'}</span> <b>${esc(cid)}</b></td>
       <td>${c.username?esc(c.username):'<span class="note">не определён</span>'}</td>
       <td>${nz(c.n)}</td>
       <td style="white-space:nowrap">${c.last_ts?fmtTime(c.last_ts):'—'}</td>
-      <td><button class="act ghost" style="padding:3px 9px;border-color:#ef4444;color:#f87171" onclick="voipDelete('${escAttr(c.caller||'')}')">Удалить историю</button></td></tr>`).join('')
-    : '<tr><td colspan="5" class="note">пока нет звонков</td></tr>';
+      <td><button class="act ghost" style="padding:3px 9px;border-color:#ef4444;color:#f87171" onclick="event.stopPropagation();voipDelete('${escAttr(cid)}')">Удалить историю</button></td></tr>`);
+    if(open){
+      const h=_voipHist[cid];
+      let body;
+      if(h===undefined) body='<span class="note">загрузка…</span>';
+      else if(!h.length) body='<span class="note">нет записей</span>';
+      else body='<table style="width:100%"><thead><tr><th>Время</th><th>Вопрос</th><th>Ответ</th><th>Оценка</th></tr></thead><tbody>'+
+        h.map(x=>`<tr><td style="white-space:nowrap">${fmtTime(x.ts)}</td>
+          <td style="max-width:280px">${esc(x.question||'')}</td>
+          <td style="max-width:420px"><span style="white-space:pre-wrap">${esc(x.answer||'')}</span></td>
+          <td>${ratingBadge(x.rating)}</td></tr>`).join('')+'</tbody></table>';
+      rows.push(`<tr><td colspan="5" style="background:rgba(127,127,127,.05)">${body}</td></tr>`);
+    }
+  });
+  $('#voip_callers').innerHTML=rows.join('');
+}
+const _voipHist={};
+async function voipToggle(caller){
+  if(_voipOpen.has(caller)){ _voipOpen.delete(caller); }
+  else{
+    _voipOpen.add(caller);
+    if(_voipHist[caller]===undefined){
+      _voipHist[caller]=undefined;
+      try{ const r=await adminGet('/api/admin/voip/history?caller='+encodeURIComponent(caller)); _voipHist[caller]=(r&&r.items)||[]; }
+      catch(e){ _voipHist[caller]=[]; }
+    }
+  }
+  loadVoipCallers();
 }
 async function voipDelete(caller){
   if(!confirm('Удалить всю историю звонков по добавочному '+caller+'?'))return;
   const r=await adminPost('/api/admin/voip/delete',{caller});
-  if(r&&r.ok) loadVoipCallers();
+  if(r&&r.ok){ _voipOpen.delete(caller); delete _voipHist[caller]; loadVoipCallers(); }
 }
 async function saveVoip(){
   const body={};

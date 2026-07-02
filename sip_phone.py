@@ -204,6 +204,9 @@ def _on_call(call) -> None:
         voiced = False
         sil = 0
         started = 0.0
+        dbg = bool(_cfg("SIP_DEBUG"))
+        _peak = 0.0
+        _dbg_t = time.time()
         while call.state == CallState.ANSWERED and not _stop.is_set():
             try:
                 data = call.read_audio(_FRAME, False)   # unsigned 8-бит
@@ -216,6 +219,13 @@ def _on_call(call) -> None:
                 continue
             data = _u8_to_s16(data)                      # → 16-бит для RMS/STT
             rms = _rms(data)
+            if dbg:                                      # раз в ~2 c: пиковая громкость входа
+                _peak = max(_peak, rms)
+                if time.time() - _dbg_t > 2:
+                    print(f"[sip-reg] вход: пик RMS={_peak:.0f} (порог тишины {silence_rms:.0f})"
+                          + ("  — тишина/нет входящего звука!" if _peak < 50 else ""))
+                    _peak = 0.0
+                    _dbg_t = time.time()
             if rms >= silence_rms:
                 if not voiced:
                     started = time.time()
@@ -239,6 +249,9 @@ def _on_call(call) -> None:
                     except Exception:
                         pass
                 q = _stt(pcm)
+                if dbg:
+                    print(f"[sip-reg] распознано ({len(pcm)} байт): "
+                          + (repr(q) if q else "— пусто (речь не распознана)"))
                 if not q:
                     continue
                 if aid is not None:
@@ -253,7 +266,12 @@ def _on_call(call) -> None:
                     speak = ans
                 else:
                     speak = _cfg("SIP_ACK_PHRASE", "Ваш запрос принят и записан. Спасибо.")
-                _play(call, _tts_u8(speak))
+                apcm = _tts_u8(speak)
+                if dbg:
+                    print(f"[sip-reg] ответ ({len(ans)} симв.), озвучка "
+                          f"{'вкл' if _cfg('SIP_SPEAK_ANSWER', True) else 'выкл'}, "
+                          f"TTS {len(apcm)} байт u8")
+                _play(call, apcm)
                 _drain(call, 0.3)
             time.sleep(0.01)
     except InvalidStateError:

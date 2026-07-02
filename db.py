@@ -583,6 +583,22 @@ def voip_callers() -> list[dict]:
         return []
 
 
+def voip_history(caller: str, limit: int = 500) -> list[dict]:
+    """Все запросы и ответы VoIP по добавочному номеру (для раскрытия строки)."""
+    caller = (caller or "").strip()
+    if not caller:
+        return []
+    try:
+        rows = _all(
+            "SELECT id, ts, question, answer, answered, rating, comment FROM requests "
+            "WHERE channel='voip' AND caller=? ORDER BY id DESC LIMIT ?",
+            (caller, int(limit)))
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[db] voip_history: {e}")
+        return []
+
+
 def voip_delete_by_caller(caller: str) -> int:
     """Удалить всю историю VoIP по добавочному номеру. Возвращает число удалённых."""
     caller = (caller or "").strip()
