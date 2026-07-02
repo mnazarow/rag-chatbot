@@ -97,45 +97,28 @@ def _u8_to_s16(data: bytes) -> bytes:
 
 
 def _play(call, pcm: bytes) -> None:
-    """Проиграть PCM (8 кГц/8 бит unsigned/моно) в звонок.
-
-    ВАЖНО: подаём небольшими кусками с точным темпом реального времени и небольшим
-    опережением (LEAD). Один большой write_audio заставляет pyVoIP на каждом 20-мс
-    кадре пересобирать огромный буфер (звук «замедляется» и трещит из-за underrun).
-    Малые куски + постоянный небольшой запас в буфере дают ровный звук."""
+    """Проиграть PCM (8 кГц/8 бит unsigned/моно) в звонок и подождать проигрывания.
+    Один write_audio + ожидание (как в примерах pyVoIP); темп отправки RTP регулирует
+    сам pyVoIP (см. TRANSMIT_DELAY_REDUCTION, настройка SIP_TX_SPEEDUP)."""
     if not pcm:
         return
     try:
         from pyVoIP.VoIP import CallState
     except Exception:
         CallState = None
-    CHUNK = 1600           # 200 мс при 8 кГц/8 бит (1 байт = сэмпл)
-    LEAD = 0.4             # держим ~0.4 c звука в буфере pyVoIP
-    start = time.time()
-    written = 0.0          # сколько секунд звука уже отдано
-    i = 0
-    n = len(pcm)
-    while i < n and not _stop.is_set():
-        frame = pcm[i:i + CHUNK]
-        i += CHUNK
-        try:
-            call.write_audio(frame)
-        except Exception:
-            return
-        written += len(frame) / float(_RATE)
-        target = start + written - LEAD      # не забегать вперёд больше, чем на LEAD
-        while time.time() < target and not _stop.is_set():
-            if CallState is not None:
-                try:
-                    if call.state != CallState.ANSWERED:
-                        return
-                except Exception:
-                    return
-            time.sleep(0.02)
-    # дождаться проигрывания остатка буфера
-    remain = (start + written) - time.time()
-    if remain > 0:
-        time.sleep(min(remain + 0.15, 10.0))
+    try:
+        call.write_audio(pcm)
+    except Exception:
+        return
+    end = time.time() + len(pcm) / float(_RATE) + 0.2   # u8 → 1 байт/сэмпл
+    while time.time() < end and not _stop.is_set():
+        if CallState is not None:
+            try:
+                if call.state != CallState.ANSWERED:
+                    break
+            except Exception:
+                break
+        time.sleep(0.05)
 
 
 def _drain(call, seconds: float = 0.3) -> None:
@@ -282,9 +265,17 @@ def start() -> dict:
             except Exception:
                 pass
         try:
+            import pyVoIP
             from pyVoIP.VoIP import VoIPPhone
+            # темп отправки RTP: на macOS/под нагрузкой time.sleep в пакет-цикле
+            # pyVoIP оверслипит → звук «медленный» и с провалами. Ускоряем отправку.
+            try:
+                pyVoIP.TRANSMIT_DELAY_REDUCTION = float(_cfg("SIP_TX_SPEEDUP", 0.0) or 0.0)
+            except Exception:
+                pass
             print(f"[sip-reg] REGISTER → {server}:{port} как {user} "
-                  f"(myIP={myip}, локальный порт {sipport})")
+                  f"(myIP={myip}, локальный порт {sipport}, "
+                  f"tx_speedup={_cfg('SIP_TX_SPEEDUP', 0.0)})")
             _phone = VoIPPhone(server, port, user, pwd, myIP=myip,
                                sipPort=sipport, rtpPortLow=rtp_lo, rtpPortHigh=rtp_hi,
                                callCallback=_on_call)
