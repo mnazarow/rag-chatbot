@@ -106,6 +106,10 @@ def _play(call, pcm: bytes) -> None:
         from pyVoIP.VoIP import CallState
     except Exception:
         CallState = None
+    if _cfg("SIP_DEBUG"):
+        print(f"[sip-reg] _play: {len(pcm)} байт u8 → ожид. длительность "
+              f"{len(pcm)/float(_RATE):.2f} c (при 8 кГц)")
+    _t0 = time.time()
     try:
         call.write_audio(pcm)
     except Exception:
