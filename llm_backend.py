@@ -64,12 +64,14 @@ def _act_tokens(cid, chars: int):
         pass
 
 
-def _act_end(cid, ok: bool, chars: int = 0, error: str | None = None):
+def _act_end(cid, ok: bool, chars: int = 0, error: str | None = None,
+             ptok: int = 0, ctok: int = 0, gen_ms: int = 0):
     if cid is None:
         return
     try:
         import llm_activity
-        llm_activity.end(cid, ok=ok, chars=chars, error=error)
+        llm_activity.end(cid, ok=ok, chars=chars, error=error,
+                         ptok=ptok, ctok=ctok, gen_ms=gen_ms)
     except Exception:
         pass
 
@@ -86,13 +88,16 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
     cid = _act_begin(kind, model, label or _label_from_messages(messages),
                      _full_request(messages))
     nchars = 0
+    ptok = ctok = gen_ms = 0
     ok = True
     err = None
     try:
         if settings.get("LLM_BACKEND") == "openai":
             url = f"{settings.get('LLM_BASE_URL')}/chat/completions"
+            # include_usage — чтобы сервер вернул счётчики токенов в финальном чанке
             payload = {"model": model, "messages": messages,
-                       "stream": True, "temperature": temperature}
+                       "stream": True, "temperature": temperature,
+                       "stream_options": {"include_usage": True}}
             headers = {"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"}
             async with httpx.AsyncClient(timeout=None) as c:
                 async with c.stream("POST", url, json=payload, headers=headers) as r:
@@ -103,7 +108,14 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
                         data = line[len("data:"):].strip()
                         if data == "[DONE]":
                             break
-                        delta = json.loads(data)["choices"][0]["delta"].get("content", "")
+                        obj = json.loads(data)
+                        u = obj.get("usage") or {}
+                        if u:
+                            ptok = int(u.get("prompt_tokens") or ptok)
+                            ctok = int(u.get("completion_tokens") or ctok)
+                        choices = obj.get("choices") or []
+                        delta = (choices[0].get("delta", {}).get("content", "")
+                                 if choices else "")
                         if delta:
                             nchars += len(delta)
                             if nchars % 64 < len(delta):
@@ -118,7 +130,12 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
                     async for line in r.aiter_lines():
                         if not line.strip():
                             continue
-                        tok = json.loads(line).get("message", {}).get("content", "")
+                        obj = json.loads(line)
+                        tok = obj.get("message", {}).get("content", "")
+                        if obj.get("done"):     # финальный ответ Ollama несёт счётчики
+                            ptok = int(obj.get("prompt_eval_count") or ptok)
+                            ctok = int(obj.get("eval_count") or ctok)
+                            gen_ms = int((obj.get("eval_duration") or 0) / 1e6)  # нс→мс
                         if tok:
                             nchars += len(tok)
                             if nchars % 64 < len(tok):
@@ -129,7 +146,7 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
         err = str(e)
         raise
     finally:
-        _act_end(cid, ok=ok, chars=nchars, error=err)
+        _act_end(cid, ok=ok, chars=nchars, error=err, ptok=ptok, ctok=ctok, gen_ms=gen_ms)
         try:
             llm_queue.release(_qtok)
         except Exception:
@@ -145,6 +162,7 @@ def chat(messages: list[dict], temperature: float = 0.1,
     cid = _act_begin(kind, model, label or _label_from_messages(messages),
                      _full_request(messages))
     try:
+        ptok = ctok = gen_ms = 0
         if settings.get("LLM_BACKEND") == "openai":
             r = httpx.post(
                 f"{settings.get('LLM_BASE_URL')}/chat/completions", timeout=None,
@@ -152,15 +170,21 @@ def chat(messages: list[dict], temperature: float = 0.1,
                 json={"model": model, "messages": messages,
                       "stream": False, "temperature": temperature},
             )
-            out = r.json()["choices"][0]["message"]["content"]
+            j = r.json()
+            out = j["choices"][0]["message"]["content"]
+            u = j.get("usage") or {}
+            ptok, ctok = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
         else:
             r = httpx.post(
                 f"{settings.get('OLLAMA_URL')}/api/chat", timeout=None,
                 json={"model": model, "messages": messages,
                       "stream": False, "options": {"temperature": temperature}},
             )
-            out = r.json()["message"]["content"]
-        _act_end(cid, ok=True, chars=len(out or ""))
+            j = r.json()
+            out = j["message"]["content"]
+            ptok, ctok = int(j.get("prompt_eval_count") or 0), int(j.get("eval_count") or 0)
+            gen_ms = int((j.get("eval_duration") or 0) / 1e6)
+        _act_end(cid, ok=True, chars=len(out or ""), ptok=ptok, ctok=ctok, gen_ms=gen_ms)
         return out
     except Exception as e:
         _act_end(cid, ok=False, error=str(e))
@@ -218,6 +242,7 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
                          "описание изображения" + (f" (попытка {attempt})" if attempt > 1 else ""),
                          prompt=prompt + "\n\n[изображение прикреплено]")
         try:
+            ptok = ctok = gen_ms = 0
             if settings.get("LLM_BACKEND") == "openai":
                 content = [{"type": "text", "text": prompt},
                            {"type": "image_url",
@@ -228,15 +253,21 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
                     json={"model": model, "stream": False, "temperature": 0.2,
                           "messages": [{"role": "user", "content": content}]})
                 r.raise_for_status()
-                out = (r.json()["choices"][0]["message"]["content"] or "").strip()
+                j = r.json()
+                out = (j["choices"][0]["message"]["content"] or "").strip()
+                u = j.get("usage") or {}
+                ptok, ctok = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
             else:
                 r = httpx.post(
                     f"{settings.get('OLLAMA_URL')}/api/chat", timeout=timeout,
                     json={"model": model, "stream": False, "options": {"temperature": 0.2},
                           "messages": [{"role": "user", "content": prompt, "images": [b64]}]})
                 r.raise_for_status()
-                out = (r.json().get("message", {}).get("content", "") or "").strip()
-            _act_end(cid, ok=True, chars=len(out))
+                j = r.json()
+                out = (j.get("message", {}).get("content", "") or "").strip()
+                ptok, ctok = int(j.get("prompt_eval_count") or 0), int(j.get("eval_count") or 0)
+                gen_ms = int((j.get("eval_duration") or 0) / 1e6)
+            _act_end(cid, ok=True, chars=len(out), ptok=ptok, ctok=ctok, gen_ms=gen_ms)
             return out
         except Exception as e:
             last_err = e

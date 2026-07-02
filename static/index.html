@@ -217,8 +217,9 @@
       <h3>🧠 Запросы к LLM <span id="llmact_count" class="tag"></span>
         <span class="note" style="font-weight:400;margin-left:8px">в реальном времени</span></h3>
       <div class="note" style="margin-bottom:8px">Вызовы модели: генерация ответов (чат/Телеграм), описание изображений vision-моделью и служебные вызовы (фильтр запроса, API-интент). Показаны выполняемые сейчас и недавно завершённые. Обновляется автоматически.</div>
+      <div class="cards" id="llmtok_cards" style="margin-bottom:10px"></div>
       <div id="llmact_queue" style="margin-bottom:10px"></div>
-      <div style="overflow:auto;max-height:42vh"><table><thead><tr><th>Статус</th><th>Тип</th><th>Модель</th><th>Запрос</th><th>Вывод</th><th>Время</th></tr></thead>
+      <div style="overflow:auto;max-height:42vh"><table><thead><tr><th>Статус</th><th>Тип</th><th>Модель</th><th>Запрос</th><th>Токены (запрос→ответ)</th><th>Вывод</th><th>Время</th></tr></thead>
       <tbody id="llmact_rows"></tbody></table></div>
     </div>
     <div class="box">
@@ -1711,10 +1712,15 @@ async function loadLlmActivity(){
     const caret=open?'▼':'▶';
     const lbl = it.error ? ('<span style="color:#f87171" title="'+escAttr(it.error)+'">'+esc(it.label||'')+'</span>')
                          : (esc(it.label||'')||'<span class="note">—</span>');
+    const tpsStr = (it.tps!=null) ? ` <span class="note">· ${it.tps} ток/с</span>` : '';
+    const tokCell = (it.ptok||it.ctok)
+      ? `<span title="токенов запроса → ответа">${nz(it.ptok)} → <b>${nz(it.ctok)}</b> <span class="note">(${nz((it.ptok||0)+(it.ctok||0))})</span></span>${tpsStr}`
+      : (it.done?'<span class="note">—</span>':'…');
     rows.push(`<tr style="cursor:pointer" onclick="llmToggle('${escAttr(it.id)}')" title="Показать полный запрос к LLM"><td style="white-space:nowrap">${st}</td>
       <td style="white-space:nowrap">${k.icon} ${esc(k.label)}</td>
       <td style="white-space:nowrap"><span class="note">${esc(schModShort(it.model||''))}</span></td>
-      <td style="max-width:360px"><span class="note">${caret}</span> ${lbl}</td>
+      <td style="max-width:340px"><span class="note">${caret}</span> ${lbl}</td>
+      <td style="white-space:nowrap">${tokCell}</td>
       <td style="white-space:nowrap">${out}</td>
       <td style="white-space:nowrap">${actElapsed(it.elapsed_ms)}</td></tr>`);
     if(open){
@@ -1723,12 +1729,26 @@ async function loadLlmActivity(){
         : (p ? `<pre style="white-space:pre-wrap;max-height:340px;overflow:auto;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;margin:0">${esc(p)}</pre>`
              : '<span class="note">полный запрос недоступен (запись устарела или очищена)</span>');
       const errLine = it.error ? `<div class="note" style="color:#f87171;margin-bottom:6px">Ошибка: ${esc(it.error)}</div>` : '';
-      rows.push(`<tr><td colspan="6" style="background:rgba(127,127,127,.05)"><div class="note" style="margin-bottom:6px">📤 Полный запрос к LLM${it.model?(' · модель '+esc(schModShort(it.model))):''}:</div>${errLine}${body}</td></tr>`);
+      rows.push(`<tr><td colspan="7" style="background:rgba(127,127,127,.05)"><div class="note" style="margin-bottom:6px">📤 Полный запрос к LLM${it.model?(' · модель '+esc(schModShort(it.model))):''} · токены: ${nz(it.ptok)} → ${nz(it.ctok)}:</div>${errLine}${body}</td></tr>`);
     }
   });
+  // сводка по токенам (накопительно за сессию)
+  const tc=$('#llmtok_cards');
+  if(tc){
+    const pt=d.total_prompt_tokens||0, ct=d.total_completion_tokens||0, tt=d.total_tokens||0;
+    const fmtK=n=>n>=1000?(n/1000).toFixed(n>=100000?0:1)+'K':(''+n);
+    tc.innerHTML=[
+      ['Вызовов к LLM', nz(d.total_calls)],
+      ['Токенов запросов', fmtK(pt)],
+      ['Токенов ответов', fmtK(ct)],
+      ['Всего токенов', fmtK(tt)],
+      ['Скорость (сред.)', (d.avg_tps!=null?(d.avg_tps+' <small>ток/с</small>'):'—')],
+      ['Ошибок', nz(d.total_errors)],
+    ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+  }
   const r=d.running||0;
   if($('#llmact_count')) $('#llmact_count').textContent = r? (r+' выполняется') : 'нет активных';
-  $('#llmact_rows').innerHTML = rows.length ? rows.join('') : emptyRow(6);
+  $('#llmact_rows').innerHTML = rows.length ? rows.join('') : emptyRow(7);
   // визуализация очереди к LLM
   const qe=$('#llmact_queue'); if(qe){
     const qd=d.queue||{};

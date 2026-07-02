@@ -27,7 +27,7 @@ _PREFIX = "rag:llmact:"   # ключи Redis: rag:llmact:i:<id>, rag:llmact:call
 _lock = threading.Lock()
 _items: dict[str, dict] = {}
 _counter = itertools.count(1)
-_totals = {"calls": 0, "errors": 0}
+_totals = {"calls": 0, "errors": 0, "ptok": 0, "ctok": 0, "genms": 0}
 _pid = os.getpid()
 
 
@@ -54,7 +54,8 @@ def begin(kind: str, model: str = "", backend: str = "", label: str = "",
            "backend": backend or "", "label": (label or "")[:160],
            "prompt": (prompt or "")[:16000],   # полный запрос (для раскрытия строки)
            "started": now, "updated": now, "finished": None,
-           "done": False, "ok": None, "chars": 0, "error": None}
+           "done": False, "ok": None, "chars": 0, "error": None,
+           "ptok": 0, "ctok": 0, "gen_ms": 0}   # токены запрос/ответ + время генерации
     c = _redis()
     if c is not None:
         try:
@@ -96,7 +97,10 @@ def tokens(cid, chars: int) -> None:
 
 
 def end(cid, ok: bool = True, chars: int | None = None,
-        error: str | None = None) -> None:
+        error: str | None = None, ptok: int = 0, ctok: int = 0,
+        gen_ms: int = 0) -> None:
+    ptok, ctok, gen_ms = int(ptok or 0), int(ctok or 0), int(gen_ms or 0)
+    now = time.time()
     c = _redis()
     if c is not None:
         try:
@@ -105,18 +109,27 @@ def end(cid, ok: bool = True, chars: int | None = None,
             raw = c.get(k)
             rec = json.loads(raw) if raw else {"id": str(cid), "kind": "llm",
                                                "model": "", "backend": "", "label": "",
-                                               "started": time.time(), "chars": 0}
+                                               "started": now, "chars": 0}
             rec["done"] = True
             rec["ok"] = bool(ok)
-            rec["finished"] = time.time()
-            rec["updated"] = rec["finished"]
+            rec["finished"] = now
+            rec["updated"] = now
             if chars is not None:
                 rec["chars"] = int(chars)
+            rec["ptok"], rec["ctok"], rec["gen_ms"] = ptok, ctok, gen_ms
             if error:
                 rec["error"] = str(error)[:200]
             c.setex(k, int(FINISHED_TTL), json.dumps(rec, ensure_ascii=False))
             if not ok:
                 c.incr(_PREFIX + "errors")
+            if ptok:
+                c.incrby(_PREFIX + "ptok", ptok)
+            if ctok:
+                c.incrby(_PREFIX + "ctok", ctok)
+                # для средней скорости: эффективное время генерации
+                eff = gen_ms if gen_ms > 0 else int((now - rec.get("started", now)) * 1000)
+                if eff > 0:
+                    c.incrby(_PREFIX + "genms", eff)
             return
         except Exception:
             pass
@@ -126,14 +139,21 @@ def end(cid, ok: bool = True, chars: int | None = None,
             return
         it["done"] = True
         it["ok"] = bool(ok)
-        it["finished"] = time.time()
-        it["updated"] = it["finished"]
+        it["finished"] = now
+        it["updated"] = now
         if chars is not None:
             it["chars"] = int(chars)
+        it["ptok"], it["ctok"], it["gen_ms"] = ptok, ctok, gen_ms
         if error:
             it["error"] = str(error)[:200]
         if not ok:
             _totals["errors"] += 1
+        _totals["ptok"] += ptok
+        _totals["ctok"] += ctok
+        if ctok:
+            eff = gen_ms if gen_ms > 0 else int((now - it.get("started", now)) * 1000)
+            if eff > 0:
+                _totals["genms"] += eff
 
 
 # --------------------------------------------------------------------------- #
@@ -160,12 +180,17 @@ def _gc_locked() -> None:
 
 def _view(it: dict) -> dict:
     end_t = it.get("finished") if it.get("done") else time.time()
+    elapsed_ms = int((end_t - it.get("started", end_t)) * 1000)
+    ctok = int(it.get("ctok", 0) or 0)
+    gen_ms = int(it.get("gen_ms", 0) or 0) or elapsed_ms
+    tps = round(ctok / (gen_ms / 1000.0), 1) if (ctok > 0 and gen_ms > 0) else None
     return {
         "id": it["id"], "kind": it.get("kind", "llm"), "model": it.get("model", ""),
         "backend": it.get("backend", ""), "label": it.get("label", ""),
         "done": it.get("done", False), "ok": it.get("ok"), "error": it.get("error"),
         "chars": it.get("chars", 0),
-        "elapsed_ms": int((end_t - it.get("started", end_t)) * 1000),
+        "ptok": it.get("ptok", 0), "ctok": ctok, "tps": tps,
+        "elapsed_ms": elapsed_ms,
     }
 
 
@@ -184,14 +209,18 @@ def snapshot(limit: int = 60) -> dict:
                         pass
             calls = int(c.get(_PREFIX + "calls") or 0)
             errors = int(c.get(_PREFIX + "errors") or 0)
-            return _assemble(items, limit, calls, errors)
+            ptok = int(c.get(_PREFIX + "ptok") or 0)
+            ctok = int(c.get(_PREFIX + "ctok") or 0)
+            genms = int(c.get(_PREFIX + "genms") or 0)
+            return _assemble(items, limit, calls, errors, ptok, ctok, genms)
         except Exception:
             pass
     with _lock:
         _gc_locked()
         items = list(_items.values())
         totals = dict(_totals)
-    return _assemble(items, limit, totals["calls"], totals["errors"])
+    return _assemble(items, limit, totals["calls"], totals["errors"],
+                     totals["ptok"], totals["ctok"], totals["genms"])
 
 
 def get(cid) -> dict:
@@ -218,11 +247,15 @@ def get(cid) -> dict:
     return {}
 
 
-def _assemble(items: list[dict], limit: int, calls: int, errors: int) -> dict:
+def _assemble(items: list[dict], limit: int, calls: int, errors: int,
+              ptok: int = 0, ctok: int = 0, genms: int = 0) -> dict:
     running = [v for v in items if not v.get("done")]
     finished = [v for v in items if v.get("done")]
     running.sort(key=lambda x: x.get("started", 0))
     finished.sort(key=lambda x: x.get("finished", 0), reverse=True)
     views = [_view(v) for v in running] + [_view(v) for v in finished[:limit]]
+    avg_tps = round(ctok / (genms / 1000.0), 1) if (ctok > 0 and genms > 0) else None
     return {"items": views, "running": len(running),
-            "total_calls": calls, "total_errors": errors}
+            "total_calls": calls, "total_errors": errors,
+            "total_prompt_tokens": ptok, "total_completion_tokens": ctok,
+            "total_tokens": ptok + ctok, "avg_tps": avg_tps}
