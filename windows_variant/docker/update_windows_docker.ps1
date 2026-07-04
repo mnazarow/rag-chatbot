@@ -66,9 +66,13 @@ if (-not $NoPull) {
 # ----- 2. Пересборка образа и перезапуск контейнеров -----
 if ($Cuda) { Log "Режим GPU (-Cuda): пересобираю CUDA-образ и пробрасываю NVIDIA GPU." }
 Log "Пересобираю образ приложения и перезапускаю контейнеры (данные сохраняются)..."
-docker compose @Compose pull qdrant 2>$null | Out-Null      # свежий образ Qdrant, если вышел
+# docker пишет прогресс сборки/загрузки в stderr; при ErrorActionPreference=Stop это
+# прервало бы скрипт (NativeCommandError). На время команды переключаемся на Continue
+# и определяем успех по коду возврата.
+$eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 docker compose @Compose up -d --build
 $composeOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $eap
 
 # ----- 3. Чеклист после обновления -----
 Write-Host ""

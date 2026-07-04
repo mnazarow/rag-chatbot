@@ -116,8 +116,11 @@ New-Item -ItemType Directory -Force -Path "backups" | Out-Null
 
 # ----- 6. Сборка и запуск (qdrant + redis + app) -----
 Log "Собираю и запускаю контейнеры (первый раз — долго: качаются образы и модели)..."
+# docker пишет прогресс в stderr; при ErrorActionPreference=Stop это прервало бы скрипт.
+$eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 docker compose up -d --build
 $composeOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $eap
 
 # ----- 7. Чеклист -----
 Write-Host ""
