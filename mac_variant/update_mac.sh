@@ -18,3 +18,6 @@ brew install tesseract tesseract-lang libredwg antiword p7zip unar ffmpeg 2>/dev
 bash mac_variant/manage_mac.sh restart
 
 echo "Обновлено: ${OLD} → ${NEW}"
+
+# полная проверка пакетов и компонентов после обновления
+bash "${ROOT}/scripts/checklist.sh" "${ROOT}" || true

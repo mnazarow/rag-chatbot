@@ -217,6 +217,8 @@ reverse-proxy (Caddy/Nginx) с авторизацией или ограничь�
 | `setup.sh`                 | Bootstrap на Apple Silicon (Ollama + Qdrant + venv) |
 | `deploy.sh` / `update.sh`  | Деплой/обновление из GitHub на GPU-сервер           |
 | `reinstall.sh`             | Переустановка окружения (.venv + зависимости)       |
+| `scripts/checklist.sh` / `.ps1` | Полная проверка нативной установки (пакеты, Python-зависимости, сервисы); запускается инсталляторами и отдельно |
+| `scripts/checklist_docker.sh` | Полная проверка Docker-развёртывания (контейнеры, сервисы, инструменты и Python-пакеты внутри образа) |
 | `reinstall_server.sh`      | Полная переустановка GPU-сервера (destructive)      |
 | `gpu_variant/`             | Linux + NVIDIA: vLLM, Qdrant, systemd, hybrid+, дообучение |
 | `mac_variant/`             | Деплой/управление/переустановка на Mac (launchd)    |

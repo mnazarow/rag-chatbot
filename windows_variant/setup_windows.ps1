@@ -113,3 +113,10 @@ Write-Host "  Готово. Сервис запущен и стартует пр
 Write-Host "  Веб-панель:  http://localhost:8000  (раздел «Администратор»)"
 Write-Host "  Управление:  powershell -File windows_variant\manage_windows.ps1 status|start|stop|restart|logs"
 Write-Host "============================================================" -ForegroundColor Green
+
+# ----- 7. полная проверка установки (пакеты и компоненты) -----
+# Запускаем в отдельном процессе, чтобы код выхода чек-листа не прерывал установку.
+$checklist = Join-Path $Root "scripts\checklist.ps1"
+if (Test-Path $checklist) {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $checklist -Root $Root
+}

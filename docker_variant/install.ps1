@@ -181,6 +181,27 @@ $ollamaUp = HttpOk "http://localhost:11434/api/tags" 4
 if ($ollamaUp) { Item ok "Ollama на хосте доступна" }
 else { Item warn "Ollama на хосте недоступна (http://localhost:11434)" "установите/запустите Ollama"; $warns++ }
 
+# Инструменты и Python-пакеты ВНУТРИ образа приложения
+if ($appUp) {
+    function InAppHas($cmd) { try { docker exec rag_app sh -lc "command -v $cmd" *> $null; return ($LASTEXITCODE -eq 0) } catch { return $false } }
+    if (InAppHas "ffmpeg")    { Item ok "ffmpeg (видео/аудио) в образе" } else { Item warn "ffmpeg недоступен в образе" "кадры/транскрибация/голос ограничены"; $warns++ }
+    if (InAppHas "tesseract") { Item ok "OCR (tesseract) в образе" } else { Item warn "tesseract недоступен" "OCR картинок отключён"; $warns++ }
+    if (InAppHas "dwg2dxf")   { Item ok "DWG-конвертер (dwg2dxf) в образе" } else { Item warn "dwg2dxf недоступен" "чертежи .dwg не индексируются"; $warns++ }
+    if ((InAppHas "unar") -or (InAppHas "7z")) { Item ok "распаковка архивов (unar/7z) в образе" } else { Item warn "unar/7z недоступны" "часть архивов не распакуется"; $warns++ }
+
+    $pyProbe = 'import importlib' + "`n" +
+      'req=["fastapi","uvicorn","qdrant_client","sentence_transformers","FlagEmbedding","torch","transformers","rank_bm25","fitz","docx","pptx","openpyxl","faster_whisper","redis"]' + "`n" +
+      'miss=[m for m in req if importlib.util.find_spec(m) is None]' + "`n" +
+      'print("MISSING:"+",".join(miss) if miss else "ALLOK")'
+    try {
+        $res = (docker exec rag_app /opt/venv/bin/python -c $pyProbe 2>&1 | Out-String)
+        if ($res -match "ALLOK") { Item ok "Python-пакеты приложения в образе (обязательные)" }
+        elseif ($res -match "MISSING:(.*)") { Item fail "В образе не хватает Python-пакетов" $Matches[1].Trim(); $fails++
+            ShowLog "проверка импортов внутри rag_app" { docker exec rag_app /opt/venv/bin/pip check } }
+        else { Item warn "Не удалось проверить Python-пакеты в образе" ($res.Trim()); $warns++ }
+    } catch { Item warn "Проверка Python-пакетов в образе не выполнена" "$($_.Exception.Message)"; $warns++ }
+}
+
 Write-Host "============================================================" -ForegroundColor Cyan
 if ($fails -eq 0 -and $warns -eq 0) { Write-Host "  ИТОГ: всё успешно" -ForegroundColor Green }
 elseif ($fails -eq 0) { Write-Host "  ИТОГ: запущено, есть предупреждения ($warns)." -ForegroundColor Yellow }

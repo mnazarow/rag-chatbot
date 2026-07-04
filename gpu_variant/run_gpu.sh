@@ -115,3 +115,6 @@ cat <<EOF
   Управление:   bash gpu_variant/manage.sh {status|logs|restart|stop|start}
 ============================================================
 EOF
+
+# ----- 6. полная проверка установки (пакеты и компоненты) -------------------
+sudo -u "${RUN_USER}" bash "${ROOT_DIR}/scripts/checklist.sh" "${ROOT_DIR}" || true

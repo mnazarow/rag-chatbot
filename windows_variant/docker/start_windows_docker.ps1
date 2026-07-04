@@ -247,6 +247,25 @@ if ($appUp) {
     if (InAppHas "ffmpeg")    { Item ok "ffmpeg (видео/аудио) в образе" } else { Item warn "ffmpeg недоступен" "кадры/транскрибация отключены"; $warns++ }
 }
 
+# 8. Python-пакеты внутри образа (ключевые импорты)
+if ($appUp) {
+    $pyProbe = 'import importlib' + "`n" +
+      'req=["fastapi","uvicorn","qdrant_client","sentence_transformers","FlagEmbedding","torch","transformers","rank_bm25","fitz","docx","pptx","openpyxl","faster_whisper"]' + "`n" +
+      'miss=[m for m in req if importlib.util.find_spec(m) is None]' + "`n" +
+      'print("MISSING:"+",".join(miss) if miss else "ALLOK")'
+    try {
+        $res = (docker exec rag_app /opt/venv/bin/python -c $pyProbe 2>&1 | Out-String)
+        if ($res -match "ALLOK") {
+            Item ok "Python-пакеты приложения в образе (обязательные)"
+        } elseif ($res -match "MISSING:(.*)") {
+            Item fail "В образе не хватает Python-пакетов" $Matches[1].Trim(); $fails++
+            ShowLog "проверка импортов внутри rag_app" { docker exec rag_app /opt/venv/bin/pip check }
+        } else {
+            Item warn "Не удалось проверить Python-пакеты в образе" ($res.Trim()); $warns++
+        }
+    } catch { Item warn "Проверка Python-пакетов в образе не выполнена" "$($_.Exception.Message)"; $warns++ }
+}
+
 Write-Host "============================================================" -ForegroundColor Cyan
 if ($fails -eq 0 -and $warns -eq 0) {
     Write-Host "  ИТОГ: всё успешно ✓" -ForegroundColor Green

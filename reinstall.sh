@@ -39,3 +39,6 @@ elif [ -f "$HOME/Library/LaunchAgents/com.rag.api.plist" ]; then
 fi
 
 log "Готово. Окружение переустановлено."
+
+# полная проверка пакетов и компонентов
+bash "${ROOT}/scripts/checklist.sh" "${ROOT}" || true

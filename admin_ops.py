@@ -2058,6 +2058,13 @@ def server_load() -> dict:
             pass
 
     out["gpu"] = _gpu_info()
+    # фактическое устройство вычислений (эмбеддинги/реранк) — с учётом доступности
+    # torch/CUDA/MPS. Считается только здесь (в процессе приложения, где torch уже
+    # загружен), а не в _gpu_info(), который дёргает и лёгкий монитор-подпроцесс.
+    try:
+        out["gpu"]["compute_device"] = settings.device()
+    except Exception:
+        out["gpu"]["compute_device"] = (settings.get("DEVICE") or "cpu").lower()
     return out
 
 

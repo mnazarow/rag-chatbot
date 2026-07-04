@@ -100,21 +100,24 @@ echo
 log "Собираю и запускаю контейнеры (qdrant + redis + app)…"
 docker compose up -d --build || { red "docker compose не выполнился."; exit 1; }
 
-# ----- 5. Чеклист -----
+# ----- 5. Чеклист (полная проверка: контейнеры, сервисы, инструменты и Python-пакеты в образе) -----
 echo; echo "Ожидание готовности приложения…"
 ok_app=0
 for i in $(seq 1 60); do curl -fs http://localhost:8000/health >/dev/null 2>&1 && { ok_app=1; break; }; sleep 3; done
 
-line(){ if [ "$2" = "1" ]; then green "  [OK]  $1"; else red "  [X]   $1"; fi; }
-echo; echo "=================== Статус ==================="
-qok=0; curl -fs http://localhost:6333/collections >/dev/null 2>&1 && qok=1; line "Qdrant (векторная база)" "$qok"
-rping=$(docker compose exec -T redis redis-cli ping 2>/dev/null | tr -d '\r' || true)
-rok=0; [ "$rping" = "PONG" ] && rok=1; line "Redis (кэш) отвечает PONG" "$rok"
-line "Приложение (http://localhost:8000)" "$ok_app"
-seen=0; [ "$ok_app" = "1" ] && curl -fs http://localhost:8000/api/system 2>/dev/null | grep -Eq '"enabled": *true' && seen=1
-line "Приложение: кэш Redis включён" "$seen"
-oll=0; curl -fs http://localhost:11434/api/tags >/dev/null 2>&1 && oll=1; line "Ollama на хосте" "$oll"
-echo "=============================================="; echo
+if [ -f ../scripts/checklist_docker.sh ]; then
+  bash ../scripts/checklist_docker.sh || true
+else
+  # запасной короткий статус, если общий скрипт недоступен
+  line(){ if [ "$2" = "1" ]; then green "  [OK]  $1"; else red "  [X]   $1"; fi; }
+  echo; echo "=================== Статус ==================="
+  qok=0; curl -fs http://localhost:6333/collections >/dev/null 2>&1 && qok=1; line "Qdrant (векторная база)" "$qok"
+  rping=$(docker compose exec -T redis redis-cli ping 2>/dev/null | tr -d '\r' || true)
+  rok=0; [ "$rping" = "PONG" ] && rok=1; line "Redis (кэш) отвечает PONG" "$rok"
+  line "Приложение (http://localhost:8000)" "$ok_app"
+  oll=0; curl -fs http://localhost:11434/api/tags >/dev/null 2>&1 && oll=1; line "Ollama на хосте" "$oll"
+  echo "=============================================="; echo
+fi
 
 if [ "$ok_app" = "1" ]; then
   green "Готово! Веб-интерфейс: http://localhost:8000"

@@ -48,3 +48,6 @@ if [[ "${REINDEX}" == "1" ]]; then
 fi
 
 log "Готово: ${OLD} → ${NEW}"
+
+# полная проверка пакетов и компонентов после обновления
+bash "${TARGET_DIR}/scripts/checklist.sh" "${TARGET_DIR}" || true

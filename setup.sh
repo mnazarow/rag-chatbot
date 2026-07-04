@@ -122,3 +122,6 @@ cat <<EOF
   Управление:   bash mac_variant/manage_mac.sh {status|logs|restart|stop|start}
 ============================================================
 EOF
+
+# ----- 9. полная проверка установки (пакеты и компоненты) -------------------
+bash "${PROJECT_DIR}/scripts/checklist.sh" "${PROJECT_DIR}" || true

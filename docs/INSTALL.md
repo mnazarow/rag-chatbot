@@ -406,6 +406,38 @@ python query_lightrag.py "вопрос" --mode mix
 
 ## 8. Проверка установки
 
+**Автоматический чек-лист.** Все инсталляторы в конце запускают полную проверку и
+печатают цветной чек-лист по всем пакетам и компонентам.
+
+*Нативная установка* (`setup.sh`, `setup_gpu.sh`, `run_gpu.sh`, `reinstall.sh`,
+`update.sh`, `setup_hybrid.sh`, `mac_variant/*`, `remote_variant/setup_app.sh`,
+`setup_windows.ps1`) проверяет: системные утилиты (ffmpeg, tesseract+rus, dwg2dxf/ODA,
+7z/unar, poppler, docker, ollama), Python-зависимости в `.venv` (обязательные и
+опциональные — pyVoIP, coqui-tts/XTTS, redis, LightRAG…) и сервисы (Qdrant, vLLM,
+Ollama+модель, веб-интерфейс).
+
+*Docker-варианты* (`docker_variant/start.sh` и `start.cmd`,
+`windows_variant/docker/start.cmd`) проверяют то же самое, но применительно к
+контейнерам: подняты ли `rag_qdrant`/`rag_redis`/`rag_app`, отвечают ли сервисы,
+видит ли приложение Qdrant и Redis, а также системные утилиты и **Python-пакеты
+внутри образа** (`docker exec`).
+
+Чек-лист можно запустить в любой момент отдельно:
+
+```bash
+bash scripts/checklist.sh                          # нативно: Linux/macOS (.venv + .env)
+bash scripts/checklist_docker.sh                   # Docker: из папки с docker-compose.yml
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\checklist.ps1   # нативно: Windows
+```
+
+Итог: `[OK]` — компонент на месте, `[~]` — отсутствует опциональный (не критично),
+`[X]` — не хватает обязательного (нужно устранить). Код возврата 0 — ошибок нет, 1 —
+есть проваленные обязательные пункты.
+
+**Ручные проверки:**
+
 ```bash
 curl http://localhost:8000/health                 # сервис жив, видит модель
 curl http://localhost:6333/healthz                 # Qdrant

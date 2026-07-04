@@ -30,3 +30,6 @@ cat <<EOF
   • Граф-RAG        — включить (сводные вопросы пойдут в граф);
   • Режим графа     — mix по умолчанию.
 EOF
+
+# полная проверка пакетов и компонентов (включая LightRAG)
+sudo -u "${RUN_USER}" bash "${ROOT_DIR}/scripts/checklist.sh" "${ROOT_DIR}" || true

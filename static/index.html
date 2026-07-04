@@ -2854,7 +2854,16 @@ async function loadServer(){
       +'. Живую загрузку GPU на Apple без прав root получить нельзя — память единая (см. карточку «Память»).</div>';
   } else if(g.vendor==='amd'){
     gh='<div class="note">'+esc((g.devices&&g.devices[0]&&g.devices[0].name)||'AMD GPU')+'</div>';
-  } else { gh='<div class="note">GPU не обнаружен (nvidia-smi недоступен) — вычисления на CPU.</div>'; }
+  } else {
+    const dev=(g.compute_device||'cpu');
+    const devName=dev==='cuda'?'CUDA GPU':dev==='mps'?'Apple Metal (MPS)':'CPU';
+    if(dev==='cpu'){
+      gh='<div class="note">Дискретный GPU не обнаружен (нет nvidia-smi/rocm-smi) — эмбеддинги и реранк считаются на CPU.</div>';
+    } else {
+      gh='<div class="note">Утилита мониторинга GPU (nvidia-smi/rocm-smi) недоступна, '
+        +'но вычисления идут на <b>'+esc(devName)+'</b> (устройство '+esc(dev)+').</div>';
+    }
+  }
   $('#srv_gpu').innerHTML=gh;
   // CPU по ядрам
   const pc=cpu.per_core||[];
