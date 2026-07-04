@@ -58,6 +58,13 @@ RUN ldconfig
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Устойчивая загрузка колёс: большие пакеты (torch ~200 МБ) на медленной сети
+# рвутся по дефолтному таймауту pip (15 c). Поднимаем таймаут и число повторов —
+# действует на все последующие `pip install` (torch, зависимости).
+ENV PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=10 \
+    PIP_NO_CACHE_DIR=1
+
 WORKDIR /app
 
 # PyTorch: по умолчанию CPU-сборка (компактно, работает везде). Для GPU передайте
