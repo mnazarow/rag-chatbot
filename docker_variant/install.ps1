@@ -200,6 +200,23 @@ if ($appUp) {
             ShowLog "проверка импортов внутри rag_app" { docker exec rag_app /opt/venv/bin/pip check } }
         else { Item warn "Не удалось проверить Python-пакеты в образе" ($res.Trim()); $warns++ }
     } catch { Item warn "Проверка Python-пакетов в образе не выполнена" "$($_.Exception.Message)"; $warns++ }
+
+    # Проверка CUDA / GPU (хост-драйвер + доступность в контейнере)
+    $hostGpu = $null
+    try { if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { $hostGpu = (nvidia-smi --query-gpu=name --format=csv,noheader 2>$null | Select-Object -First 1) } } catch {}
+    if ($hostGpu) { Item ok "NVIDIA GPU на хосте (драйвер)" ($hostGpu.Trim()) }
+    else { Item warn "NVIDIA GPU/драйвер на хосте не обнаружен" "вычисления на CPU"; $warns++ }
+    try {
+        $cu = (docker exec rag_app /opt/venv/bin/python -c "import torch; a=torch.cuda.is_available(); print('AVAIL', a); print('COUNT', torch.cuda.device_count()); print('NAME', torch.cuda.get_device_name(0) if a else '')" 2>&1 | Out-String)
+        if ($cu -match "AVAIL\s+True") {
+            $cnt = if ($cu -match "COUNT\s+(\d+)") { $Matches[1] } else { "0" }
+            $name = if ($cu -match "NAME\s+(.+)") { $Matches[1].Trim() } else { "" }
+            $d = "устройств: $cnt"; if ($name) { $d += "; $name" }
+            Item ok "CUDA доступна в контейнере (эмбеддинги/реранк на GPU)" $d
+        } else {
+            Item ok "CUDA не используется — вычисления на CPU (штатно)" "для GPU: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build"
+        }
+    } catch { Item warn "Не удалось проверить CUDA в контейнере" "$($_.Exception.Message)"; $warns++ }
 }
 
 Write-Host "============================================================" -ForegroundColor Cyan

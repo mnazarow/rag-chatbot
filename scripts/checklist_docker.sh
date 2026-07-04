@@ -108,6 +108,11 @@ PY
     [[ -z "$rmiss" ]] && ok "Обязательные Python-пакеты на месте" || fail "не хватает обязательных Python-пакетов" "$rmiss"
     [[ -z "$omiss" ]] && ok "Опциональные Python-пакеты на месте" || warn "нет опциональных Python-пакетов" "$omiss"
   fi
+
+  # устройство вычислений внутри контейнера (CPU или CUDA GPU)
+  DEV="$(docker exec "$APP" "$VPY" -c 'import settings;print(settings.device())' 2>/dev/null | tr -d '\r')"
+  if [[ "$DEV" == cuda* ]]; then ok "Вычисления в контейнере на GPU (CUDA)" "эмбеддинги/реранк ускорены"; \
+  elif [[ -n "$DEV" ]]; then ok "Вычисления в контейнере на $DEV" "штатно для CPU-образа; генерация — через Ollama на хосте. Для GPU: docker-compose.gpu.yml"; fi
 fi
 
 # ============================ Итог ==========================================

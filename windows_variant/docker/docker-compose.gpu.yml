@@ -1,0 +1,35 @@
+# Override для работы приложения на GPU NVIDIA в Docker на Windows
+# (эмбеддинги / реранк / Whisper внутри контейнера).
+#
+# Использование (вместе с основным compose):
+#   docker compose -f docker-compose.windows.yml -f docker-compose.gpu.yml up -d --build
+# Либо через лаунчер:  start.cmd -Cuda      (или  install.ps1 ... -Cuda)
+#
+# Что делает:
+#   - собирает образ с CUDA-сборкой PyTorch (build-arg TORCH_INDEX_URL=cu124);
+#   - выставляет DEVICE=cuda (перекрывает DEVICE=cpu основного compose);
+#   - пробрасывает все GPU NVIDIA в контейнер app.
+#
+# Требования на ХОСТЕ (Windows):
+#   - актуальный драйвер NVIDIA;
+#   - Docker Desktop с бэкендом WSL2 и включённой поддержкой GPU;
+#   - проверка проброса:
+#       docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
+#
+# Генерация (LLM) по-прежнему идёт через Ollama на хосте (Ollama сама использует GPU
+# хоста); здесь GPU ускоряет именно индексацию/поиск (bge-m3 + реранкер + Whisper).
+
+services:
+  app:
+    build:
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
+    environment:
+      - DEVICE=cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
