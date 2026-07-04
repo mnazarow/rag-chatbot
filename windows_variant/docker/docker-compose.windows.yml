@@ -19,6 +19,17 @@ services:
     ports:
       - "6333:6333"   # доступ к БД с хоста (необязательно, для диагностики)
 
+  redis:
+    image: redis:7-alpine
+    container_name: rag_redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]   # чистый кэш, без персистентности
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   app:
     build:
       context: ../..                              # корень репозитория
@@ -27,6 +38,7 @@ services:
     restart: unless-stopped
     depends_on:
       - qdrant
+      - redis
     env_file:
       - .env.docker
     environment:
@@ -35,6 +47,12 @@ services:
       # чтобы приложение всегда обращалось к сервису qdrant, а не к localhost
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=company_kb
+      # Redis-кэш в сети compose. Действует для НОВЫХ установок; если Redis уже
+      # включали в панели, хост мог сохраниться в runtime_config.json (127.0.0.1) и
+      # перекрыть эти значения — тогда задайте REDIS_HOST=redis в панели или командой
+      # settings.update (см. подсказку в README / ответе).
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     extra_hosts:
       - "host.docker.internal:host-gateway"       # доступ к Ollama на хосте
     ports:
