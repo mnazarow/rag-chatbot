@@ -2065,6 +2065,33 @@ def server_load() -> dict:
         out["gpu"]["compute_device"] = settings.device()
     except Exception:
         out["gpu"]["compute_device"] = (settings.get("DEVICE") or "cpu").lower()
+
+    # Fallback: если системная утилита (nvidia-smi) недоступна — частый случай в
+    # Docker-контейнере, — но CUDA видна приложению (GPU проброшен), покажем карточки
+    # GPU через torch: имя и видеопамять по каждой карте (утилизацию torch не даёт).
+    if out["gpu"].get("vendor") == "none":
+        try:
+            import torch
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                devs = []
+                for i in range(torch.cuda.device_count()):
+                    used = total = mutil = None
+                    try:
+                        free, tot = torch.cuda.mem_get_info(i)
+                        used = (tot - free) // (1024 * 1024)
+                        total = tot // (1024 * 1024)
+                        mutil = round(used * 100 / total) if total else None
+                    except Exception:
+                        pass
+                    devs.append({"index": str(i), "name": torch.cuda.get_device_name(i),
+                                 "mem_used": used, "mem_total": total, "mem_util": mutil,
+                                 "util": None, "temp": None, "power": None,
+                                 "power_limit": None, "fan": None, "via": "torch"})
+                if devs:
+                    out["gpu"] = {"vendor": "cuda", "devices": devs,
+                                  "compute_device": out["gpu"].get("compute_device")}
+        except Exception:
+            pass
     return out
 
 

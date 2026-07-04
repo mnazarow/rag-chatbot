@@ -952,6 +952,13 @@ def api_dns_clear(x_admin_token: str | None = Header(None)):
     return {"ok": True, "removed": n}
 
 
+@app.post("/api/admin/dns/test")
+def api_dns_test(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    """Проверить статическую DNS-запись (резолвинг + доступность) и вернуть лог."""
+    _check_admin(x_admin_token)
+    return dns_override.test(payload.get("hostname", ""), payload.get("ip", ""))
+
+
 @app.post("/api/admin/selftest")
 def api_selftest(x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)

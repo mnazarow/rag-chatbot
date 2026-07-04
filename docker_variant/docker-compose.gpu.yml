@@ -25,6 +25,10 @@ services:
         TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
     environment:
       - DEVICE=cuda
+      # utility — чтобы в контейнер попали nvidia-smi/NVML (полная телеметрия GPU
+      # в разделе «Загрузка сервера»); compute — собственно CUDA-вычисления.
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:
       resources:
         reservations:

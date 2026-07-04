@@ -1181,7 +1181,7 @@
       </div>
       <div id="dns_msg" class="note" style="margin-bottom:8px"></div>
       <div style="overflow:auto">
-        <table><thead><tr><th>Имя хоста</th><th style="width:220px">IP-адрес</th><th style="width:130px">Действия</th></tr></thead>
+        <table><thead><tr><th>Имя хоста</th><th style="width:220px">IP-адрес</th><th style="width:170px">Действия</th></tr></thead>
         <tbody id="dns_rows"></tbody></table>
       </div>
     </div>
@@ -2854,6 +2854,13 @@ async function loadServer(){
       +'. Живую загрузку GPU на Apple без прав root получить нельзя — память единая (см. карточку «Память»).</div>';
   } else if(g.vendor==='amd'){
     gh='<div class="note">'+esc((g.devices&&g.devices[0]&&g.devices[0].name)||'AMD GPU')+'</div>';
+  } else if(g.vendor==='cuda'){
+    gh=(g.devices||[]).map(d=>`<div style="margin:6px 0;padding:8px 10px;border:1px solid var(--line);border-radius:8px">
+      <b>GPU ${esc(d.index)}: ${esc(d.name)}</b>
+      <div class="cards" style="margin-top:8px">
+        ${pctCard('Видеопамять', (d.mem_total?Math.round(d.mem_used*100/d.mem_total):null), `${nz(d.mem_used)} / ${nz(d.mem_total)} МБ`)}
+      </div></div>`).join('')
+      + '<div class="note" style="margin-top:6px">Живая утилизация/температура GPU в контейнере недоступны (нет nvidia-smi). Показаны имя и видеопамять через PyTorch. Для полной телеметрии перезапустите с проброшенной утилитой NVIDIA (см. docker-compose.gpu.yml).</div>';
   } else {
     const dev=(g.compute_device||'cpu');
     const devName=dev==='cuda'?'CUDA GPU':dev==='mps'?'Apple Metal (MPS)':'CPU';
@@ -5214,10 +5221,24 @@ async function loadDns(){
     <td><input id="dnsh_${r.id}" value="${escAttr(r.hostname||'')}" style="width:100%"></td>
     <td><input id="dnsi_${r.id}" value="${escAttr(r.ip||'')}" style="width:100%"></td>
     <td style="white-space:nowrap">
-      <button class="dirbtn" onclick="dnsSave(${r.id})">💾</button>
-      <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="dnsDel(${r.id})">🗑</button>
+      <button class="dirbtn" onclick="dnsSave(${r.id})" title="Сохранить">💾</button>
+      <button class="dirbtn" onclick="dnsTest(${r.id})" title="Проверить запись (резолвинг + доступность)">🧪</button>
+      <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="dnsDel(${r.id})" title="Удалить">🗑</button>
+    </td></tr>
+    <tr id="dnstr_${r.id}" style="display:none"><td colspan="3" style="padding:2px 8px 10px">
+      <pre id="dnslog_${r.id}" style="white-space:pre-wrap;margin:0;font-size:12px;line-height:1.45;background:rgba(127,127,127,.08);border:1px solid var(--line);border-radius:6px;padding:8px;max-height:240px;overflow:auto"></pre>
     </td></tr>`).join('')
     : '<tr><td colspan="3" class="note">записей нет. Добавьте имя хоста и его IP-адрес выше.</td></tr>';
+}
+async function dnsTest(id){
+  const host=$('#dnsh_'+id)?$('#dnsh_'+id).value.trim():'';
+  const ip=$('#dnsi_'+id)?$('#dnsi_'+id).value.trim():'';
+  const tr=$('#dnstr_'+id), pre=$('#dnslog_'+id);
+  if(tr) tr.style.display='';
+  if(pre) pre.textContent='Тестирование…';
+  let r; try{ r=await adminPost('/api/admin/dns/test',{hostname:host,ip:ip}); }
+  catch(e){ if(pre) pre.textContent='ошибка сети'; return; }
+  if(pre) pre.textContent=(r&&r.log)||'нет данных';
 }
 async function dnsAdd(){
   const hostname=$('#dns_host').value.trim(), ip=$('#dns_ip').value.trim();
