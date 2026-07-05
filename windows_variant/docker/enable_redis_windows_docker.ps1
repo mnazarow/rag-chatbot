@@ -6,10 +6,10 @@
 #  Запуск (проще всего — двойной клик по redis.cmd), либо:
 #     powershell -ExecutionPolicy Bypass -File enable_redis_windows_docker.ps1
 #  Параметры:
-#     -Cuda   поднимать стек с поддержкой GPU (как gpus.cmd/update.cmd -Cuda)
+#     -Cpu    поднимать стек БЕЗ GPU (по умолчанию — с GPU)
 #     -Off    наоборот, ВЫКЛЮЧИТЬ кэш Redis (уберёт «включён, недоступен»)
 # =============================================================================
-param([switch]$Cuda, [switch]$Off)
+param([switch]$Cpu, [switch]$Off)
 $ErrorActionPreference = "Stop"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Here
@@ -31,7 +31,7 @@ if ($Off) {
 
 # ----- вариант «включить» -----
 $Compose = @("-f","docker-compose.windows.yml")
-if ($Cuda) { $Compose += @("-f","docker-compose.gpu.yml") }
+if (-not $Cpu) { $Compose += @("-f","docker-compose.gpu.yml") }
 
 Log "Поднимаю стек с контейнером Redis (данные сохраняются)..."
 $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'

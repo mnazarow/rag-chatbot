@@ -7,9 +7,9 @@
 #  Запуск (проще всего — двойной клик по restart.cmd), либо:
 #     powershell -ExecutionPolicy Bypass -File restart_windows_docker.ps1
 #  Параметры:
-#     -Cuda   учитывать GPU-оверрайд (если стек поднимали с -Cuda)
+#     -Cpu    перезапуск без GPU-оверрайда (по умолчанию учитывается GPU)
 # =============================================================================
-param([switch]$Cuda)
+param([switch]$Cpu)
 $ErrorActionPreference = "Stop"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Here
@@ -34,7 +34,7 @@ if (-not $?) {
 }
 
 $Compose = @("-f","docker-compose.windows.yml")
-if ($Cuda) { $Compose += @("-f","docker-compose.gpu.yml") }
+if (-not $Cpu) { $Compose += @("-f","docker-compose.gpu.yml") }
 
 Log "Перезапускаю контейнеры проекта (данные сохраняются)..."
 $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'

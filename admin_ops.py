@@ -2962,13 +2962,22 @@ def oda_install() -> dict:
             return {"ok": True, "msg": "установлен через Homebrew", "path": cur,
                     "log": "\n".join(log)}
     elif _sh.which("apt-get"):
-        # в репозиториях ODA обычно нет; ставим xvfb (нужен для headless-запуска)
-        run(["apt-get", "install", "-y", "xvfb"])
+        # ставим из локального дистрибутива vendor/oda/*.deb + xvfb (общий скрипт)
+        script = str(ROOT / "scripts" / "install_oda.sh")
+        if os.path.exists(script):
+            run(["bash", script, str(ROOT)])
+        else:
+            run(["apt-get", "install", "-y", "xvfb"])
+        cur = loaders.find_oda_converter()
+        if cur:
+            return {"ok": True,
+                    "msg": "ODA File Converter установлен из локального дистрибутива (vendor/oda)",
+                    "path": cur, "log": "\n".join(log)}
 
     return {
         "ok": False,
-        "msg": "Автоустановка недоступна: ODA File Converter требует ручной загрузки "
-               "с сайта ODA (после бесплатной регистрации).",
+        "msg": "Автоустановка не удалась: положите дистрибутив ODA (.deb для Linux) в папку "
+               "vendor/oda/ репозитория и повторите, либо скачайте вручную с сайта ODA.",
         "link": link,
         "log": "\n".join(log) + (
             f"\n\nСкачайте ODA File Converter: {link}\n"

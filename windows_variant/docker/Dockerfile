@@ -54,6 +54,21 @@ COPY --from=dwgbuild /dwgout/usr/local /usr/local
 COPY --from=dwgbuild /dwgout/libredwg-build.log /opt/libredwg-build.log
 RUN ldconfig
 
+# ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива
+# vendor/oda/*.deb, если он есть в репозитории. ODA — Qt-приложение, на сервере без
+# дисплея запускается через xvfb-run, поэтому ставим xvfb и Qt/X-библиотеки.
+# Best-effort: при отсутствии .deb или ошибке образ всё равно собирается (DWG — через libredwg).
+COPY vendor/oda/ /tmp/oda/
+RUN if ls /tmp/oda/*.deb >/dev/null 2>&1; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends xvfb libgl1 libglib2.0-0 \
+            libfontconfig1 libxkbcommon0 libdbus-1-3 libx11-6 libxext6 libxrender1 libxcb1 libegl1 || true; \
+        dpkg -i /tmp/oda/*.deb 2>/dev/null || { apt-get -f install -y || true; dpkg -i /tmp/oda/*.deb 2>/dev/null || true; }; \
+        if command -v ODAFileConverter >/dev/null 2>&1; then echo "ODA OK: $(command -v ODAFileConverter)"; \
+        else echo "ODA install failed — DWG будет конвертироваться через libredwg"; fi; \
+    else echo "no ODA deb bundled (vendor/oda) — DWG через libredwg"; fi; \
+    rm -rf /var/lib/apt/lists/* /tmp/oda
+
 # venv — чистый pip без конфликта с системным Python (PEP 668 externally-managed)
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"

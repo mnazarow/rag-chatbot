@@ -36,6 +36,8 @@ apt-get install -y libredwg-tools 2>/dev/null || true   # dwg2dxf: конвер�
 apt-get install -y tesseract-ocr tesseract-ocr-rus 2>/dev/null || true   # OCR для CR2/фото
 apt-get install -y antiword 2>/dev/null || true   # чтение старого .doc
 apt-get install -y p7zip-full unar 2>/dev/null || true   # распаковка архивов (.7z/.rar)
+# ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb
+bash "${ROOT_DIR}/scripts/install_oda.sh" "${ROOT_DIR}" || true
 PYBIN="$(command -v python3.11 || command -v python3.12 || command -v python3.10 || command -v python3)"
 log "Использую интерпретатор: ${PYBIN} ($(${PYBIN} --version 2>&1))"
 command -v docker >/dev/null || { log "Docker..."; curl -fsSL https://get.docker.com | sh; }

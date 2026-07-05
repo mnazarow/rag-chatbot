@@ -2,21 +2,21 @@
 #  Включение нескольких GPU (NVIDIA) и перезапуск всего проекта — Windows + Docker.
 #  Генерация (LLM) идёт через Ollama на хосте: скрипт задаёт ей переменные для
 #  использования 2-3 карт и перезапускает Ollama, затем перезапускает контейнеры
-#  (Qdrant + приложение). По ключу -Cuda приложение тоже собирается/запускается на GPU.
+#  (Qdrant + приложение). По умолчанию контейнер приложения тоже на GPU; ключ -Cpu отключает.
 #
 #  Запуск (проще всего — двойной клик по gpus.cmd), либо:
 #     powershell -ExecutionPolicy Bypass -File enable_gpus_windows_docker.ps1 -Gpus 2
 #  Параметры:
 #     -Gpus N      сколько карт задействовать (по умолчанию 0 = все обнаруженные)
 #     -Parallel N  OLLAMA_NUM_PARALLEL — сколько запросов параллельно (0 = = числу карт)
-#     -Cuda        запускать и контейнер приложения на GPU (docker-compose.gpu.yml)
+#     -Cpu         НЕ запускать контейнер приложения на GPU (по умолчанию — на GPU)
 #     -Machine     задать переменные на уровне СИСТЕМЫ (нужен запуск от администратора;
 #                  требуется, если Ollama работает как служба Windows)
 # =============================================================================
 param(
     [int]$Gpus = 0,
     [int]$Parallel = 0,
-    [switch]$Cuda,
+    [switch]$Cpu,
     [switch]$Machine
 )
 $ErrorActionPreference = "Stop"
@@ -83,11 +83,11 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
 
 # ----- 4. Перезапуск проекта в Docker -----
 $Compose = @("-f","docker-compose.windows.yml")
-if ($Cuda) { $Compose += @("-f","docker-compose.gpu.yml") }
+if (-not $Cpu) { $Compose += @("-f","docker-compose.gpu.yml") }
 Log "Перезапускаю контейнеры проекта (данные сохраняются)..."
 $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-if ($Cuda) { docker compose @Compose up -d --build --force-recreate }
-else       { docker compose @Compose up -d --force-recreate }
+if (-not $Cpu) { docker compose @Compose up -d --build --force-recreate }
+else           { docker compose @Compose up -d --force-recreate }
 $composeOk = ($LASTEXITCODE -eq 0)
 $ErrorActionPreference = $eap
 

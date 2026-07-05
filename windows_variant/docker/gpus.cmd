@@ -4,7 +4,8 @@ rem  RAG in Docker on Windows - enable MULTIPLE NVIDIA GPUs and restart project.
 rem  Double-click this file, or run from a terminal:
 rem     gpus.cmd                 (use all detected GPUs for Ollama)
 rem     gpus.cmd -Gpus 2         (use 2 GPUs)
-rem     gpus.cmd -Gpus 3 -Cuda   (3 GPUs + run app container on GPU too)
+rem     gpus.cmd -Gpus 3         (3 GPUs; app container on GPU by default)
+rem     gpus.cmd -Gpus 3 -Cpu    (3 GPUs for Ollama, but app container on CPU)
 rem     gpus.cmd -Machine        (set vars system-wide; run as Administrator; for Ollama service)
 rem  Sets Ollama multi-GPU env vars, restarts Ollama, then restarts containers.
 rem  Requires NVIDIA driver + Docker Desktop.

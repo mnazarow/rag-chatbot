@@ -2,10 +2,13 @@
 rem ============================================================================
 rem  RAG in Docker on Windows - one-click launcher.
 rem  Double-click this file, or run from a terminal:
-rem     start.cmd
+rem     start.cmd                                   (GPU NVIDIA is used by default)
 rem     start.cmd -DocsDir "C:\db" -AdminToken "your-password"
+rem     start.cmd -Cpu                              (run on CPU, no GPU)
 rem  It fixes .ps1 encoding (UTF-8 BOM) so Windows PowerShell 5.1 reads Cyrillic
-rem  correctly, then runs the installer. Requires Docker Desktop (and Ollama).
+rem  correctly, then runs the installer. GPU by default needs an NVIDIA driver +
+rem  Docker Desktop on WSL2 with GPU; use -Cpu if you have no GPU.
+rem  Requires Docker Desktop (and Ollama).
 rem ============================================================================
 chcp 65001 >nul
 cd /d "%~dp0"

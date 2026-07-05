@@ -3,7 +3,7 @@ rem ============================================================================
 rem  RAG in Docker on Windows - enable (or disable) Redis cache in ONE command.
 rem  Double-click this file, or run from a terminal:
 rem     redis.cmd            (bring up Redis container + wire the app to it)
-rem     redis.cmd -Cuda      (same, with GPU stack)
+rem     redis.cmd -Cpu       (same, but bring up the stack without GPU)
 rem     redis.cmd -Off       (disable the Redis cache instead)
 rem  App data is preserved. Requires Docker Desktop.
 rem ============================================================================

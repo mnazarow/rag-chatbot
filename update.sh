@@ -31,6 +31,8 @@ NEW="$(git rev-parse --short HEAD)"
 
 log "Обновляю системные пакеты (OCR/конвертеры)..."
 apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-rus libredwg-tools antiword p7zip-full unar 2>/dev/null || true   # ffmpeg — TTS/аудио для VoIP (SIP)
+# ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb
+bash "${TARGET_DIR}/scripts/install_oda.sh" "${TARGET_DIR}" || true
 
 log "Обновляю Python-зависимости..."
 ./.venv/bin/pip install -q -r gpu_variant/requirements-gpu.txt || true

@@ -3,7 +3,7 @@ rem ============================================================================
 rem  RAG in Docker on Windows - RESTART the whole project in one command.
 rem  Double-click this file, or run from a terminal:
 rem     restart.cmd            (restart Qdrant + app + Redis, no rebuild)
-rem     restart.cmd -Cuda      (same, accounting for the GPU override)
+rem     restart.cmd -Cpu       (restart without the GPU override)
 rem  App data is preserved. To update code use update.cmd; for GPU use gpus.cmd.
 rem ============================================================================
 chcp 65001 >nul

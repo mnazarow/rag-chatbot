@@ -3,7 +3,7 @@ rem ============================================================================
 rem  RAG in Docker on Windows - one-click UPDATE and RESTART.
 rem  Double-click this file, or run from a terminal:
 rem     update.cmd
-rem     update.cmd -Cuda        (rebuild with NVIDIA GPU support)
+rem     update.cmd -Cpu         (rebuild WITHOUT GPU; GPU is the default)
 rem     update.cmd -NoPull      (only rebuild/restart, do not pull from GitHub)
 rem  Pulls latest code (if a git repo), rebuilds the app image and restarts the
 rem  containers. Data is preserved (Qdrant index, model cache, settings, docs).

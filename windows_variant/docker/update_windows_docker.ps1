@@ -8,12 +8,12 @@
 #  Запуск (проще всего — двойной клик по update.cmd), либо:
 #     powershell -ExecutionPolicy Bypass -File update_windows_docker.ps1
 #  Параметры:
-#     -Cuda      пересобрать с поддержкой GPU NVIDIA (как start.cmd -Cuda)
+#     -Cpu       пересобрать БЕЗ GPU (по умолчанию — с поддержкой GPU NVIDIA)
 #     -NoPull    не тянуть код из GitHub, только пересобрать/перезапустить
 #     -Branch    ветка git (по умолчанию main)
 # =============================================================================
 param(
-    [switch]$Cuda,
+    [switch]$Cpu,
     [switch]$NoPull,
     [string]$Branch = "main"
 )
@@ -31,9 +31,9 @@ function Item($status,$label,$detail=""){
 function HttpOk($url,$sec=5){ try{ (Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec $sec).StatusCode -eq 200 }catch{ $false } }
 function ContainerUp($n){ try{ ((docker inspect -f '{{.State.Running}}' $n 2>$null) -eq 'true') }catch{ $false } }
 
-# Файлы compose: базовый + (по -Cuda) GPU-override.
+# Файлы compose: базовый + GPU-override (по умолчанию). Ключ -Cpu отключает GPU.
 $Compose = @("-f","docker-compose.windows.yml")
-if ($Cuda) { $Compose += @("-f","docker-compose.gpu.yml") }
+if (-not $Cpu) { $Compose += @("-f","docker-compose.gpu.yml") }
 
 # ----- 0. Docker доступен? -----
 docker info *> $null
@@ -64,7 +64,7 @@ if (-not $NoPull) {
 }
 
 # ----- 2. Пересборка образа и перезапуск контейнеров -----
-if ($Cuda) { Log "Режим GPU (-Cuda): пересобираю CUDA-образ и пробрасываю NVIDIA GPU." }
+if (-not $Cpu) { Log "Режим GPU (по умолчанию): пересобираю CUDA-образ и пробрасываю NVIDIA GPU. Для CPU — ключ -Cpu." }
 Log "Пересобираю образ приложения и перезапускаю контейнеры (данные сохраняются)..."
 # docker пишет прогресс сборки/загрузки в stderr; при ErrorActionPreference=Stop это
 # прервало бы скрипт (NativeCommandError). На время команды переключаемся на Continue
@@ -104,11 +104,12 @@ if ($appUp) {
         if ($cu -match "AVAIL\s+True") {
             $cnt = if ($cu -match "COUNT\s+(\d+)"){$Matches[1]}else{"0"}; $name = if ($cu -match "NAME\s+(.+)"){$Matches[1].Trim()}else{""}
             $d="устройств: $cnt"; if($name){$d+="; $name"}; Item ok "CUDA доступна в контейнере (эмбеддинги/реранк на GPU)" $d
-        } elseif ($Cuda) {
-            Item fail "Запрошен -Cuda, но CUDA в контейнере НЕ доступна"; $fails++
+        } elseif (-not $Cpu) {
+            Item fail "Ожидался GPU (режим по умолчанию), но CUDA в контейнере НЕ доступна"; $fails++
             Write-Host "     Проверьте драйвер NVIDIA, Docker Desktop -> WSL2 + GPU и docker-compose.gpu.yml." -ForegroundColor Gray
+            Write-Host "     Если GPU нет — обновляйтесь на CPU: update.cmd -Cpu" -ForegroundColor Gray
         } else {
-            Item ok "CUDA не используется — вычисления на CPU (штатно)" "для GPU перезапустите: update.cmd -Cuda"
+            Item ok "Запущено на CPU (ключ -Cpu)" "для GPU обновитесь без -Cpu: update.cmd"
         }
     } catch { Item warn "Не удалось проверить CUDA в контейнере" "$($_.Exception.Message)"; $warns++ }
 }

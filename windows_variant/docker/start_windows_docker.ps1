@@ -8,16 +8,16 @@ param(
     [string]$DocsDir = "C:\db",                         # папка с документами (по умолчанию C:\db)
     [string]$LlmModel = "qwen3.6:35b-a3b-q4_K_M",   # модель Ollama для генерации
     [string]$AdminToken = "",                           # пароль админ-панели (пусто = не менять)
-    [switch]$Cuda                                       # использовать GPU NVIDIA в контейнере (WSL2 + драйвер)
+    [switch]$Cpu                                        # -Cpu: запустить на CPU; ПО УМОЛЧАНИЮ используется GPU NVIDIA (WSL2 + драйвер)
 )
 
 $ErrorActionPreference = "Stop"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Here
 
-# Файлы compose: базовый + (по -Cuda) GPU-override, чтобы эмбеддинги/реранк шли на GPU.
+# Файлы compose: базовый + GPU-override (по умолчанию). Ключ -Cpu отключает GPU.
 $Compose = @("-f", "docker-compose.windows.yml")
-if ($Cuda) { $Compose += @("-f", "docker-compose.gpu.yml") }
+if (-not $Cpu) { $Compose += @("-f", "docker-compose.gpu.yml") }
 
 function Log($m){ Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn($m){ Write-Host "[!] $m" -ForegroundColor Yellow }
@@ -142,7 +142,7 @@ if (-not (Test-Path "state\rag_logs.db"))         { New-Item -ItemType File -For
 New-Item -ItemType Directory -Force -Path "backups" | Out-Null   # резервные копии (том)
 
 # ----- 6. Сборка и запуск -----
-if ($Cuda) { Log "Режим GPU (-Cuda): собираю CUDA-образ и пробрасываю NVIDIA GPU в контейнер." }
+if (-not $Cpu) { Log "Режим GPU (по умолчанию): собираю CUDA-образ и пробрасываю NVIDIA GPU в контейнер. Для CPU — ключ -Cpu." }
 Log "Собираю и запускаю контейнеры (первый раз — долго: качаются образы и модели)..."
 # docker пишет прогресс в stderr; при ErrorActionPreference=Stop это прервало бы скрипт.
 $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
@@ -291,14 +291,15 @@ if ($appUp) {
         if ($cudaOk) {
             $d = "устройств: $cnt"; if ($name) { $d += "; $name" }; if ($tver -and $tver -ne "None") { $d += "; CUDA $tver" }
             Item ok "CUDA доступна в контейнере (эмбеддинги/реранк на GPU)" $d
-        } elseif ($Cuda) {
-            Item fail "Запрошен -Cuda, но CUDA в контейнере НЕ доступна"; $fails++
+        } elseif (-not $Cpu) {
+            Item fail "Ожидался GPU (режим по умолчанию), но CUDA в контейнере НЕ доступна"; $fails++
             Write-Host "     Проверьте: драйвер NVIDIA; Docker Desktop -> Settings -> Resources -> WSL2 + GPU;" -ForegroundColor Gray
             Write-Host "     образ собран с CUDA-torch (docker-compose.gpu.yml). Тест проброса GPU в Docker:" -ForegroundColor Gray
             Write-Host "     docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi" -ForegroundColor Gray
+            Write-Host "     Если GPU нет — запустите на CPU: start.cmd -Cpu" -ForegroundColor Gray
             ShowLog "torch/CUDA внутри rag_app" { docker exec rag_app /opt/venv/bin/python -c "import torch;print('torch',torch.__version__,'cuda',torch.version.cuda,'avail',torch.cuda.is_available())" }
         } else {
-            Item ok "CUDA не используется — вычисления на CPU (штатно)" "генерация идёт через Ollama на хосте (GPU). Для GPU-эмбеддингов перезапустите с -Cuda"
+            Item ok "Запущено на CPU (ключ -Cpu)" "генерация идёт через Ollama на хосте (может использовать GPU). Уберите -Cpu для GPU-эмбеддингов"
         }
     } catch { Item warn "Не удалось проверить CUDA в контейнере" "$($_.Exception.Message)"; $warns++ }
 }
@@ -317,5 +318,5 @@ Log "Веб-интерфейс: http://localhost:8000   (раздел «Адми
 $cfStr = ($Compose -join ' ')
 Log "Логи:          docker compose $cfStr logs -f app"
 Log "Остановить:    docker compose $cfStr down"
-if (-not $Cuda) { Log "GPU: чтобы считать эмбеддинги/реранк на NVIDIA GPU — перезапустите с ключом -Cuda (нужны WSL2 + драйвер NVIDIA)." }
+if ($Cpu) { Log "Запущено на CPU (-Cpu). Чтобы задействовать NVIDIA GPU — перезапустите без ключа -Cpu (нужны WSL2 + драйвер NVIDIA)." }
 Log "Дальше: откройте панель -> «Администратор» -> «Переиндексировать»."

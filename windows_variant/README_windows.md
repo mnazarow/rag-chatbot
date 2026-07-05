@@ -155,13 +155,16 @@ docker compose -f docker-compose.windows.yml up -d --build  # пересобра
 Qdrant, кеш моделей, настройки/логи (`state\`), документы и резервные копии.
 
 ```bat
-update.cmd                 :: обновить код + пересобрать + перезапустить
-update.cmd -Cuda           :: то же, с поддержкой GPU NVIDIA
+update.cmd                 :: обновить код + пересобрать + перезапустить (на GPU)
+update.cmd -Cpu            :: то же, но без GPU
 update.cmd -NoPull         :: только пересобрать/перезапустить (без git pull)
 ```
 
 Дважды кликните по `update.cmd` в проводнике или запустите из терминала. То же
-напрямую: `powershell -ExecutionPolicy Bypass -File update_windows_docker.ps1 [-Cuda] [-NoPull]`.
+напрямую: `powershell -ExecutionPolicy Bypass -File update_windows_docker.ps1 [-Cpu] [-NoPull]`.
+
+Все скрипты Docker-варианта (`start.cmd`, `restart.cmd`, `update.cmd`, `gpus.cmd`,
+`redis.cmd`) по умолчанию используют **GPU NVIDIA**; ключ **`-Cpu`** запускает на CPU.
 
 ### Несколько видеокарт (2-3 GPU) одной командой
 
@@ -171,9 +174,10 @@ update.cmd -NoPull         :: только пересобрать/перезап
 `OLLAMA_NUM_PARALLEL`), перезапускает Ollama и перезапускает контейнеры проекта:
 
 ```bat
-gpus.cmd                 :: все обнаруженные карты
+gpus.cmd                 :: все обнаруженные карты (контейнер приложения на GPU по умолчанию)
 gpus.cmd -Gpus 2         :: две карты
-gpus.cmd -Gpus 3 -Cuda   :: три карты + контейнер приложения тоже на GPU
+gpus.cmd -Gpus 3         :: три карты
+gpus.cmd -Gpus 3 -Cpu    :: три карты для Ollama, но контейнер приложения на CPU
 gpus.cmd -Machine        :: переменные на уровне системы (от администратора; если Ollama — служба)
 ```
 
@@ -189,24 +193,16 @@ gpus.cmd -Machine        :: переменные на уровне систем�
 
 ### Особенности Docker-варианта
 
-- **CPU по умолчанию.** Эмбеддинги/реранк в контейнере считаются на CPU (`DEVICE=cpu`).
-  Это надёжно работает в Docker Desktop на Windows; для больших объёмов первая
-  индексация может быть небыстрой. Генерация идёт через Ollama на хосте и может
-  использовать GPU. Поэтому на дашборде («Загрузка сервера» → GPU) для контейнера
-  штатно отображается CPU — это ожидаемо.
-- **GPU в контейнере (опционально).** Если на Windows есть видеокарта NVIDIA с
-  драйвером и Docker Desktop на WSL2 с поддержкой GPU, эмбеддинги/реранк/Whisper
-  можно ускорить на GPU: запустите с ключом **`-Cuda`** —
-
-  ```bat
-  start.cmd -Cuda
-  ```
-
-  Он соберёт CUDA-образ (`TORCH_INDEX_URL=cu124`), выставит `DEVICE=cuda` и пробросит
-  GPU в контейнер (файл `docker-compose.gpu.yml`). Проверка проброса:
+- **GPU по умолчанию.** Все скрипты Docker-варианта собирают CUDA-образ
+  (`TORCH_INDEX_URL=cu124`), выставляют `DEVICE=cuda` и пробрасывают NVIDIA GPU в
+  контейнер (файл `docker-compose.gpu.yml`) — эмбеддинги/реранк/Whisper идут на GPU.
+  Требуется драйвер NVIDIA и Docker Desktop на WSL2 с поддержкой GPU. Проверка проброса:
   `docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi`.
-  После этого чек-лист покажет «Вычисления в контейнере на GPU (CUDA)», а на дашборде
-  устройство сменится на CUDA.
+  На дашборде («Загрузка сервера» → GPU) устройство отображается как CUDA.
+- **Если GPU нет — ключ `-Cpu`.** На машине без NVIDIA GPU (или без проброса в WSL2)
+  запуск на GPU не поднимется; используйте `-Cpu`, например `start.cmd -Cpu` —
+  эмбеддинги/реранк пойдут на CPU (`DEVICE=cpu`). Генерация в любом случае идёт через
+  Ollama на хосте, которая использует GPU хоста.
 - **Выбор модели.** По умолчанию `qwen3.6:35b-a3b-q4_K_M` (MoE: только ~3B активных
   параметров — быстро даже на CPU, но нужно ~19–22 ГБ ОЗУ под веса). На машинах с
   малым объёмом памяти укажите модель поменьше: `-LlmModel "qwen3:8b"` или
