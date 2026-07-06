@@ -1088,6 +1088,14 @@ def admin_kb_graph_status(x_admin_token: str | None = Header(None)):
     return admin_ops.kb_graph_status()
 
 
+@app.get("/api/admin/kb-search")
+def admin_kb_search(q: str = "", x_admin_token: str | None = Header(None)):
+    """Поиск по словам в графе базы знаний: возвращает источники (файлы), где
+    встречаются слова запроса — для подсветки узлов в графе."""
+    _check_admin(x_admin_token)
+    return admin_ops.kb_search(q)
+
+
 @app.get("/api/admin/file-text")
 def admin_file_text(source: str, x_admin_token: str | None = Header(None)):
     """Извлечённый текст файла (для просмотра транскрипции/распознанного в каталоге)."""
@@ -1507,6 +1515,40 @@ def admin_redis_install(x_admin_token: str | None = Header(None)):
     """Установить и запустить Redis-сервер средствами ОС, включить REDIS_ENABLED."""
     _check_admin(x_admin_token)
     return admin_ops.redis_install()
+
+
+@app.get("/api/admin/milvus/status")
+def admin_milvus_status(x_admin_token: str | None = Header(None)):
+    """Состояние Milvus/Qdrant: установлен ли клиент, режим, доступность, число точек,
+    активный бэкенд и ход миграции."""
+    _check_admin(x_admin_token)
+    return admin_ops.milvus_status()
+
+
+@app.post("/api/admin/milvus/install")
+def admin_milvus_install(payload: dict = Body(default={}),
+                         x_admin_token: str | None = Header(None)):
+    """Установить клиент Milvus (pip pymilvus) и зафиксировать режим/тип индекса.
+    payload: {mode: lite|standalone, index_type: HNSW|GPU_CAGRA|...}."""
+    _check_admin(x_admin_token)
+    return admin_ops.milvus_install(mode=payload.get("mode"),
+                                    index_type=payload.get("index_type"))
+
+
+@app.post("/api/admin/milvus/migrate")
+def admin_milvus_migrate(payload: dict = Body(...),
+                         x_admin_token: str | None = Header(None)):
+    """Запустить полную миграцию векторов. payload: {direction: to_milvus|to_qdrant}."""
+    _check_admin(x_admin_token)
+    return admin_ops.milvus_migrate(payload.get("direction", ""))
+
+
+@app.post("/api/admin/milvus/switch")
+def admin_milvus_switch(payload: dict = Body(...),
+                        x_admin_token: str | None = Header(None)):
+    """Переключить активную векторную базу. payload: {target: qdrant|milvus}."""
+    _check_admin(x_admin_token)
+    return admin_ops.milvus_switch(payload.get("target", ""))
 
 
 @app.post("/api/admin/oda/install")

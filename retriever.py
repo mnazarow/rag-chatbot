@@ -7,20 +7,16 @@ import hashlib
 import time
 from functools import lru_cache
 
-import httpx
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qm
 from sentence_transformers import SentenceTransformer
 from FlagEmbedding import FlagReranker
 from rank_bm25 import BM25Okapi
 
 import settings
 import query_filters
+import vectorstore
 
-# клиенты/модели создаются при старте процесса из текущих настроек
-# (поля scope=restart применяются после перезапуска сервиса)
-_client = QdrantClient(url=settings.get("QDRANT_URL"), timeout=settings.get("QDRANT_TIMEOUT"))
-_COLLECTION = settings.get("QDRANT_COLLECTION")
+# Векторная база (Qdrant или Milvus) — только через фасад vectorstore.
+# Модели грузятся один раз при старте процесса из текущих настроек.
 
 
 @lru_cache(maxsize=1)
@@ -72,12 +68,12 @@ def infer_category(question: str) -> str | None:
     return None
 
 
-def _build_filter(filters: dict | None) -> qm.Filter | None:
+def _build_filter(filters: dict | None) -> dict | None:
+    """Нейтральный фильтр (поле→значение) для vectorstore; пустые значения отброшены."""
     if not filters:
         return None
-    must = [qm.FieldCondition(key=k, match=qm.MatchValue(value=v))
-            for k, v in filters.items() if v]
-    return qm.Filter(must=must) if must else None
+    flt = {k: v for k, v in filters.items() if v}
+    return flt or None
 
 
 def _embed_query(question: str):
@@ -102,21 +98,18 @@ def _dense_search(qvec, qfilter):
     import metrics
     qv = qvec.tolist() if hasattr(qvec, "tolist") else qvec
     with metrics.timer("qdrant"):
-        res = _client.query_points(
-            _COLLECTION,
-            query=qv,
-            query_filter=qfilter,
-            limit=settings.get("TOP_K_RETRIEVE"),
-            with_payload=True,
-        ).points
-    return [
-        {"text": p.payload["text"], "source": p.payload["source"],
-         "page": p.payload.get("page"), "doc_category": p.payload.get("doc_category"),
-         "date": p.payload.get("date"),
-         "t_start": p.payload.get("t_start"), "t_end": p.payload.get("t_end"),
-         "dense": p.score}
-        for p in res
-    ]
+        res = vectorstore.search(qv, settings.get("TOP_K_RETRIEVE"), flt=qfilter,
+                                 with_payload=True)
+    out = []
+    for p in res:
+        pl = p.get("payload") or {}
+        if not pl.get("text"):
+            continue
+        out.append({"text": pl.get("text"), "source": pl.get("source"),
+                    "page": pl.get("page"), "doc_category": pl.get("doc_category"),
+                    "date": pl.get("date"), "t_start": pl.get("t_start"),
+                    "t_end": pl.get("t_end"), "dense": p.get("score")})
+    return out
 
 
 def search(question: str, filters: dict | None = None,
@@ -247,27 +240,18 @@ def _hit_from_payload(p: dict) -> dict:
 
 
 def _all_sources() -> list:
-    """Список всех источников (имён файлов) из Qdrant через facet."""
-    base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
+    """Список всех источников (имён файлов) из векторной базы через facet."""
     try:
-        r = httpx.post(f"{base}/collections/{coll}/facet",
-                       json={"key": "source", "limit": 100000, "exact": True}, timeout=20)
-        if r.status_code == 200:
-            return [h.get("value") for h in (r.json().get("result", {}) or {}).get("hits", [])
-                    if h.get("value")]
+        return [v for v in vectorstore.list_values("source", 100000) if v]
     except Exception:
-        pass
-    return []
+        return []
 
 
 def _chunks_of_source(src: str, limit: int = 50) -> list:
     try:
-        pts, _ = _client.scroll(
-            _COLLECTION,
-            scroll_filter=qm.Filter(must=[qm.FieldCondition(
-                key="source", match=qm.MatchValue(value=src))]),
-            limit=limit, with_payload=True, with_vectors=False)
-        return [_hit_from_payload(p.payload or {}) for p in pts]
+        pts, _ = vectorstore.scroll(flt={"source": src}, limit=limit,
+                                    with_payload=True, with_vectors=False)
+        return [_hit_from_payload(p.get("payload") or {}) for p in pts]
     except Exception:
         return []
 
@@ -310,9 +294,8 @@ def lexical_search(question: str) -> list:
         qv = _embed_query(question)
         import metrics
         with metrics.timer("qdrant"):
-            pts = _client.query_points(_COLLECTION, query=qv, limit=200,
-                                       with_payload=True).points
-        cands += [_hit_from_payload(p.payload or {}) for p in pts]
+            pts = vectorstore.search(qv, 200, with_payload=True)
+        cands += [_hit_from_payload(p.get("payload") or {}) for p in pts]
     except Exception:
         pass
     if kws:

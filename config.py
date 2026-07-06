@@ -46,6 +46,30 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "company_kb")
 QDRANT_TIMEOUT = _int("QDRANT_TIMEOUT", 60)            # таймаут запросов (чат), с
 QDRANT_INGEST_TIMEOUT = _int("QDRANT_INGEST_TIMEOUT", 480)  # таймаут индексации, с
 
+# --- Векторная база: активный бэкенд (qdrant | milvus) ---
+# Весь поиск/индексация идут через vectorstore.py. По умолчанию — qdrant. Milvus
+# устанавливается и наполняется из админки; переключение — после проверки миграции.
+VECTOR_BACKEND = os.getenv("VECTOR_BACKEND", "qdrant")
+
+# --- Milvus ---
+# Режим: lite — встроенный (файл-хранилище в контейнере/рядом с проектом, без etcd/minio);
+#        standalone — внешний сервер Milvus (контейнеры milvus+etcd+minio), URI http://host:19530.
+MILVUS_MODE = os.getenv("MILVUS_MODE", "lite")
+MILVUS_URI = os.getenv("MILVUS_URI", "")              # standalone: полный URI (приоритет над host/port)
+MILVUS_HOST = os.getenv("MILVUS_HOST", "milvus")      # standalone: имя сервиса/хост
+MILVUS_PORT = _int("MILVUS_PORT", 19530)              # standalone: порт gRPC
+MILVUS_TOKEN = os.getenv("MILVUS_TOKEN", "")          # user:password или api-key (если включена аутентификация)
+MILVUS_LITE_PATH = os.getenv("MILVUS_LITE_PATH", "")  # lite: путь к файлу БД (пусто = milvus_lite.db у приложения)
+MILVUS_COLLECTION = os.getenv("MILVUS_COLLECTION", "company_kb")
+MILVUS_METRIC = os.getenv("MILVUS_METRIC", "COSINE")  # COSINE (норм. эмбеддинги) | IP | L2
+# Тип индекса: HNSW (CPU, как в Qdrant) | GPU_CAGRA/GPU_IVF_FLAT (GPU) | IVF_FLAT/IVF_SQ8 | FLAT (точный перебор)
+MILVUS_INDEX_TYPE = os.getenv("MILVUS_INDEX_TYPE", "HNSW")
+MILVUS_HNSW_M = _int("MILVUS_HNSW_M", 16)                     # HNSW: связей на узел (качество↔память)
+MILVUS_HNSW_EF_CONSTRUCTION = _int("MILVUS_HNSW_EF_CONSTRUCTION", 200)  # HNSW: ширина при построении
+MILVUS_SEARCH_EF = _int("MILVUS_SEARCH_EF", 128)             # HNSW ef / CAGRA itopk при поиске
+MILVUS_NLIST = _int("MILVUS_NLIST", 1024)                    # IVF: число кластеров
+MILVUS_NPROBE = _int("MILVUS_NPROBE", 16)                    # IVF: сколько кластеров смотреть при поиске
+
 # RAG-параметры
 CHUNK_SIZE = _int("CHUNK_SIZE", 900)
 CHUNK_OVERLAP = _int("CHUNK_OVERLAP", 150)

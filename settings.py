@@ -181,6 +181,16 @@ FIELDS: list[dict] = [
              "индексации."},
 
     # --- Хранилище ---
+    {"key": "VECTOR_BACKEND", "label": "Активная векторная база", "group": "Хранилище",
+     "type": "select", "scope": "restart", "options": ["qdrant", "milvus"],
+     "default": config.VECTOR_BACKEND,
+     "desc": "Где хранятся векторы и идёт семантический поиск. <code>qdrant</code> — "
+             "по умолчанию (лёгкий, один контейнер). <code>milvus</code> — мощная "
+             "векторная СУБД (масштаб до миллиардов, GPU-индексы). <b>Не переключайте "
+             "вручную «на пустое»</b>: сначала установите Milvus и перенесите данные "
+             "кнопками в блоке «Векторная база: Qdrant ⇄ Milvus» (раздел Администратор) — "
+             "они и данные скопируют, и переключат бэкенд. Применяется после перезапуска "
+             "сервиса."},
     {"key": "QDRANT_URL", "label": "URL Qdrant", "group": "Хранилище",
      "type": "text", "scope": "restart", "default": config.QDRANT_URL},
     {"key": "QDRANT_COLLECTION", "label": "Коллекция", "group": "Хранилище",
@@ -189,6 +199,91 @@ FIELDS: list[dict] = [
      "type": "int", "scope": "restart", "default": config.QDRANT_TIMEOUT},
     {"key": "QDRANT_INGEST_TIMEOUT", "label": "Таймаут индексации Qdrant, с", "group": "Хранилище",
      "type": "int", "scope": "reindex", "default": config.QDRANT_INGEST_TIMEOUT},
+
+    # --- Векторная база (Milvus) ---
+    {"key": "MILVUS_MODE", "label": "Режим Milvus", "group": "Векторная база (Milvus)",
+     "type": "select", "scope": "restart", "options": ["lite", "standalone"],
+     "default": config.MILVUS_MODE,
+     "desc": "<code>lite</code> — встроенный Milvus (одно файл-хранилище рядом с приложением, "
+             "без etcd/minio; ставится одним <code>pip install pymilvus</code>). Лёгкий "
+             "старт, подходит до ~1 млн векторов и одного процесса. <code>standalone</code> — "
+             "полноценный сервер Milvus (контейнеры <b>milvus + etcd + minio</b>): масштаб, "
+             "конкурентная нагрузка, GPU-индексы, HA-хранилище. Для Standalone поднимите "
+             "сервисы (кнопка/скрипт в разделе Администратор) и укажите URI ниже."},
+    {"key": "MILVUS_URI", "label": "Milvus URI (standalone)", "group": "Векторная база (Milvus)",
+     "type": "text", "scope": "restart", "default": config.MILVUS_URI,
+     "desc": "Адрес сервера Milvus в режиме standalone, например <code>http://milvus:19530</code> "
+             "(имя сервиса в сети docker-compose) или <code>http://IP:19530</code>. Пусто — "
+             "собрать из хоста и порта ниже. В режиме Lite не используется."},
+    {"key": "MILVUS_HOST", "label": "Milvus: хост (standalone)", "group": "Векторная база (Milvus)",
+     "type": "text", "scope": "restart", "default": config.MILVUS_HOST,
+     "desc": "Хост сервера Milvus, если URI не задан. В docker-compose — имя сервиса "
+             "<code>milvus</code>."},
+    {"key": "MILVUS_PORT", "label": "Milvus: порт (standalone)", "group": "Векторная база (Milvus)",
+     "type": "int", "scope": "restart", "default": config.MILVUS_PORT,
+     "desc": "gRPC-порт Milvus (по умолчанию 19530)."},
+    {"key": "MILVUS_TOKEN", "label": "Milvus: токен/логин (если включена аутентификация)",
+     "group": "Векторная база (Milvus)", "type": "secret", "scope": "restart",
+     "default": config.MILVUS_TOKEN,
+     "desc": "Строка <code>user:password</code> или API-ключ, если на Milvus включена "
+             "аутентификация (Zilliz Cloud / защищённый сервер). Пусто — без аутентификации."},
+    {"key": "MILVUS_LITE_PATH", "label": "Milvus Lite: путь к файлу БД",
+     "group": "Векторная база (Milvus)", "type": "text", "scope": "restart",
+     "default": config.MILVUS_LITE_PATH,
+     "desc": "Файл-хранилище для встроенного Milvus Lite. Пусто = <code>milvus_lite.db</code> "
+             "рядом с приложением. В Docker укажите путь на смонтированном томе, чтобы "
+             "данные переживали пересборку контейнера (например <code>/data/milvus_lite.db</code>)."},
+    {"key": "MILVUS_COLLECTION", "label": "Milvus: коллекция", "group": "Векторная база (Milvus)",
+     "type": "text", "scope": "restart", "default": config.MILVUS_COLLECTION,
+     "desc": "Имя коллекции в Milvus (аналог коллекции Qdrant). По умолчанию совпадает — "
+             "<code>company_kb</code>."},
+    {"key": "MILVUS_METRIC", "label": "Метрика близости", "group": "Векторная база (Milvus)",
+     "type": "select", "scope": "reindex", "options": ["COSINE", "IP", "L2"],
+     "default": config.MILVUS_METRIC,
+     "desc": "Как измерять близость векторов. <code>COSINE</code> — рекомендуется для "
+             "нормализованных эмбеддингов bge-m3/e5 (как в Qdrant). <code>IP</code> — "
+             "скалярное произведение (эквивалентно косинусу на нормализованных). "
+             "<code>L2</code> — евклидово расстояние. Менять только вместе со сбросом "
+             "коллекции."},
+    {"key": "MILVUS_INDEX_TYPE", "label": "Тип индекса", "group": "Векторная база (Milvus)",
+     "type": "select", "scope": "reindex",
+     "options": ["HNSW", "GPU_CAGRA", "GPU_IVF_FLAT", "IVF_FLAT", "IVF_SQ8", "FLAT"],
+     "default": config.MILVUS_INDEX_TYPE,
+     "desc": "<b>HNSW</b> — граф на CPU (по умолчанию, как в Qdrant): лучший баланс "
+             "скорость/точность, работает везде. <b>GPU_CAGRA</b> — GPU-граф Milvus: "
+             "очень быстрый поиск на больших объёмах, требует GPU-образ Milvus и делит "
+             "видеопамять с LLM/эмбеддингами. <b>GPU_IVF_FLAT</b> — GPU, проще CAGRA. "
+             "<b>IVF_FLAT/IVF_SQ8</b> — кластерный индекс (CPU): экономнее памяти на "
+             "очень больших наборах, чуть ниже точность. <b>FLAT</b> — точный перебор "
+             "(100% recall, медленно, только для маленьких коллекций). Требует "
+             "переиндексации/пересоздания индекса."},
+    {"key": "MILVUS_HNSW_M", "label": "HNSW: M (связей на узел)", "group": "Векторная база (Milvus)",
+     "type": "int", "scope": "reindex", "default": config.MILVUS_HNSW_M,
+     "desc": "Число рёбер графа на вектор. Больше — выше точность и скорость поиска, но "
+             "больше памяти и дольше построение. Рекомендация: 16 (по умолчанию); 32–48 "
+             "для высокой точности на больших наборах. Действует для индекса HNSW."},
+    {"key": "MILVUS_HNSW_EF_CONSTRUCTION", "label": "HNSW: efConstruction",
+     "group": "Векторная база (Milvus)", "type": "int", "scope": "reindex",
+     "default": config.MILVUS_HNSW_EF_CONSTRUCTION,
+     "desc": "Ширина поиска при ПОСТРОЕНИИ индекса HNSW. Больше — качественнее граф "
+             "(выше recall), но дольше индексация. Рекомендация: 200; 400–500 для "
+             "максимальной точности."},
+    {"key": "MILVUS_SEARCH_EF", "label": "Поиск: ef (HNSW) / itopk (CAGRA)",
+     "group": "Векторная база (Milvus)", "type": "int", "scope": "live",
+     "default": config.MILVUS_SEARCH_EF,
+     "desc": "Ширина поиска во время ЗАПРОСА. Больше — выше recall (находит больше "
+             "релевантного), но медленнее. Должно быть ≥ «Кандидатов из БД». "
+             "Рекомендация: 64–128; поднимите до 256, если поиск «пропускает» ответы. "
+             "Применяется на лету."},
+    {"key": "MILVUS_NLIST", "label": "IVF: nlist (кластеров)", "group": "Векторная база (Milvus)",
+     "type": "int", "scope": "reindex", "default": config.MILVUS_NLIST,
+     "desc": "Число кластеров для индексов IVF/GPU_IVF. Ориентир: ~√(число векторов)×4, "
+             "типично 1024–4096. Действует только для IVF-индексов."},
+    {"key": "MILVUS_NPROBE", "label": "IVF: nprobe (кластеров при поиске)",
+     "group": "Векторная база (Milvus)", "type": "int", "scope": "live",
+     "default": config.MILVUS_NPROBE,
+     "desc": "Сколько кластеров просматривать при запросе к IVF-индексу. Больше — точнее, "
+             "но медленнее. Рекомендация: 8–32. Действует только для IVF-индексов."},
 
     # --- Документы и индексация ---
     {"key": "DOCS_DIR", "label": "Папка с документами", "group": "Документы и индексация",

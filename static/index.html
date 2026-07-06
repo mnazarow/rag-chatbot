@@ -1500,6 +1500,70 @@
       <div class="note" style="margin-top:8px">Для MySQL нужен пакет <code>PyMySQL</code>, для PostgreSQL — <code>psycopg2</code>, для Redis — <code>redis</code> (входят в зависимости; при ручной установке поставьте их через «Переустановить окружение» или pip). Базу данных (например <code>rag</code>) создайте на сервере заранее — таблицы приложение создаст само.</div>
     </div>
 
+    <!-- Векторная база: Qdrant ⇄ Milvus -->
+    <div class="box">
+      <h3>🧭 Векторная база: Qdrant ⇄ Milvus</h3>
+      <div class="note" style="margin:2px 0 10px">
+        Весь семантический поиск и индексация идут через выбранную векторную базу. По
+        умолчанию — <b>Qdrant</b> (лёгкий, один контейнер). <b>Milvus</b> — мощная
+        альтернатива (масштаб до миллиардов, GPU-индексы). Ниже: установка Milvus,
+        полная миграция данных в обе стороны и переключение активного бэкенда.
+        Тонкая настройка параметров Milvus — в разделе «Настройки» → группа
+        «Векторная база (Milvus)» (у каждого поля подробное описание и рекомендации).
+      </div>
+
+      <div id="milvus_status" class="note" style="margin-bottom:10px">загрузка состояния…</div>
+
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <label style="font-size:13px">Режим Milvus<br>
+          <select id="milvus_mode" style="margin-top:3px">
+            <option value="lite">Lite (встроенный, без etcd/minio)</option>
+            <option value="standalone">Standalone (сервер: milvus+etcd+minio)</option>
+          </select>
+        </label>
+        <label style="font-size:13px">Тип индекса<br>
+          <select id="milvus_index" style="margin-top:3px">
+            <option value="HNSW">HNSW — CPU (как в Qdrant)</option>
+            <option value="GPU_CAGRA">GPU_CAGRA — GPU-граф</option>
+            <option value="GPU_IVF_FLAT">GPU_IVF_FLAT — GPU</option>
+            <option value="IVF_FLAT">IVF_FLAT — CPU, экономный</option>
+            <option value="IVF_SQ8">IVF_SQ8 — CPU, сжатый</option>
+            <option value="FLAT">FLAT — точный перебор</option>
+          </select>
+        </label>
+        <button class="act" onclick="milvusInstall()">⬇️ Установить / проверить Milvus</button>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+        <button class="act" onclick="milvusMigrate('to_milvus')">🚚 Мигрировать Qdrant → Milvus</button>
+        <button class="act ghost" onclick="milvusMigrate('to_qdrant')">🚚 Мигрировать Milvus → Qdrant</button>
+        <button class="act" onclick="milvusSwitch('milvus')">🔀 Сделать активным Milvus</button>
+        <button class="act ghost" onclick="milvusSwitch('qdrant')">🔀 Вернуться на Qdrant</button>
+        <span id="milvusmsg" class="note"></span>
+      </div>
+
+      <div id="milvus_prog_wrap" style="display:none;margin:6px 0">
+        <div style="height:10px;border-radius:6px;background:rgba(127,127,127,.18);overflow:hidden">
+          <div id="milvus_prog" style="height:100%;width:0%;background:#3b82f6;transition:width .5s"></div>
+        </div>
+        <div id="milvus_prog_txt" class="note" style="margin-top:4px"></div>
+      </div>
+
+      <div class="note" style="margin-top:6px">
+        <b>Порядок безопасного перехода:</b> 1) выберите режим/индекс и нажмите
+        «Установить Milvus»; 2) «Мигрировать Qdrant → Milvus» (данные копируются, Qdrant
+        остаётся активным); 3) убедитесь, что в статусе совпало число точек;
+        4) «Сделать активным Milvus» и <b>перезапустите сервис</b>. Откат — теми же
+        кнопками в обратную сторону. Данные Qdrant при миграции не удаляются.
+        <br><b>Пример (Standalone в Docker):</b> на хосте
+        <code>docker compose -f docker-compose.windows.yml --profile milvus up -d</code>,
+        затем в «Настройки» задайте <code>MILVUS_MODE=standalone</code>,
+        <code>MILVUS_URI=http://milvus:19530</code> и повторите шаги 1–4.
+      </div>
+
+      <pre id="milvus_log" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:240px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+    </div>
+
     <!-- переустановка и сброс -->
     <div class="box">
       <h3>Переустановка и сброс</h3>
@@ -1610,8 +1674,12 @@
 
     <div class="box" id="obs_wrap" style="padding:0;overflow:hidden">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line)">
-        <input id="obs_search" placeholder="🔍 поиск по файлу или категории…" style="flex:1;min-width:220px" oninput="obsSearch()">
+        <input id="obs_search" placeholder="🔍 фильтр по имени файла/категории…" style="flex:1;min-width:180px" oninput="obsSearch()">
+        <input id="obs_wsearch" placeholder="🔎 поиск по словам в тексте…" style="flex:1;min-width:180px" onkeydown="if(event.key==='Enter')obsWordSearch()">
+        <button class="act ghost" onclick="obsWordSearch()" title="Найти файлы, где встречаются эти слова">Найти</button>
+        <button class="act ghost" onclick="obsWordClear()" title="Сбросить поиск по словам">✕</button>
         <label class="note" style="cursor:pointer"><input type="checkbox" id="obs_labels" checked onchange="obsDraw()"> подписи</label>
+        <span id="obs_wsres" class="note"></span>
         <span id="obs_stats" class="note"></span>
       </div>
       <div style="padding:8px 14px 0">
@@ -3753,7 +3821,7 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns(); loadPrice(); loadSip(); loadSipReg();
+  loadMode(); loadOps(); loadModels(); rhLoad(); loadBackups(); loadDbCache(); loadMilvus(); loadIngestLogs(); loadDns(); loadPrice(); loadSip(); loadSipReg();
 }
 
 // ---- автокалибровка параметров ----
@@ -4566,6 +4634,74 @@ async function redisInstall(){
   if($('#sys_cache')) loadSystem();
 }
 
+// ---- Векторная база: Qdrant ⇄ Milvus ----
+let milvusT=null;
+function mvMsg(t,ok=true){ const e=$('#milvusmsg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
+async function loadMilvus(){
+  const el=$('#milvus_status'); if(!el) return;
+  let d; try{ d=await adminGet('/api/admin/milvus/status'); }catch(e){ return; }
+  if(!d) return;
+  // проставим селекторы из настроек
+  const ms=$('#milvus_mode'); if(ms&&d.mode) ms.value=d.mode;
+  const mi=$('#milvus_index'); if(mi&&d.index_type) mi.value=d.index_type;
+  const q=d.qdrant||{}, m=d.milvus||{};
+  const active=d.active||'qdrant';
+  const badge=(name,on)=>`<span style="background:${on?'#16a34a':'rgba(127,127,127,.2)'};color:${on?'#fff':'inherit'};border-radius:12px;padding:2px 9px;font-size:12px;font-weight:600">${name}${on?' · активна':''}</span>`;
+  el.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+      Активный бэкенд: ${badge('Qdrant',active==='qdrant')} ${badge('Milvus',active==='milvus')}
+    </div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap">
+      <div>🧭 <b>Qdrant</b>: ${q.reachable?('доступен · точек '+nz(q.points)):'<span style="color:#f87171">недоступен</span>'}</div>
+      <div>🚀 <b>Milvus</b>: ${d.pkg_present?'':'<span class="note">клиент не установлен · </span>'}${m.reachable?('доступен · точек '+nz(m.points)):'<span class="note">не поднят</span>'} · режим ${esc(d.mode||'lite')}${d.uri?(' · '+esc(d.uri)):''}</div>
+    </div>`;
+  // прогресс миграции
+  const job=d.job||{};
+  const wrap=$('#milvus_prog_wrap');
+  if(job.running || (job.pct>0 && job.pct<100 && job.phase && job.phase!=='done')){
+    wrap.style.display='block';
+    const pct=Math.max(0,Math.min(100,Math.round(job.pct||0)));
+    $('#milvus_prog').style.width=pct+'%';
+    $('#milvus_prog_txt').textContent=`Миграция ${job.direction==='to_qdrant'?'Milvus → Qdrant':'Qdrant → Milvus'}: ${pct}% (${nz(job.done)}/${nz(job.total)})`;
+  } else if(job.phase==='done' && !job.error){
+    wrap.style.display='block'; $('#milvus_prog').style.width='100%';
+    $('#milvus_prog_txt').textContent=`Миграция завершена: перенесено ${nz(job.done)} из ${nz(job.total)}.`;
+  } else if(job.error){
+    wrap.style.display='block';
+    $('#milvus_prog_txt').innerHTML='<span style="color:#f87171">Ошибка миграции: '+esc(job.error)+'</span>';
+  }
+  if(job.log && job.log.length){ const lg=$('#milvus_log'); if(lg){ lg.style.display='block'; lg.textContent=job.log.join('\n'); } }
+  // поллинг во время миграции
+  if(job.running){ if(!milvusT) milvusT=setInterval(loadMilvus,1500); }
+  else if(milvusT){ clearInterval(milvusT); milvusT=null; }
+}
+async function milvusInstall(){
+  const mode=$('#milvus_mode').value, index_type=$('#milvus_index').value;
+  if(!confirm('Установить клиент Milvus (pymilvus) и зафиксировать режим «'+mode+'»? Может занять 1–3 минуты.')) return;
+  mvMsg('установка Milvus…');
+  const lg=$('#milvus_log'); if(lg){ lg.style.display='block'; lg.textContent='Установка pymilvus…'; }
+  const r=await adminPost('/api/admin/milvus/install',{mode,index_type});
+  mvMsg((r&&r.ok?'✓ ':'')+((r&&r.msg)||'нет ответа'), !!(r&&r.ok));
+  if(lg) lg.textContent=(r&&r.log)||(r&&r.msg)||'нет вывода';
+  loadMilvus();
+}
+async function milvusMigrate(dir){
+  const label=dir==='to_qdrant'?'Milvus → Qdrant':'Qdrant → Milvus';
+  if(!confirm('Запустить полную миграцию векторов '+label+'?\nЦелевая коллекция будет пересоздана и заполнена заново. Данные источника не удаляются.')) return;
+  mvMsg('запуск миграции '+label+'…');
+  const r=await adminPost('/api/admin/milvus/migrate',{direction:dir});
+  mvMsg((r&&r.ok?'миграция запущена ':'')+((r&&r.msg)||''), !!(r&&r.ok));
+  if(r&&r.ok){ $('#milvus_prog_wrap').style.display='block'; if(!milvusT) milvusT=setInterval(loadMilvus,1500); }
+  loadMilvus();
+}
+async function milvusSwitch(target){
+  if(!confirm('Переключить активную векторную базу на «'+target+'»?\nПосле переключения нужно перезапустить сервис.')) return;
+  mvMsg('переключение…');
+  const r=await adminPost('/api/admin/milvus/switch',{target});
+  mvMsg((r&&r.msg)||'', !!(r&&r.ok));
+  loadMilvus();
+  if(r&&r.ok&&r.restart){ if(confirm((r.msg||'')+'\n\nПерезапустить сервис сейчас?')) adminPost('/api/admin/restart'); }
+}
+
 // ---- калибровка по оценкам ----
 function calMsg(t,ok=true){ $('#calmsg').textContent=t; $('#calmsg').className=ok?'saved':'note'; }
 async function calToggle(){
@@ -4923,48 +5059,137 @@ function webRemove(i){ webQueue.splice(i,1); webRenderQueue(); }
 function webClearQueue(){ if(!webQueue.length||confirm('Очистить очередь адресов?')){ webQueue=[]; webRenderQueue(); } }
 function webToggle(id){ const e=$('#'+id); if(e) e.style.display = (e.style.display==='none'?'block':'none'); }
 async function loadWebsites(){ loadWebUrls(); loadWebReparse(); loadWebStructure(); }
+// --- вид структуры сайтов: дерево / таблица ---
+let wsMode = 'tree'; try{ wsMode = localStorage.getItem('wsMode') || 'tree'; }catch(e){}
+const wsOpen = {};   // раскрытые узлы дерева (переживают перерисовку при поллинге)
+const wsMethodLbl={transcribed:'🎤 транскрипция',ocr:'🔍 OCR',tool:'🛠 инструмент',text:'📄 текст'};
+function wsSetMode(m){ wsMode=m; try{ localStorage.setItem('wsMode',m); }catch(e){} loadWebStructure(); }
+function wsId(k){ return 'wsn_'+String(k).replace(/[^a-z0-9]/gi,'_'); }
+function wsToggleNode(key){
+  wsOpen[key]=!wsOpen[key];
+  const c=document.getElementById('wsch_'+key), cr=document.getElementById('wscr_'+key);
+  if(c) c.style.display=wsOpen[key]?'block':'none';
+  if(cr) cr.textContent=wsOpen[key]?'▾':'▸';
+}
+function wsBuildTree(items, siteUrl){
+  let host=''; try{ host=new URL(siteUrl).hostname; }catch(e){}
+  const root={children:{}, item:null};
+  (items||[]).forEach((it,idx)=>{
+    let segs=[], u=null; try{ u=new URL(it.url||''); }catch(e){}
+    if(u){
+      if(u.hostname && u.hostname!==host) segs.push(u.hostname);
+      segs=segs.concat((u.pathname||'').split('/').filter(Boolean));
+    } else {
+      segs=String(it.source||it.name||('item'+idx)).split('/').filter(Boolean);
+    }
+    if(!segs.length){ segs=['(главная)']; }
+    let node=root;
+    segs.forEach(seg=>{ if(!node.children[seg]) node.children[seg]={children:{}, item:null}; node=node.children[seg]; });
+    node.item={...it, _idx:idx};
+  });
+  return root;
+}
+function wsCount(node){
+  let n=node.item?1:0;
+  for(const k in node.children) n+=wsCount(node.children[k]);
+  return n;
+}
+function wsLeaf(it, si){
+  if(!it) return '';
+  const did='wsd_'+wsId(si+'_'+(it.source||it.url||it._idx));
+  const st = !it.ok ? '<span style="color:#f87171" title="не скачан">✗</span>'
+    : (it.in_db ? '<span style="color:#4ade80" title="в базе знаний">✅</span>'
+                : '<span class="note" title="не в базе">⏳</span>');
+  const icon = it.kind==='page'?'📄':'📎';
+  const name = it.name || (it.url? (it.url.split('/').filter(Boolean).pop()||it.url) : '') || it.source || '—';
+  const meta = [it.type||'', it.size?gb(it.size):'', it.chunks?('чанков '+it.chunks):'',
+                it.described?'🧠':'', it.pages?(it.pages+' стр.'):''].filter(Boolean).join(' · ');
+  const btn = it.source?`<button class="dirbtn" style="padding:1px 6px" title="Превью и чанки" onclick="wsPreview('${escAttr(it.source)}','${did}')">👁</button>`:'';
+  return `<div style="margin:1px 0">
+    <div style="display:flex;gap:6px;align-items:center">
+      ${st} ${icon} <span style="word-break:break-all">${esc(name)}</span>
+      <span class="note" style="font-size:11px">${meta?('· '+esc(meta)):''}</span>
+      <span style="flex:1"></span>${btn}
+    </div>
+    <div id="${did}" style="display:none;margin:4px 0 6px 20px"></div>
+  </div>`;
+}
+function wsRenderNode(node, si, path){
+  let html = node.item ? wsLeaf(node.item, si) : '';
+  Object.keys(node.children).sort((a,b)=>a.localeCompare(b,'ru')).forEach(seg=>{
+    const child=node.children[seg];
+    const isFolder=Object.keys(child.children).length>0;
+    if(isFolder){
+      const key=wsId(si+'/'+path+'/'+seg), open=!!wsOpen[key];
+      html+=`<div style="margin:1px 0">
+        <div onclick="wsToggleNode('${key}')" style="cursor:pointer;display:flex;gap:6px;align-items:center;padding:1px 0;user-select:none">
+          <span id="wscr_${key}" style="width:10px;display:inline-block">${open?'▾':'▸'}</span>📁 <b style="word-break:break-all">${esc(seg)}</b>
+          <span class="note" style="font-size:11px">(${wsCount(child)})</span></div>
+        <div id="wsch_${key}" style="display:${open?'block':'none'};margin-left:15px;border-left:1px solid var(--line);padding-left:10px">
+          ${wsRenderNode(child, si, path+'/'+seg)}
+        </div></div>`;
+    } else {
+      html+=wsLeaf(child.item, si);
+    }
+  });
+  return html;
+}
 async function loadWebStructure(){
   const el=$('#web_structure'); if(!el) return;
   let d; try{ d=await adminGet('/api/admin/web-structure'); }catch(e){ return; }
   const sites=(d&&d.sites)||[];
   if(!sites.length){ el.innerHTML='<div class="note">нет данных — запустите парсинг</div>'; return; }
   const phaseLbl={crawl:'обход ссылок',download:'скачивание файлов',parsed:'спарсено',index:'индексация',done:'готово'};
-  const methodLbl={transcribed:'🎤 транскрипция',ocr:'🔍 OCR',tool:'🛠 инструмент',text:'📄 текст'};
-  el.innerHTML=sites.map((s,si)=>{
+  const methodLbl=wsMethodLbl;
+  const tb=(m,lbl)=>`<button class="dirbtn" style="${wsMode===m?'background:var(--accent);color:#fff;border-color:var(--accent)':''}" onclick="wsSetMode('${m}')">${lbl}</button>`;
+  const toolbar=`<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span class="note">Вид:</span>${tb('tree','🌳 Дерево')}${tb('table','📋 Таблица')}</div>`;
+  el.innerHTML=toolbar+sites.map((s,si)=>{
     const pr=s.progress||{}, pct=Math.max(0,Math.min(100,Math.round(pr.pct||0)));
     const ph=phaseLbl[pr.phase]||(pr.phase||''), active=pct>0&&pct<100;
     const barColor=pct>=100?'#22c55e':(active?'#3b82f6':'#64748b');
     const bar=`<div style="height:9px;border-radius:5px;background:rgba(127,127,127,.18);overflow:hidden;margin:7px 0"><div style="height:100%;width:${pct}%;background:${barColor};transition:width .5s"></div></div>`;
     const items=s.items||[];
-    const rows=items.map((it,ii)=>{
-      const id='ws_'+si+'_'+ii;
-      const st = !it.ok ? '<span style="color:#f87171">✗ не скачан</span>'
-        : (it.in_db ? '<span style="color:#4ade80">✅ в БД</span>' : '<span class="note">⏳ не в БД</span>');
-      return `<tr>
-        <td style="max-width:230px;word-break:break-all">${it.kind==='page'?'📄':'📎'} <b>${esc(it.name||'')}</b>${it.pages?(' <span class="note">('+it.pages+' стр.)</span>'):''}<br><span class="note" style="font-size:11px">${esc(it.source||it.url||'')}</span></td>
-        <td>${esc(it.type||'')}<br><span class="note" style="font-size:11px">${esc(methodLbl[it.method]||it.method||'')}</span></td>
-        <td>${gb(it.size)}</td>
-        <td>${st}</td>
-        <td>${it.chunks||0}</td>
-        <td>${it.described?'🧠 да':'<span class="note">—</span>'}</td>
-        <td>${it.mtime?fmtTime(it.mtime):'<span class="note">—</span>'}</td>
-        <td>${it.proc_ms!=null?(Math.round(it.proc_ms)+' мс'):'<span class="note">—</span>'}</td>
-        <td style="white-space:nowrap">${it.source?`<button class="dirbtn" title="Превью и чанки" onclick="wsPreview('${escAttr(it.source)}','${id}')">👁 превью/чанки</button>`:''}</td>
-      </tr>
-      <tr id="${id}" style="display:none"><td colspan="9"></td></tr>`;
-    }).join('');
+    let body;
+    if(!items.length){
+      body='<div class="note">файлов/страниц пока нет</div>';
+    } else if(wsMode==='tree'){
+      const tree=wsBuildTree(items, s.url);
+      body=`<div style="font-size:13px;line-height:1.5">${wsRenderNode(tree, si, '')}</div>`;
+    } else {
+      const rows=items.map((it,ii)=>{
+        const id='ws_'+si+'_'+ii;
+        const st = !it.ok ? '<span style="color:#f87171">✗ не скачан</span>'
+          : (it.in_db ? '<span style="color:#4ade80">✅ в БД</span>' : '<span class="note">⏳ не в БД</span>');
+        return `<tr>
+          <td style="max-width:230px;word-break:break-all">${it.kind==='page'?'📄':'📎'} <b>${esc(it.name||'')}</b>${it.pages?(' <span class="note">('+it.pages+' стр.)</span>'):''}<br><span class="note" style="font-size:11px">${esc(it.source||it.url||'')}</span></td>
+          <td>${esc(it.type||'')}<br><span class="note" style="font-size:11px">${esc(methodLbl[it.method]||it.method||'')}</span></td>
+          <td>${gb(it.size)}</td>
+          <td>${st}</td>
+          <td>${it.chunks||0}</td>
+          <td>${it.described?'🧠 да':'<span class="note">—</span>'}</td>
+          <td>${it.mtime?fmtTime(it.mtime):'<span class="note">—</span>'}</td>
+          <td>${it.proc_ms!=null?(Math.round(it.proc_ms)+' мс'):'<span class="note">—</span>'}</td>
+          <td style="white-space:nowrap">${it.source?`<button class="dirbtn" title="Превью и чанки" onclick="wsPreview('${escAttr(it.source)}','${id}')">👁 превью/чанки</button>`:''}</td>
+        </tr>
+        <tr id="${id}" style="display:none"><td colspan="9"></td></tr>`;
+      }).join('');
+      body=`<div style="overflow:auto"><table><thead><tr><th>Имя / источник</th><th>Тип</th><th>Размер</th><th>Статус</th><th>Чанки</th><th>LLM</th><th>Изменён</th><th>Обработка</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
     return `<div style="border:1px solid var(--line);border-radius:11px;padding:12px 14px;margin-bottom:10px;background:var(--panel2)">
       <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;word-break:break-all">🌐 ${esc(s.url)}</b>
-        <span class="note">${active?('⏳ '+ph+' · '+pct+'%'):(ph||'')}</span></div>
+        <span class="note">${items.length?('элементов: '+items.length+' · '):''}${active?('⏳ '+ph+' · '+pct+'%'):(ph||'')}</span></div>
       ${bar}
-      ${items.length?`<div style="overflow:auto"><table><thead><tr><th>Имя / источник</th><th>Тип</th><th>Размер</th><th>Статус</th><th>Чанки</th><th>LLM</th><th>Изменён</th><th>Обработка</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="note">файлов/страниц пока нет</div>'}
+      ${body}
     </div>`;
   }).join('');
 }
 async function wsPreview(source,rowId){
-  const tr=$('#'+rowId); if(!tr) return;
-  if(tr.style.display!=='none'){ tr.style.display='none'; return; }
-  tr.style.display=''; const cell=tr.firstElementChild; cell.innerHTML='<div class="note">загрузка…</div>';
+  const box=document.getElementById(rowId); if(!box) return;
+  const isRow = box.tagName==='TR';
+  if(box.style.display!=='none'){ box.style.display='none'; return; }
+  box.style.display = isRow ? '' : 'block';
+  const cell = isRow ? box.firstElementChild : box;
+  cell.innerHTML='<div class="note">загрузка…</div>';
   let r; try{ r=await adminGet('/api/admin/file-text?source='+encodeURIComponent(source)); }catch(e){ cell.innerHTML='<div class="note">ошибка</div>'; return; }
   const label={transcribed:'🎤 Транскрипция',ocr:'🔍 Распознанный текст (OCR)',tool:'🛠 Извлечённый текст',text:'📄 Текст'}[r&&r.method]||'Текст';
   let html='';
@@ -5722,13 +5947,16 @@ function obsDraw(){
   const o=OBS; if(!o) return; const ctx=o.ctx;
   ctx.setTransform(o.dpr,0,0,o.dpr,0,0); ctx.clearRect(0,0,o.W,o.H);
   ctx.translate(o.tr.x,o.tr.y); ctx.scale(o.tr.k,o.tr.k);
-  const term=o.term, hl=n=> term && (String(n.label).toLowerCase().includes(term)||String(n.category||'').toLowerCase().includes(term));
+  const term=o.term, wm=o.wordMatch;
+  const hasFilter = !!term || (wm && wm.size>0);
+  const hl=n=> (term && (String(n.label).toLowerCase().includes(term)||String(n.category||'').toLowerCase().includes(term)))
+             || (wm && n.source && wm.has(n.source));
   const neigh=new Set(); if(o.sel){ neigh.add(o.sel.id); for(const l of o.links){ if(l.s===o.sel) neigh.add(l.t.id); if(l.t===o.sel) neigh.add(l.s.id); } }
   ctx.lineWidth=1/o.tr.k;
   for(const l of o.links){ const act=o.sel&&neigh.has(l.s.id)&&neigh.has(l.t.id);
     ctx.strokeStyle=act?'rgba(120,170,255,0.85)':'rgba(150,150,170,0.16)';
     ctx.beginPath(); ctx.moveTo(l.s.x,l.s.y); ctx.lineTo(l.t.x,l.t.y); ctx.stroke(); }
-  for(const n of o.nodes){ const dim=(o.sel&&!neigh.has(n.id))||(term&&!hl(n));
+  for(const n of o.nodes){ const dim=(o.sel&&!neigh.has(n.id))||(hasFilter&&!hl(n));
     ctx.globalAlpha=dim?0.22:1; ctx.fillStyle=n.col;
     ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,7); ctx.fill();
     if(n.type==='category'||n===o.sel||n===o.hover){ ctx.strokeStyle=n.type==='category'?'#fff':'rgba(255,255,255,0.7)';
@@ -5736,7 +5964,7 @@ function obsDraw(){
   ctx.globalAlpha=1;
   const lbl=$('#obs_labels')&&$('#obs_labels').checked;
   for(const n of o.nodes){ const big=n.type==='category';
-    const want=big||n===o.sel||n===o.hover||(term&&hl(n))||(lbl&&o.tr.k>1.25);
+    const want=big||n===o.sel||n===o.hover||(hasFilter&&hl(n))||(lbl&&o.tr.k>1.25);
     if(!want) continue; const fs=(big?13:11)/o.tr.k; ctx.font=fs+'px system-ui,Arial';
     ctx.fillStyle=big?'#eaeaf2':'#c8c8d4'; ctx.textAlign='center';
     ctx.fillText(obsShort(n.label,big?26:22), n.x, n.y-n.r-3/o.tr.k); }
@@ -5762,6 +5990,55 @@ function obsBind(){
   window.addEventListener('mousemove',o._mm); window.addEventListener('mouseup',o._mu); window.addEventListener('resize',o._rs);
 }
 function obsSearch(){ if(!OBS) return; OBS.term=($('#obs_search').value||'').trim().toLowerCase(); obsDraw(); }
+async function obsWordSearch(){
+  if(!OBS) return;
+  const q=($('#obs_wsearch').value||'').trim();
+  if(!q){ obsWordClear(); return; }
+  const wr=$('#obs_wsres'); if(wr) wr.textContent='поиск…';
+  let d; try{ d=await adminGet('/api/admin/kb-search?q='+encodeURIComponent(q)); }catch(e){ if(wr) wr.textContent='ошибка'; return; }
+  const srcs=(d&&d.sources)||[];
+  OBS.wordMatch=new Set(srcs.map(s=>s.source));
+  OBS.wordList=srcs;
+  obsFocusMatches();
+  obsDraw();
+  if(wr) wr.innerHTML = srcs.length ? ('🔎 найдено файлов: <b>'+srcs.length+'</b>'+((d.count>srcs.length)?(' из '+d.count):'')) : '🔎 ничего не найдено';
+  obsShowMatches(d);
+}
+function obsWordClear(){
+  const w=$('#obs_wsearch'); if(w) w.value='';
+  const wr=$('#obs_wsres'); if(wr) wr.textContent='';
+  if(OBS){ OBS.wordMatch=null; OBS.wordList=null; obsDraw(); }
+}
+function obsFocusMatches(){
+  const o=OBS; if(!o||!o.wordMatch||!o.wordMatch.size) return;
+  const ms=o.nodes.filter(n=>n.source&&o.wordMatch.has(n.source)); if(!ms.length) return;
+  let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+  ms.forEach(n=>{ minx=Math.min(minx,n.x); miny=Math.min(miny,n.y); maxx=Math.max(maxx,n.x); maxy=Math.max(maxy,n.y); });
+  const cx=(minx+maxx)/2, cy=(miny+maxy)/2, bw=Math.max(1,maxx-minx), bh=Math.max(1,maxy-miny);
+  const k=Math.max(0.3,Math.min(2.2, 0.82*Math.min(o.W/bw, o.H/bh)));
+  o.tr.k=k; o.tr.x=o.W/2 - cx*k; o.tr.y=o.H/2 - cy*k;
+}
+function obsShowMatches(d){
+  const side=$('#obs_side'), body=$('#obs_side_body'); if(!side||!body) return;
+  side.classList.add('open');
+  const srcs=(d&&d.sources)||[];
+  if(!srcs.length){ body.innerHTML='<div class="note">По словам «'+esc(d&&d.query||'')+'» ничего не найдено.</div>'; return; }
+  const rows=srcs.slice(0,100).map(s=>{
+    const nm=(String(s.source||'').split('/').pop())||s.source;
+    const tags=(s.name?'<span class="note" style="font-size:11px"> · имя файла</span>':'');
+    return `<div style="padding:5px 6px;border-bottom:1px solid var(--line);cursor:pointer" onclick="obsSelectSource('${escAttr(s.source)}')" title="${escAttr(s.source)}">
+      📄 <b style="word-break:break-all">${esc(nm)}</b>
+      <span class="note" style="font-size:11px">· слов ${s.word_hits} · чанков ${s.chunks}</span>${tags}</div>`;
+  }).join('');
+  body.innerHTML=`<h3 style="margin-top:0">🔎 Поиск по словам</h3>`
+    +`<div class="note" style="margin-bottom:6px">запрос: «${esc(d.query)}» · файлов ${srcs.length}${d.count>srcs.length?(' из '+d.count):''}. Клик — открыть узел.</div>`
+    +rows;
+}
+function obsSelectSource(src){
+  if(!OBS) return; const n=OBS.byId['f:'+src]; if(!n) return;
+  OBS.sel=n; obsFocusNode(n); obsShowNode(n); obsDraw();
+}
+function obsFocusNode(n){ const o=OBS; if(!o) return; o.tr.x=o.W/2 - n.x*o.tr.k; o.tr.y=o.H/2 - n.y*o.tr.k; }
 function obsCloseSide(){ const s=$('#obs_side'); if(s) s.classList.remove('open'); if(OBS){ OBS.sel=null; obsDraw(); } }
 async function obsShowNode(n){
   const side=$('#obs_side'), body=$('#obs_side_body');

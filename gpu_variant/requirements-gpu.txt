@@ -17,6 +17,9 @@ paramiko==3.5.0
 
 # --- векторная БД ---
 qdrant-client==1.12.2
+# Milvus — альтернативная векторная база (Lite/Standalone). milvus-lite ставится
+# автоматически как зависимость на Linux/macOS (встроенный режим).
+pymilvus>=2.4,<2.6
 
 # --- эмбеддинги и реранк (CUDA) ---
 sentence-transformers==3.3.1

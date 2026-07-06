@@ -31,13 +31,12 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 warnings.filterwarnings("ignore", message=".*Data Validation extension.*")
 
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qm
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 import config
 import settings
+import vectorstore
 import db
 import metadata as meta
 import enrich
@@ -119,45 +118,19 @@ def file_hash(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-def ensure_collection(client: QdrantClient, reset: bool):
-    exists = client.collection_exists(COLLECTION)
-    if reset and exists:
-        client.delete_collection(COLLECTION)
-        exists = False
-    if not exists:
-        client.create_collection(
-            collection_name=COLLECTION,
-            vectors_config=qm.VectorParams(
-                size=settings.get("EMBED_DIM"), distance=qm.Distance.COSINE
-            ),
-        )
-        # индексы payload — для инкрементального обновления и фильтрации
-        for field in ("source", "fhash", "doc_category", "date", "ftype",
-                      "product", "topic", "doc_type", "vision_desc"):
-            client.create_payload_index(
-                COLLECTION, field, qm.PayloadSchemaType.KEYWORD
-            )
+def ensure_collection(reset: bool):
+    """Создать/пересоздать коллекцию в активной векторной базе (Qdrant или Milvus)."""
+    vectorstore.ensure_collection(int(settings.get("EMBED_DIM")), reset=reset)
 
 
-def already_indexed(client: QdrantClient, source: str, fhash: str) -> bool:
-    res = client.scroll(
-        COLLECTION,
-        scroll_filter=qm.Filter(must=[
-            qm.FieldCondition(key="source", match=qm.MatchValue(value=source)),
-            qm.FieldCondition(key="fhash", match=qm.MatchValue(value=fhash)),
-        ]),
-        limit=1,
-    )
-    return len(res[0]) > 0
+def already_indexed(source: str, fhash: str) -> bool:
+    pts, _ = vectorstore.scroll(flt={"source": source, "fhash": fhash}, limit=1,
+                                with_payload=False, with_vectors=False)
+    return len(pts) > 0
 
 
-def delete_old_versions(client: QdrantClient, source: str):
-    client.delete(
-        COLLECTION,
-        points_selector=qm.FilterSelector(filter=qm.Filter(must=[
-            qm.FieldCondition(key="source", match=qm.MatchValue(value=source)),
-        ])),
-    )
+def delete_old_versions(source: str):
+    vectorstore.delete({"source": source})
 
 
 def main():
@@ -187,12 +160,13 @@ def main():
 
     # --- фатальные ошибки инициализации: понятное сообщение и выход ---
     print(f"Документы: {DOCS_DIR}")
+    _vb = vectorstore.backend()
     try:
-        client = QdrantClient(url=settings.get("QDRANT_URL"),
-                              timeout=settings.get("QDRANT_INGEST_TIMEOUT"))
-        ensure_collection(client, args.reset)
+        ensure_collection(args.reset)
     except Exception as e:
-        raise SystemExit(f"FATAL: не удалось подключиться к Qdrant ({settings.get('QDRANT_URL')}): {e}")
+        _tgt = vectorstore.milvus_uri() if _vb == "milvus" else settings.get("QDRANT_URL")
+        raise SystemExit(f"FATAL: не удалось подключиться к векторной базе "
+                         f"({_vb}: {_tgt}): {e}")
 
     print(f"Загружаю эмбеддер {embed_model} на {device} ...")
     try:
@@ -288,24 +262,19 @@ def main():
                 done = min(i + BATCH, len(points))
                 print(f"    {source}: {int(done * 100 / len(points))}% "
                       f"({done}/{len(points)} чанков)", flush=True)
-            client.upsert(
-                COLLECTION, wait=False,
-                points=[
-                    qm.PointStruct(
-                        id=str(uuid.uuid4()), vector=vec.tolist(),
-                        payload={
-                            "text": p["chunk"], "source": source, "page": p["page"],
-                            "ftype": ftype, "fhash": fhash,
-                            "indexed_at": time.strftime("%Y-%m-%d"),
-                            **({"t_start": p["t_start"], "t_end": p["t_end"]}
-                               if p.get("t_start") is not None else {}),
-                            **({"vision_desc": True} if p.get("vision_desc") else {}),
-                            **md,
-                        },
-                    )
-                    for p, vec in zip(batch, vectors)
-                ],
-            )
+            vectorstore.upsert([
+                {"id": str(uuid.uuid4()), "vector": vec.tolist(),
+                 "payload": {
+                     "text": p["chunk"], "source": source, "page": p["page"],
+                     "ftype": ftype, "fhash": fhash,
+                     "indexed_at": time.strftime("%Y-%m-%d"),
+                     **({"t_start": p["t_start"], "t_end": p["t_end"]}
+                        if p.get("t_start") is not None else {}),
+                     **({"vision_desc": True} if p.get("vision_desc") else {}),
+                     **md,
+                 }}
+                for p, vec in zip(batch, vectors)
+            ], wait=False)
         embed_ms = int((time.time() - t_embed) * 1000)
         n_new += 1
         n_chunks += len(points)
@@ -335,7 +304,7 @@ def main():
             if from_pg:
                 source = item["rel_path"]
                 fhash = item.get("sha256") or ""
-                if not args.reset and fhash and already_indexed(client, source, fhash):
+                if not args.reset and fhash and already_indexed(source, fhash):
                     return {"status": "skip"}
                 base = Path(item.get("fname") or Path(source).name).name or "file"
                 tmp_path = Path(tmpdir) / f"{uuid.uuid4().hex}_{base}"
@@ -347,7 +316,7 @@ def main():
                 path = item
                 source = str(path.relative_to(DOCS_DIR))
                 fhash = file_hash(path)
-                if not args.reset and already_indexed(client, source, fhash):
+                if not args.reset and already_indexed(source, fhash):
                     return {"status": "skip"}
                 meta_path = path
             points = []
@@ -400,7 +369,7 @@ def main():
             source = res["source"]
             print(f"[{idx}/{total_work}] {int(idx * 100 / total_work)}% "
                   f"индексирую: {source}", flush=True)
-            delete_old_versions(client, source)
+            delete_old_versions(source)
             _embed_upsert(source, res["fhash"], res["points"], res["ftype"],
                           res["meta_path"], res.get("parse_ms", 0))
         finally:
@@ -420,7 +389,7 @@ def main():
                 if from_pg:
                     source = item["rel_path"]
                     fhash = item.get("sha256") or ""
-                    if not args.reset and fhash and already_indexed(client, source, fhash):
+                    if not args.reset and fhash and already_indexed(source, fhash):
                         continue
                     base = Path(item.get("fname") or Path(source).name).name or "file"
                     tmp_path = Path(tmpdir) / base
@@ -433,10 +402,10 @@ def main():
                     path = item
                     source = str(path.relative_to(DOCS_DIR))
                     fhash = file_hash(path)
-                    if not args.reset and already_indexed(client, source, fhash):
+                    if not args.reset and already_indexed(source, fhash):
                         continue
                     meta_path = path
-                delete_old_versions(client, source)
+                delete_old_versions(source)
                 print(f"[{idx}/{total_work}] {int(idx * 100 / total_work)}% "
                       f"индексирую: {source}", flush=True)
                 if use_alarm:

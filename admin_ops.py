@@ -24,6 +24,7 @@ import shutil
 import httpx
 
 import settings
+import vectorstore
 import db
 import backup
 import fsutil
@@ -732,25 +733,18 @@ def web_structure() -> dict:
     def _facets():
         chunks, described = {}, set()
         try:
-            base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
-            r = httpx.post(f"{base}/collections/{coll}/facet",
-                           json={"key": "source", "limit": 100000, "exact": True}, timeout=30)
-            if r.status_code == 200:
-                for h in (r.json().get("result", {}) or {}).get("hits", []):
-                    chunks[h.get("value")] = h.get("count", 0)
-            r2 = httpx.post(f"{base}/collections/{coll}/facet",
-                            json={"key": "source", "limit": 100000, "exact": True,
-                                  "filter": {"must": [{"key": "vision_desc",
-                                                       "match": {"value": True}}]}}, timeout=30)
-            if r2.status_code == 200:
-                for h in (r2.json().get("result", {}) or {}).get("hits", []):
+            for h in vectorstore.facet("source", 100000):
+                chunks[h.get("value")] = h.get("count", 0)
+            for h in vectorstore.facet("source", 100000, flt={"vision_desc": True}):
+                if h.get("value"):
                     described.add(h.get("value"))
         except Exception:
             pass
         return {"chunks": chunks, "described": list(described)}
     try:
         import cache
-        fac = cache.get_or_set("webstruct_facet:" + str(settings.get("QDRANT_COLLECTION")),
+        fac = cache.get_or_set("webstruct_facet:" + str(vectorstore.backend()) + ":"
+                               + str(settings.get("QDRANT_COLLECTION")),
                                15, _facets, ns="index")
     except Exception:
         fac = _facets()
@@ -823,15 +817,12 @@ def delete_web(url: str) -> dict:
             f.unlink()
         except Exception:
             pass
-    # 3) удалить чанки из Qdrant по source
+    # 3) удалить чанки из векторной базы (Qdrant/Milvus) по source
     src = f"web/{slug}.html"
     try:
-        httpx.post(
-            f"{settings.get('QDRANT_URL')}/collections/{settings.get('QDRANT_COLLECTION')}/points/delete",
-            json={"filter": {"must": [{"key": "source", "match": {"value": src}}]}},
-            timeout=30)
+        vectorstore.delete({"source": src})
     except Exception as e:
-        return {"ok": True, "msg": f"удалён из списка и папки; из Qdrant не удалён: {e}"}
+        return {"ok": True, "msg": f"удалён из списка и папки; из векторной базы не удалён: {e}"}
     return {"ok": True, "msg": "сайт удалён из базы знаний"}
 
 
@@ -1713,12 +1704,14 @@ def reset(targets: list) -> dict:
     done, errors = [], []
 
     if "index" in targets:
-        base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
         try:
-            httpx.delete(f"{base}/collections/{coll}", timeout=15)
-            # пересоздаём пустую коллекцию, чтобы чат не падал до переиндексации
-            httpx.put(f"{base}/collections/{coll}", timeout=15,
-                      json={"vectors": {"size": 1024, "distance": "Cosine"}})
+            # пересоздаём пустую коллекцию активной векторной базы (Qdrant/Milvus),
+            # чтобы чат не падал до переиндексации
+            try:
+                _dim = int(settings.get("EMBED_DIM"))
+            except Exception:
+                _dim = 1024
+            vectorstore.ensure_collection(_dim, reset=True)
             # сбрасываем накопленное время обработки — оно относится к старому индексу
             _INGEST_STATS.unlink(missing_ok=True)
             try:
@@ -1726,7 +1719,7 @@ def reset(targets: list) -> dict:
                 cache.bump("index")   # сброс кэша поиска/ответов
             except Exception:
                 pass
-            done.append("индекс Qdrant")
+            done.append(f"индекс ({vectorstore.backend()})")
         except Exception as e:
             errors.append(f"индекс: {e}")
 
@@ -1965,6 +1958,26 @@ def restart() -> dict:
 
 
 def _qcount(base: str, coll: str, flt: dict) -> int:
+    # Milvus: переводим простые must-match фильтры в нейтральные и считаем через фасад;
+    # сложные (must_not/is_empty) поддерживаются приблизительно (facet по наличию поля).
+    if vectorstore.is_milvus():
+        try:
+            must = (flt or {}).get("must") or []
+            neutral = {}
+            for c in must:
+                if "key" in c and isinstance(c.get("match"), dict):
+                    neutral[c["key"]] = c["match"].get("value")
+            if neutral or not flt:
+                return vectorstore.count(neutral or None)
+            # must_not is_empty <key> → число строк, где поле задано
+            mn = (flt or {}).get("must_not") or []
+            for c in mn:
+                k = ((c.get("is_empty") or {}).get("key"))
+                if k:
+                    return sum(h.get("count", 0) for h in vectorstore.facet(k, 100000))
+        except Exception:
+            pass
+        return 0
     try:
         r = httpx.post(f"{base}/collections/{coll}/points/count", timeout=4,
                        json={"filter": flt, "exact": True})
@@ -2352,13 +2365,32 @@ def component_status(gpu: dict | None = None) -> dict:
 def _qdrant_stats() -> dict:
     """Быстрая сводка по коллекции Qdrant (для расширенной статистики)."""
     try:
-        coll = settings.get("QDRANT_COLLECTION")
-        r = httpx.get(f"{settings.get('QDRANT_URL')}/collections/{coll}", timeout=3)
-        res = (r.json().get("result") or {})
-        return {"reachable": r.status_code == 200, "points": res.get("points_count"),
-                "status": res.get("status"), "segments": res.get("segments_count")}
+        info = vectorstore.collection_info(backend_name="qdrant")
+        return {"reachable": bool(info.get("exists")), "points": info.get("points_count"),
+                "status": info.get("status")}
     except Exception as e:
         return {"reachable": False, "error": str(e)[:100]}
+
+
+def _milvus_stats() -> dict:
+    """Быстрая сводка по коллекции Milvus (для расширенной статистики). Безопасна,
+    если pymilvus не установлен или Milvus недоступен — вернёт reachable=False."""
+    try:
+        if not vectorstore.ping("milvus"):
+            return {"reachable": False}
+        info = vectorstore.collection_info(backend_name="milvus")
+        return {"reachable": True, "points": info.get("points_count"),
+                "status": info.get("status")}
+    except Exception as e:
+        return {"reachable": False, "error": str(e)[:100]}
+
+
+def _milvus_pkg_present() -> bool:
+    """Установлен ли pymilvus (клиент Milvus) в окружении."""
+    try:
+        return _iu.find_spec("pymilvus") is not None
+    except Exception:
+        return False
 
 
 def component_metrics() -> dict:
@@ -2424,6 +2456,8 @@ def component_metrics() -> dict:
         _lparts.append(f"идёт {la['running']}")
 
     q = _qdrant_stats()
+    _vbackend = vectorstore.backend()
+    m = _milvus_stats() if (_vbackend == "milvus" or _milvus_pkg_present()) else {"reachable": False}
     # лёгкая проверка Redis без сканирования ключей (status() сканирует — тяжело для частого опроса)
     rstat = {"enabled": False, "reachable": False}
     try:
@@ -2444,11 +2478,26 @@ def component_metrics() -> dict:
     comps = [
         {"key": "qdrant", "name": "Qdrant", "group": "Хранилище",
          "desc": "Векторная БД: хранит эмбеддинги чанков и выполняет ANN-поиск (dense) "
-                 "при каждом вопросе.", **cnt("qdrant"),
+                 "при каждом вопросе." + (" Активный бэкенд." if _vbackend == "qdrant"
+                 else " Сейчас неактивен (активен Milvus)."),
+         **(cnt("qdrant") if _vbackend == "qdrant" else {"calls": 0, "errors": 0, "avg_ms": 0.0}),
          "resource": {"reachable": q.get("reachable"),
-                      "label": (f"точек: {q.get('points')}" if q.get("points") is not None else "—")
+                      "label": ("✅ активна · " if _vbackend == "qdrant" else "")
+                               + (f"точек: {q.get('points')}" if q.get("points") is not None else "—")
                                + (f" · {q.get('status')}" if q.get("status") else ""),
-                      "points": q.get("points"), "status": q.get("status")}},
+                      "points": q.get("points"), "status": q.get("status"),
+                      "active": _vbackend == "qdrant"}},
+        {"key": "milvus", "name": "Milvus", "group": "Хранилище",
+         "desc": "Альтернативная векторная СУБД (масштаб, GPU-индексы). "
+                 + ("Активный бэкенд." if _vbackend == "milvus" else
+                    "Установите и перенесите данные в блоке «Векторная база: Qdrant ⇄ Milvus»."),
+         **(cnt("qdrant") if _vbackend == "milvus" else {"calls": 0, "errors": 0, "avg_ms": 0.0}),
+         "resource": {"reachable": bool(m.get("reachable")),
+                      "label": ("✅ активна · " if _vbackend == "milvus" else "")
+                               + (f"точек: {m.get('points')}" if m.get("points") is not None
+                                  else ("доступен" if m.get("reachable") else "не установлен/выключен")),
+                      "points": m.get("points"), "status": m.get("status"),
+                      "active": _vbackend == "milvus"}},
         {"key": "embed", "name": "Эмбеддер (bge-m3)", "group": "Модели",
          "desc": "Превращает текст вопроса/чанков в векторы. Выполняется в процессе "
                  "приложения на устройстве DEVICE.", **cnt("embed"),
@@ -3077,13 +3126,8 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
     def _facet():
         out = {}
         try:
-            base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
-            r = httpx.post(f"{base}/collections/{coll}/facet",
-                           json={"key": "source", "limit": 100000, "exact": True},
-                           timeout=30)
-            if r.status_code == 200:
-                for h in (r.json().get("result", {}) or {}).get("hits", []):
-                    out[h.get("value")] = h.get("count", 0)
+            for h in vectorstore.facet("source", 100000):
+                out[h.get("value")] = h.get("count", 0)
         except Exception:
             pass
         return out
@@ -3092,16 +3136,9 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
     def _facet_described():
         out = set()
         try:
-            base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
-            r = httpx.post(f"{base}/collections/{coll}/facet",
-                           json={"key": "source", "limit": 100000, "exact": True,
-                                 "filter": {"must": [{"key": "vision_desc",
-                                                      "match": {"value": True}}]}},
-                           timeout=30)
-            if r.status_code == 200:
-                for h in (r.json().get("result", {}) or {}).get("hits", []):
-                    if h.get("count", 0) > 0:
-                        out.add(h.get("value"))
+            for h in vectorstore.facet("source", 100000, flt={"vision_desc": True}):
+                if h.get("count", 0) > 0 and h.get("value"):
+                    out.add(h.get("value"))
         except Exception:
             pass
         return out
@@ -3234,22 +3271,13 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
                 "chunks": None, "method": r.get("method") or _file_method(Path(source).suffix),
                 "n_chars": r.get("n_chars"), "truncated": r.get("truncated"),
                 "from": "postgresql"}
-    base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
     points, next_off = [], None
     try:
         for _ in range(40):  # до ~10k чанков на файл
-            body = {"filter": {"must": [{"key": "source",
-                                         "match": {"value": source}}]},
-                    "limit": 256, "with_payload": True, "with_vector": False}
-            if next_off is not None:
-                body["offset"] = next_off
-            r = httpx.post(f"{base}/collections/{coll}/points/scroll",
-                           json=body, timeout=20)
-            if r.status_code != 200:
-                return {"ok": False, "msg": f"Qdrant HTTP {r.status_code}"}
-            res = r.json().get("result", {}) or {}
-            points.extend(res.get("points", []))
-            next_off = res.get("next_page_offset")
+            pts, next_off = vectorstore.scroll(flt={"source": source}, limit=256,
+                                               offset=next_off, with_payload=True,
+                                               with_vectors=False)
+            points.extend(pts)
             if next_off is None or len(points) >= 4000:
                 break
     except Exception as e:
@@ -3581,6 +3609,241 @@ def _redis_ping(host: str = "127.0.0.1", port: int = 6379) -> bool:
         return False
 
 
+# ==================== Milvus: установка, миграция, переключение ====================
+
+_milvus_job: dict = {"running": False, "phase": "", "direction": "", "done": 0,
+                     "total": 0, "pct": 0, "error": None, "finished_ts": None,
+                     "log": []}
+_milvus_lock = threading.Lock()
+
+
+def _mlog(msg: str) -> None:
+    line = time.strftime("%H:%M:%S ") + msg
+    _milvus_job["log"].append(line)
+    _milvus_job["log"] = _milvus_job["log"][-200:]
+    print("[milvus] " + msg, flush=True)
+
+
+def milvus_status() -> dict:
+    """Состояние Milvus и Qdrant для UI: установлен ли клиент, режим, доступность,
+    число точек в каждом хранилище, активный бэкенд, ход миграции."""
+    active = vectorstore.backend()
+    pkg = _milvus_pkg_present()
+    mode = (settings.get("MILVUS_MODE") or "lite").lower()
+    out = {
+        "active": active,
+        "pkg_present": pkg,
+        "docker": _in_docker(),
+        "mode": mode,
+        "index_type": settings.get("MILVUS_INDEX_TYPE"),
+        "uri": "",
+        "milvus": {"reachable": False, "points": None},
+        "qdrant": _qdrant_stats(),
+        "job": dict(_milvus_job),
+    }
+    try:
+        out["uri"] = vectorstore.milvus_uri()
+    except Exception:
+        pass
+    if pkg:
+        out["milvus"] = _milvus_stats()
+    return out
+
+
+def milvus_install(mode: str | None = None, index_type: str | None = None) -> dict:
+    """Установить клиент Milvus (pip pymilvus) и зафиксировать режим/индекс в настройках.
+
+    - режим lite: одного pip install достаточно — встроенный Milvus работает в процессе;
+    - режим standalone: клиент тот же, но нужен внешний сервер Milvus (контейнеры
+      milvus+etcd+minio). В Docker их поднимает docker-compose (профиль milvus) —
+      подсказываем командой; сам образ приложения уже содержит pymilvus после сборки.
+    НЕ переключает активный бэкенд (это делается отдельно, после проверки миграции)."""
+    log: list[str] = []
+
+    def run(cmd, **kw):
+        log.append("$ " + " ".join(cmd))
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, **kw)
+            out = (p.stdout or "") + (p.stderr or "")
+            if out.strip():
+                log.append(out.strip()[-4000:])
+            return p.returncode
+        except Exception as e:
+            log.append(f"[ошибка запуска] {e}")
+            return 1
+
+    changes: dict = {}
+    if mode in ("lite", "standalone"):
+        changes["MILVUS_MODE"] = mode
+    if index_type:
+        changes["MILVUS_INDEX_TYPE"] = index_type
+    if changes:
+        settings.update(changes)
+    mode = (settings.get("MILVUS_MODE") or "lite").lower()
+
+    # 1) клиент pymilvus (+ milvus-lite для встроенного режима на Linux/Mac)
+    if not _milvus_pkg_present():
+        log.append("Устанавливаю pymilvus …")
+        rc = run([sys.executable, "-m", "pip", "install", "--break-system-packages",
+                  "-U", "pymilvus>=2.4"])
+        if rc != 0:
+            run([sys.executable, "-m", "pip", "install", "-U", "pymilvus>=2.4"])
+    else:
+        log.append("pymilvus уже установлен.")
+
+    # перезагрузим модуль pymilvus видимость (find_spec кэша нет — новый процесс не нужен)
+    if not _milvus_pkg_present():
+        return {"ok": False, "msg": "не удалось установить pymilvus (см. лог)",
+                "log": "\n".join(log)}
+
+    vectorstore.milvus_reset_client()
+
+    if mode == "standalone":
+        uri = ""
+        try:
+            uri = vectorstore.milvus_uri()
+        except Exception:
+            pass
+        reachable = vectorstore.ping("milvus")
+        if reachable:
+            return {"ok": True,
+                    "msg": f"pymilvus установлен; сервер Milvus доступен ({uri})",
+                    "log": "\n".join(log + [f"Ping Milvus OK: {uri}"])}
+        hint = ("Клиент установлен, но сервер Milvus (standalone) не отвечает. "
+                "Поднимите сервисы Milvus: ")
+        if _in_docker():
+            hint += ("на хосте выполните `milvus.cmd` (или "
+                     "`docker compose --profile milvus up -d` — сервисы etcd/minio/milvus "
+                     "есть в compose), затем укажите MILVUS_URI=http://milvus:19530.")
+        else:
+            hint += ("запустите Milvus Standalone (docker-compose Milvus) и укажите "
+                     "MILVUS_URI, например http://127.0.0.1:19530.")
+        return {"ok": False, "msg": hint, "log": "\n".join(log + [f"URI: {uri}"])}
+
+    # lite: проверяем, что встроенный Milvus поднимается и коллекция создаётся
+    try:
+        dim = int(settings.get("EMBED_DIM"))
+        vectorstore.ensure_collection(dim, reset=False, backend_name="milvus")
+        ok = vectorstore.ping("milvus")
+        info = vectorstore.collection_info(backend_name="milvus")
+        return {"ok": bool(ok),
+                "msg": (f"Milvus Lite готов: {vectorstore.milvus_uri()} · "
+                        f"точек {info.get('points_count', 0)}") if ok else
+                       "pymilvus установлен, но встроенный Milvus не поднялся (см. лог)",
+                "log": "\n".join(log + [f"URI: {vectorstore.milvus_uri()}"])}
+    except Exception as e:
+        return {"ok": False,
+                "msg": f"pymilvus установлен, но инициализация Milvus Lite не удалась: {e}",
+                "log": "\n".join(log + [str(e)])}
+
+
+def _migrate_worker(direction: str) -> None:
+    """Фоновая миграция векторов между хранилищами (src→dst) с прогрессом."""
+    src, dst = ("qdrant", "milvus") if direction == "to_milvus" else ("milvus", "qdrant")
+    try:
+        dim = int(settings.get("EMBED_DIM"))
+        _mlog(f"Миграция {src} → {dst} начата.")
+        try:
+            total = int(vectorstore.collection_info(backend_name=src).get("points_count") or 0)
+        except Exception:
+            total = 0
+        with _milvus_lock:
+            _milvus_job.update(total=total, done=0, pct=2, phase="prepare")
+        # целевую коллекцию создаём заново (полная перезапись)
+        vectorstore.ensure_collection(dim, reset=True, backend_name=dst)
+        _mlog(f"Целевая коллекция ({dst}) пересоздана. Точек к переносу: {total}.")
+        with _milvus_lock:
+            _milvus_job.update(pct=5, phase="copy")
+
+        batch: list = []
+        BATCH = 512
+        done = 0
+
+        def _flush():
+            nonlocal batch
+            if not batch:
+                return
+            vectorstore.upsert_to(dst, batch, dim=dim)
+            batch = []
+
+        for p in vectorstore.iterate_all(batch=1000, backend_name=src):
+            vec = p.get("vector")
+            if not vec:
+                continue
+            batch.append({"id": p.get("id") or "", "vector": vec,
+                          "payload": p.get("payload") or {}})
+            if len(batch) >= BATCH:
+                _flush()
+            done += 1
+            if total and done % 500 == 0:
+                pct = 5 + int(done * 90 / max(total, 1))
+                with _milvus_lock:
+                    _milvus_job.update(done=done, pct=min(95, pct))
+                _mlog(f"Перенесено {done}/{total} …")
+        _flush()
+
+        # сверка
+        try:
+            dst_n = int(vectorstore.collection_info(backend_name=dst).get("points_count") or 0)
+        except Exception:
+            dst_n = done
+        _mlog(f"Готово. Источник: {total}, перенесено: {done}, в приёмнике: {dst_n}.")
+        with _milvus_lock:
+            _milvus_job.update(running=False, done=done, pct=100, phase="done",
+                               finished_ts=time.time(),
+                               error=None if (not total or dst_n >= min(done, total)) else
+                               f"расхождение: приёмник {dst_n} из {total}")
+    except Exception as e:
+        _mlog(f"ОШИБКА миграции: {e}")
+        with _milvus_lock:
+            _milvus_job.update(running=False, pct=0, phase="error",
+                               error=str(e), finished_ts=time.time())
+
+
+def milvus_migrate(direction: str) -> dict:
+    """Запустить полную миграцию векторов. direction: to_milvus | to_qdrant.
+    Не переключает активный бэкенд — переключение делается кнопкой отдельно."""
+    if direction not in ("to_milvus", "to_qdrant"):
+        return {"ok": False, "msg": "неизвестное направление миграции"}
+    if _milvus_job.get("running"):
+        return {"ok": False, "msg": "миграция уже выполняется"}
+    if direction == "to_milvus" and not _milvus_pkg_present():
+        return {"ok": False, "msg": "сначала установите Milvus (кнопка «Установить Milvus»)"}
+    # проверим доступность обоих хранилищ
+    src, dst = ("qdrant", "milvus") if direction == "to_milvus" else ("milvus", "qdrant")
+    if not vectorstore.ping(src):
+        return {"ok": False, "msg": f"источник ({src}) недоступен"}
+    if not vectorstore.ping(dst):
+        return {"ok": False, "msg": f"приёмник ({dst}) недоступен — установите/поднимите его"}
+    with _milvus_lock:
+        _milvus_job.update(running=True, direction=direction, phase="start", done=0,
+                           total=0, pct=1, error=None, finished_ts=None, log=[])
+    threading.Thread(target=_migrate_worker, args=(direction,), daemon=True).start()
+    return {"ok": True, "msg": f"Миграция {direction} запущена", "job": dict(_milvus_job)}
+
+
+def milvus_switch(target: str) -> dict:
+    """Переключить активную векторную базу (qdrant|milvus). Требует перезапуска сервиса,
+    т.к. поисковые/индексирующие модули читают бэкенд при старте."""
+    target = (target or "").strip().lower()
+    if target not in ("qdrant", "milvus"):
+        return {"ok": False, "msg": "цель должна быть qdrant или milvus"}
+    if target == "milvus":
+        if not _milvus_pkg_present():
+            return {"ok": False, "msg": "Milvus не установлен"}
+        if not vectorstore.ping("milvus"):
+            return {"ok": False, "msg": "Milvus недоступен — не переключаю"}
+    else:
+        if not vectorstore.ping("qdrant"):
+            return {"ok": False, "msg": "Qdrant недоступен — не переключаю"}
+    settings.update({"VECTOR_BACKEND": target})
+    vectorstore.milvus_reset_client()
+    return {"ok": True, "restart": True,
+            "msg": f"Активная векторная база переключена на «{target}». Перезапустите "
+                   "сервис (кнопка «Перезапустить сервис»), чтобы поиск и индексация "
+                   "начали использовать новый бэкенд."}
+
+
 def redis_install() -> dict:
     """Установить и запустить Redis-сервер средствами ОС (apt/brew/apk/dnf/yum),
     включить REDIS_ENABLED и проверить подключение. Возвращает {ok, msg, log}."""
@@ -3812,24 +4075,15 @@ def _qdrant_text_by_source(cap_per_file: int) -> dict:
     """Один проход scroll по коллекции Qdrant: собирает уже извлечённый текст по
     каждому файлу (source). Это быстро — не нужно заново парсить/OCR/транскрибировать.
     Возвращает {source: text}. Текст на файл ограничен cap_per_file символов."""
-    base = settings.get("QDRANT_URL")
-    coll = settings.get("QDRANT_COLLECTION")
     acc: dict = {}        # source -> [running_len, [parts]]
     next_off = None
     for _ in range(200000):  # страховка от бесконечного цикла
-        body = {"limit": 512, "with_payload": ["source", "text"],
-                "with_vector": False}
-        if next_off is not None:
-            body["offset"] = next_off
         try:
-            r = httpx.post(f"{base}/collections/{coll}/points/scroll",
-                           json=body, timeout=60)
+            pts, next_off = vectorstore.scroll(limit=512, offset=next_off,
+                                               with_payload=True, with_vectors=False)
         except Exception:
             break
-        if r.status_code != 200:
-            break
-        res = r.json().get("result", {}) or {}
-        for p in res.get("points", []):
+        for p in pts:
             pl = p.get("payload") or {}
             src = pl.get("source")
             tx = (pl.get("text") or "").strip()
@@ -3840,8 +4094,7 @@ def _qdrant_text_by_source(cap_per_file: int) -> dict:
                 continue
             cur[1].append(tx)
             cur[0] += len(tx) + 2
-        next_off = res.get("next_page_offset")
-        if next_off is None:
+        if next_off is None or not pts:
             break
     return {s: "\n\n".join(v[1])[:cap_per_file] for s, v in acc.items()}
 
@@ -3854,11 +4107,7 @@ _KB_TTL = 300.0   # сек жизни кэша
 
 def _kb_total_points() -> int:
     try:
-        base = settings.get("QDRANT_URL")
-        coll = settings.get("QDRANT_COLLECTION")
-        r = httpx.get(f"{base}/collections/{coll}", timeout=4)
-        if r.status_code == 200:
-            return int((r.json().get("result", {}) or {}).get("points_count", 0) or 0)
+        return int(vectorstore.collection_info().get("points_count", 0) or 0)
     except Exception:
         pass
     return 0
@@ -3867,8 +4116,6 @@ def _kb_total_points() -> int:
 def _kb_build(max_nodes: int) -> None:
     """Один проход scroll по Qdrant с обновлением прогресса; кладёт результат в кэш."""
     j = _KB_JOB
-    base = settings.get("QDRANT_URL")
-    coll = settings.get("QDRANT_COLLECTION")
     files: dict = {}
     total_points = 0
     next_off = None
@@ -3877,24 +4124,14 @@ def _kb_build(max_nodes: int) -> None:
              ok=None, error=None)
     try:
         for _ in range(200000):
-            body = {"limit": 512,
-                    "with_payload": ["source", "doc_category", "page", "org", "department"],
-                    "with_vector": False}
-            if next_off is not None:
-                body["offset"] = next_off
             try:
-                r = httpx.post(f"{base}/collections/{coll}/points/scroll",
-                               json=body, timeout=60)
+                pts, next_off = vectorstore.scroll(limit=512, offset=next_off,
+                                                   with_payload=True, with_vectors=False)
             except Exception as e:
                 online = False
                 j["error"] = str(e)[:160]
                 break
-            if r.status_code != 200:
-                online = False
-                j["error"] = f"Qdrant HTTP {r.status_code}"
-                break
-            res = r.json().get("result", {}) or {}
-            for p in res.get("points", []):
+            for p in pts:
                 pl = p.get("payload") or {}
                 src = pl.get("source")
                 if not src:
@@ -3915,8 +4152,7 @@ def _kb_build(max_nodes: int) -> None:
                     if pl.get("department") and not f["department"]:
                         f["department"] = pl.get("department")
             j["scrolled"] = total_points
-            next_off = res.get("next_page_offset")
-            if next_off is None:
+            if next_off is None or not pts:
                 break
 
         j["stage"] = "построение графа"
@@ -4005,6 +4241,58 @@ def kb_graph_status() -> dict:
         return {"building": False, "done": True, "ok": j["ok"], "error": j.get("error"),
                 "cached": True, "age_sec": int(time.time() - j["ts"]), **j["result"]}
     return {"building": False, "done": False, "ok": j.get("ok"), "error": j.get("error")}
+
+
+def kb_search(q: str, limit: int = 400) -> dict:
+    """Поиск по словам в графе базы знаний: находит файлы (узлы), где встречаются
+    слова запроса — по тексту чанков (семантически + буквально) и по именам файлов.
+    Возвращает список источников с числом совпадений — фронт подсвечивает их в графе.
+    Работает поверх активной векторной базы (Qdrant/Milvus) через vectorstore."""
+    q = (q or "").strip()
+    if not q:
+        return {"ok": True, "query": "", "sources": [], "count": 0}
+    words = [w for w in q.lower().split() if len(w) >= 2]
+    agg: dict = {}
+
+    def _bump(src, *, chunks=0, wh=0, score=0.0, name=False):
+        a = agg.setdefault(src, {"source": src, "chunks": 0, "word_hits": 0,
+                                 "score": 0.0, "name": False})
+        a["chunks"] += chunks
+        a["word_hits"] += wh
+        a["score"] = max(a["score"], score)
+        a["name"] = a["name"] or name
+
+    # 1) семантический + буквальный поиск по тексту чанков
+    try:
+        import retriever
+        qv = retriever._embed_query(q)
+        hits = vectorstore.search(qv, int(limit), with_payload=True)
+        for h in hits:
+            pl = h.get("payload") or {}
+            src = pl.get("source")
+            if not src:
+                continue
+            txt = (pl.get("text") or "").lower()
+            wm = sum(1 for w in words if w in txt)
+            _bump(src, chunks=1, wh=wm, score=float(h.get("score") or 0))
+    except Exception as e:
+        # без эмбеддера семантику пропускаем — остаётся поиск по именам файлов
+        pass
+
+    # 2) совпадение слов в именах файлов (источников)
+    try:
+        for src in vectorstore.list_values("source", 100000):
+            low = str(src).lower()
+            if any(w in low for w in words):
+                _bump(src, wh=1, name=True)
+    except Exception:
+        pass
+
+    res = sorted(agg.values(),
+                 key=lambda x: (x["word_hits"], x["chunks"], x["score"]), reverse=True)
+    return {"ok": True, "query": q, "words": words,
+            "sources": res[:200], "count": len(res),
+            "backend": vectorstore.backend()}
 
 
 def catalog_load() -> dict:
