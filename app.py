@@ -1595,6 +1595,14 @@ def admin_web_delete(payload: dict = Body(...), x_admin_token: str | None = Head
     return admin_ops.delete_web(payload.get("url", ""))
 
 
+@app.get("/api/admin/web-structure")
+def admin_web_structure(x_admin_token: str | None = Header(None)):
+    """Структура спарсенных сайтов в реальном времени: прогресс + дерево файлов/страниц
+    со статусом в БД, чанками, типом, размером, LLM-описанием, датой и временем обработки."""
+    _check_admin(x_admin_token)
+    return admin_ops.web_structure()
+
+
 @app.post("/api/admin/upload")
 async def admin_upload(files: list[UploadFile] = File(...),
                        x_admin_token: str | None = Header(None)):

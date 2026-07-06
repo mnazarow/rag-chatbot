@@ -1815,6 +1815,13 @@
     </div>
 
     <div class="box">
+      <h3>🗂 Структура сайтов и файлов <span class="note" style="font-weight:400">— в реальном времени</span>
+        <button class="act ghost" style="margin-left:8px" onclick="loadWebStructure()">Обновить</button></h3>
+      <div class="note" style="margin-bottom:8px">Дерево спарсенного: по каждому сайту — прогресс-бар и файлы/страницы с типом, размером, датой, статусом в базе знаний (✅/⏳), числом чанков, признаком LLM-описания и временем обработки. Кнопки «превью» и «чанки» открывают распознанное содержимое.</div>
+      <div id="web_structure"><div class="note">нет данных — запустите парсинг</div></div>
+    </div>
+
+    <div class="box">
       <h3>✅ Рекомендации по настройке</h3>
       <div class="note" style="line-height:1.7">
         • <b>Глубина обхода</b> (<code>WEB_CRAWL_DEPTH</code>): 0 — только указанная страница; 1 — она и
@@ -4915,7 +4922,70 @@ function webAdd(){
 function webRemove(i){ webQueue.splice(i,1); webRenderQueue(); }
 function webClearQueue(){ if(!webQueue.length||confirm('Очистить очередь адресов?')){ webQueue=[]; webRenderQueue(); } }
 function webToggle(id){ const e=$('#'+id); if(e) e.style.display = (e.style.display==='none'?'block':'none'); }
-async function loadWebsites(){ loadWebUrls(); loadWebReparse(); }
+async function loadWebsites(){ loadWebUrls(); loadWebReparse(); loadWebStructure(); }
+async function loadWebStructure(){
+  const el=$('#web_structure'); if(!el) return;
+  let d; try{ d=await adminGet('/api/admin/web-structure'); }catch(e){ return; }
+  const sites=(d&&d.sites)||[];
+  if(!sites.length){ el.innerHTML='<div class="note">нет данных — запустите парсинг</div>'; return; }
+  const phaseLbl={crawl:'обход ссылок',download:'скачивание файлов',parsed:'спарсено',index:'индексация',done:'готово'};
+  const methodLbl={transcribed:'🎤 транскрипция',ocr:'🔍 OCR',tool:'🛠 инструмент',text:'📄 текст'};
+  el.innerHTML=sites.map((s,si)=>{
+    const pr=s.progress||{}, pct=Math.max(0,Math.min(100,Math.round(pr.pct||0)));
+    const ph=phaseLbl[pr.phase]||(pr.phase||''), active=pct>0&&pct<100;
+    const barColor=pct>=100?'#22c55e':(active?'#3b82f6':'#64748b');
+    const bar=`<div style="height:9px;border-radius:5px;background:rgba(127,127,127,.18);overflow:hidden;margin:7px 0"><div style="height:100%;width:${pct}%;background:${barColor};transition:width .5s"></div></div>`;
+    const items=s.items||[];
+    const rows=items.map((it,ii)=>{
+      const id='ws_'+si+'_'+ii;
+      const st = !it.ok ? '<span style="color:#f87171">✗ не скачан</span>'
+        : (it.in_db ? '<span style="color:#4ade80">✅ в БД</span>' : '<span class="note">⏳ не в БД</span>');
+      return `<tr>
+        <td style="max-width:230px;word-break:break-all">${it.kind==='page'?'📄':'📎'} <b>${esc(it.name||'')}</b>${it.pages?(' <span class="note">('+it.pages+' стр.)</span>'):''}<br><span class="note" style="font-size:11px">${esc(it.source||it.url||'')}</span></td>
+        <td>${esc(it.type||'')}<br><span class="note" style="font-size:11px">${esc(methodLbl[it.method]||it.method||'')}</span></td>
+        <td>${gb(it.size)}</td>
+        <td>${st}</td>
+        <td>${it.chunks||0}</td>
+        <td>${it.described?'🧠 да':'<span class="note">—</span>'}</td>
+        <td>${it.mtime?fmtTime(it.mtime):'<span class="note">—</span>'}</td>
+        <td>${it.proc_ms!=null?(Math.round(it.proc_ms)+' мс'):'<span class="note">—</span>'}</td>
+        <td style="white-space:nowrap">${it.source?`<button class="dirbtn" title="Превью и чанки" onclick="wsPreview('${escAttr(it.source)}','${id}')">👁 превью/чанки</button>`:''}</td>
+      </tr>
+      <tr id="${id}" style="display:none"><td colspan="9"></td></tr>`;
+    }).join('');
+    return `<div style="border:1px solid var(--line);border-radius:11px;padding:12px 14px;margin-bottom:10px;background:var(--panel2)">
+      <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;word-break:break-all">🌐 ${esc(s.url)}</b>
+        <span class="note">${active?('⏳ '+ph+' · '+pct+'%'):(ph||'')}</span></div>
+      ${bar}
+      ${items.length?`<div style="overflow:auto"><table><thead><tr><th>Имя / источник</th><th>Тип</th><th>Размер</th><th>Статус</th><th>Чанки</th><th>LLM</th><th>Изменён</th><th>Обработка</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="note">файлов/страниц пока нет</div>'}
+    </div>`;
+  }).join('');
+}
+async function wsPreview(source,rowId){
+  const tr=$('#'+rowId); if(!tr) return;
+  if(tr.style.display!=='none'){ tr.style.display='none'; return; }
+  tr.style.display=''; const cell=tr.firstElementChild; cell.innerHTML='<div class="note">загрузка…</div>';
+  let r; try{ r=await adminGet('/api/admin/file-text?source='+encodeURIComponent(source)); }catch(e){ cell.innerHTML='<div class="note">ошибка</div>'; return; }
+  const label={transcribed:'🎤 Транскрипция',ocr:'🔍 Распознанный текст (OCR)',tool:'🛠 Извлечённый текст',text:'📄 Текст'}[r&&r.method]||'Текст';
+  let html='';
+  const m=(r&&r.llm_meta)||{}, catLbl={price:'прайс-лист',presentation:'презентация',training:'обучение',document:'документ'};
+  const anno=[];
+  if(m.doc_type) anno.push(['Тип документа',m.doc_type]);
+  if(m.product) anno.push(['Продукт / услуга',m.product]);
+  if(m.topic) anno.push(['Тема',m.topic]);
+  if(m.doc_category) anno.push(['Категория',catLbl[m.doc_category]||m.doc_category]);
+  if(anno.length){
+    html+=`<div class="note" style="margin-bottom:6px">🏷 Аннотация LLM (метаданные для поиска)</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">`+
+      anno.map(([k,v])=>`<span style="background:var(--panel);border:1px solid var(--accent);border-radius:14px;padding:3px 10px;font-size:12px"><b>${esc(k)}:</b> ${esc(v)}</span>`).join('')+`</div>`;
+  }
+  if(r&&r.text&&r.text.trim()){
+    html+=`<div class="note" style="margin-bottom:6px">${label} · чанков: ${nz(r.chunks)}${r.truncated?' · показан фрагмент (текст длинный)':''}</div><pre style="white-space:pre-wrap;max-height:320px;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px">${esc(r.text)}</pre>`;
+  } else { html+=`<div class="note">${esc((r&&(r.note||r.msg))||'текст не извлечён (файл ещё не проиндексирован)')}</div>`; }
+  if(r&&r.description&&r.description.trim()){
+    html+=`<div class="note" style="margin:8px 0 6px">🧠 Описание LLM (vision) — добавлено в базу знаний</div><pre style="white-space:pre-wrap;max-height:240px;overflow:auto;background:var(--panel);border:1px solid var(--accent);border-radius:8px;padding:10px;font-size:12px">${esc(r.description)}</pre>`;
+  }
+  cell.innerHTML=html;
+}
 async function loadWebReparse(){
   try{ const c=await (await fetch('/api/config?t='+Date.now(),{cache:'no-store'})).json();
     if($('#web_reparse') && c && c.values) $('#web_reparse').checked=!!c.values.WEB_AUTO_REPARSE; }catch(e){}
@@ -4979,7 +5049,7 @@ async function deleteWeb(url){
   webMsg(r.msg||(r.ok?'удалено':'ошибка'),r.ok!==false); loadWebUrls(); loadOps();
 }
 let webT=null;
-function pollWeb(){ clearInterval(webT); webT=setInterval(loadWebUrls,4000);
+function pollWeb(){ clearInterval(webT); webT=setInterval(()=>{ loadWebUrls(); loadWebStructure(); },4000);
   setTimeout(()=>clearInterval(webT),600000); }
 
 // ---- установка компонентов ----

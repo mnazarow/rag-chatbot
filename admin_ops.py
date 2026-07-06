@@ -707,13 +707,93 @@ def _web_list() -> list:
                     "indexed": (webdir / f"{_web_slug(u)}.html").exists(),
                     "ok": st.get("ok"), "pages": st.get("pages"), "files": st.get("files"),
                     "errors": st.get("errors", []), "limits": st.get("limits", {}),
-                    "ts": st.get("ts")})
+                    "ts": st.get("ts"),
+                    "progress": st.get("progress"),
+                    "n_items": len(st.get("items") or [])})
     return out
 
 
 def web_saved_urls() -> list:
     """Список сохранённых для парсинга сайтов (URL)."""
     return _web_sources_load()
+
+
+def web_structure() -> dict:
+    """Структура спарсенных сайтов в реальном времени: по каждому сайту — прогресс
+    и дерево элементов (объединённый документ страниц + скачанные файлы) с признаком
+    добавления в БД, числом чанков, способом распознавания, наличием LLM-описания,
+    типом, размером, датой изменения и временем обработки. Тяжёлые данные (чанки,
+    описания, время обработки) — из тех же источников, что каталог документов."""
+    docs = Path(settings.get("DOCS_DIR")).expanduser()
+    stats = _web_stats_load()
+    urls = _web_sources_load()
+
+    # число чанков и описания по источникам — одним фасет-запросом (кэш index, 15 c)
+    def _facets():
+        chunks, described = {}, set()
+        try:
+            base, coll = settings.get("QDRANT_URL"), settings.get("QDRANT_COLLECTION")
+            r = httpx.post(f"{base}/collections/{coll}/facet",
+                           json={"key": "source", "limit": 100000, "exact": True}, timeout=30)
+            if r.status_code == 200:
+                for h in (r.json().get("result", {}) or {}).get("hits", []):
+                    chunks[h.get("value")] = h.get("count", 0)
+            r2 = httpx.post(f"{base}/collections/{coll}/facet",
+                            json={"key": "source", "limit": 100000, "exact": True,
+                                  "filter": {"must": [{"key": "vision_desc",
+                                                       "match": {"value": True}}]}}, timeout=30)
+            if r2.status_code == 200:
+                for h in (r2.json().get("result", {}) or {}).get("hits", []):
+                    described.add(h.get("value"))
+        except Exception:
+            pass
+        return {"chunks": chunks, "described": list(described)}
+    try:
+        import cache
+        fac = cache.get_or_set("webstruct_facet:" + str(settings.get("QDRANT_COLLECTION")),
+                               15, _facets, ns="index")
+    except Exception:
+        fac = _facets()
+    chunk_map = fac.get("chunks", {})
+    desc_set = set(fac.get("described", []))
+
+    # время обработки по файлам из последней индексации
+    try:
+        proc_map = {k: (v.get("ms") if isinstance(v, dict) else None)
+                    for k, v in (_ingest_stats().get("files") or {}).items()}
+    except Exception:
+        proc_map = {}
+
+    sites = []
+    for u in urls:
+        st = stats.get(u, {})
+        items = []
+        for it in (st.get("items") or []):
+            src = it.get("source")
+            ext = Path(src).suffix if src else ""
+            n_ch = chunk_map.get(src, 0) if src else 0
+            fpath = (docs / src) if src else None
+            mtime = None
+            try:
+                if fpath and fpath.exists():
+                    mtime = fpath.stat().st_mtime
+            except Exception:
+                pass
+            items.append({
+                "kind": it.get("kind"), "name": it.get("name"), "url": it.get("url"),
+                "source": src, "ok": it.get("ok", True),
+                "size": it.get("size", 0), "type": ext.lstrip(".").upper() or "HTML",
+                "method": _file_method(ext) if ext else "text",
+                "chunks": n_ch, "in_db": n_ch > 0,
+                "described": (src in desc_set), "mtime": mtime,
+                "proc_ms": proc_map.get(src),
+                "pages": it.get("pages"),
+            })
+        sites.append({"url": u, "ok": st.get("ok"), "ts": st.get("ts"),
+                      "progress": st.get("progress") or {"phase": "—", "pct": 0},
+                      "errors": st.get("errors", []), "limits": st.get("limits", {}),
+                      "items": items})
+    return {"sites": sites, "running": bool(_web_job.get("running"))}
 
 
 def get_web_urls() -> dict:
@@ -1059,8 +1139,11 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                 stats_map = {}
                 try:
                     for u in urls:
-                        site_errors, site_limits = [], {}
+                        site_errors, site_limits, site_items = [], {}, []
                         pages, dl, site_ok = [], 0, False
+                        stats_map[u] = {"url": u, "ts": time.time(), "items": [],
+                                        "progress": {"phase": "crawl", "pct": 8}}
+                        _web_stats_save(stats_map)
                         try:
                             _log(f"САЙТ: {u}")
                             pages, file_urls, cstat = _web_crawl(u, depth, max_pages,
@@ -1081,9 +1164,31 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                                         "увеличьте «Макс. файлов»")
                             file_list = all_files[:max_files]
                             nf = len(file_list)
+                            _docroot = Path(settings.get("DOCS_DIR")).expanduser()
+                            stats_map[u]["progress"] = {"phase": "download", "done": 0, "total": nf, "pct": 40}
+                            _web_stats_save(stats_map)
                             if nf:
                                 _log(f"  файлов к скачиванию: {nf}"
                                      + (f" (параллельно ×{workers})" if workers > 1 and nf > 1 else ""))
+
+                            def _rec_file(furl, p):
+                                okf = p is not None
+                                rel, size = None, 0
+                                if okf:
+                                    try:
+                                        rel = str(p.relative_to(_docroot))
+                                        size = p.stat().st_size
+                                    except Exception:
+                                        rel = str(p)
+                                site_items.append({"kind": "file", "url": furl,
+                                                   "name": (p.name if okf else (furl.rsplit("/", 1)[-1] or furl)),
+                                                   "source": rel, "size": size, "ok": okf})
+                                done = len(site_items)
+                                stats_map[u]["progress"] = {"phase": "download", "done": done, "total": nf,
+                                                            "pct": min(88, 40 + int(done * 45 / max(1, nf)))}
+                                if done % 5 == 0:
+                                    _web_stats_save(stats_map)
+
                             if workers > 1 and nf > 1:
                                 # параллельное скачивание файлов (потокобезопасно: httpx.stream + уникальные имена)
                                 from concurrent.futures import ThreadPoolExecutor
@@ -1101,6 +1206,7 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                             dl += 1
                                         else:
                                             site_errors.append(f"файл не скачан: {furl}")
+                                        _rec_file(furl, p)
                             else:
                                 for fi, furl in enumerate(file_list, 1):
                                     fpct = int(fi * 100 / nf) if nf else 100
@@ -1111,6 +1217,7 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                         dl += 1
                                     else:
                                         site_errors.append(f"файл не скачан: {furl}")
+                                    _rec_file(furl, p)
                             # текст страниц — в один документ web/<slug>.html
                             if pages:
                                 parts, total = [], 0
@@ -1127,6 +1234,14 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                 out = webdir / (_slug(u) + ".html")
                                 out.write_text(doc, encoding="utf-8")
                                 web_paths.append(out)
+                                try:
+                                    prel = str(out.relative_to(_docroot))
+                                    psize = out.stat().st_size
+                                except Exception:
+                                    prel, psize = str(out), 0
+                                site_items.insert(0, {"kind": "page", "name": "Страницы сайта (объединено)",
+                                                      "source": prel, "size": psize, "ok": True,
+                                                      "pages": len(pages)})
                             if pages or dl:
                                 ok += 1
                                 site_ok = True
@@ -1143,7 +1258,10 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                             fp.write(f"ERR {u}: {e}\n")
                         stats_map[u] = {"url": u, "ok": site_ok, "pages": len(pages),
                                         "files": dl, "errors": site_errors,
-                                        "limits": site_limits, "ts": time.time()}
+                                        "limits": site_limits, "ts": time.time(),
+                                        "items": site_items,
+                                        "progress": {"phase": "parsed", "pct": 92}}
+                        _web_stats_save(stats_map)
                         fp.flush()
                 finally:
                     if renderer is not None:
@@ -1154,17 +1272,25 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                 added = catalog_add_paths(web_paths)
                 if added:
                     fp.write(f"В PostgreSQL добавлено страниц: {added}\n")
+                def _set_all_progress(prog):
+                    for _u in stats_map:
+                        stats_map[_u]["progress"] = dict(prog)
+                    _web_stats_save(stats_map)
+
                 if index:
+                    _set_all_progress({"phase": "index", "pct": 96})
                     fp.write(f"Скачано: {ok}, ошибок: {err}. Запускаю индексацию...\n")
                     fp.flush()
                     rc = subprocess.Popen([sys.executable, "-u", "ingest.py"], cwd=ROOT,
                                           stdout=fp, stderr=subprocess.STDOUT).wait(timeout=24 * 3600)
                     fp.write(f"SUMMARY web_ok={ok} web_err={err} index_rc={rc}\n")
+                    _set_all_progress({"phase": "done", "pct": 100})
                 else:
                     rc = 0
                     fp.write(f"Скачано: {ok}, ошибок: {err}. Индексация ПРОПУЩЕНА "
                              "(только парсинг) — запустите «Переиндексировать», когда нужно.\n")
                     fp.write(f"SUMMARY web_ok={ok} web_err={err} index_rc=skipped\n")
+                    _set_all_progress({"phase": "parsed", "pct": 100})
             _web_job["log"] = _tail(logfile)
             _web_job["summary"] = _extract_summary(_web_job["log"])
             _web_job["ok"] = (err == 0 and rc == 0)
@@ -3101,7 +3227,10 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
             segs = text.split(desc_mark)
             text = segs[0].strip()
             desc = "\n\n".join(s.lstrip(" :\n").strip() for s in segs[1:] if s.strip())
+        llm_meta = {k: r[k] for k in ("product", "topic", "doc_type", "doc_category")
+                    if isinstance(r.get(k), str) and r[k].strip()}
         return {"ok": True, "source": source, "text": text, "description": desc,
+                "llm_meta": llm_meta,
                 "chunks": None, "method": r.get("method") or _file_method(Path(source).suffix),
                 "n_chars": r.get("n_chars"), "truncated": r.get("truncated"),
                 "from": "postgresql"}
@@ -3136,6 +3265,19 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
         return v if isinstance(v, int) else 10 ** 9
     points.sort(key=_pg)
 
+    # LLM-аннотация: структурированные метаданные, извлечённые LLM при индексации
+    # (enrich.extract_structured → payload product/topic/doc_type/doc_category, при
+    # включённой настройке LLM_METADATA). Одинаковы для всех чанков файла.
+    llm_meta = {}
+    for p in points:
+        pl = p.get("payload") or {}
+        for k in ("product", "topic", "doc_type", "doc_category"):
+            v = pl.get(k)
+            if k not in llm_meta and isinstance(v, str) and v.strip():
+                llm_meta[k] = v.strip()
+        if len(llm_meta) >= 4:
+            break
+
     # отделяем чанки-описания vision-модели от извлечённого текста (OCR/инструменты)
     desc_parts, parts, total, truncated = [], [], 0, False
     for p in points:
@@ -3154,7 +3296,7 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
         parts.append(t)
         total += len(t) + 2
     return {"ok": True, "source": source, "text": "\n\n".join(parts),
-            "description": "\n\n".join(desc_parts),
+            "description": "\n\n".join(desc_parts), "llm_meta": llm_meta,
             "chunks": len(points), "method": _file_method(Path(source).suffix),
             "truncated": truncated or len(points) >= 4000}
 
