@@ -639,6 +639,24 @@ def self_test() -> dict:
 
 
 _WEB_SOURCES = ROOT / "web_sources.txt"
+_WEB_STATS = ROOT / "web_stats.json"    # результаты парсинга по каждому сайту (ошибки, лимиты)
+
+
+def _web_stats_load() -> dict:
+    """Сохранённые результаты парсинга по сайтам: {url: {ok, pages, files, errors, limits, ts}}."""
+    try:
+        if _WEB_STATS.exists():
+            return _json.loads(_WEB_STATS.read_text(encoding="utf-8")) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _web_stats_save(stats: dict) -> None:
+    try:
+        _WEB_STATS.write_text(_json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[web] не удалось сохранить статистику парсинга: {e}")
 
 
 def _web_slug(url: str) -> str:
@@ -652,10 +670,16 @@ def _web_list() -> list:
     if _WEB_SOURCES.exists():
         urls = [u.strip() for u in _WEB_SOURCES.read_text(encoding="utf-8").splitlines() if u.strip()]
     webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
+    stats = _web_stats_load()
     out = []
     for u in urls:
         rel = f"web/{_web_slug(u)}.html"
-        out.append({"url": u, "source": rel, "indexed": (webdir / f"{_web_slug(u)}.html").exists()})
+        st = stats.get(u, {})
+        out.append({"url": u, "source": rel,
+                    "indexed": (webdir / f"{_web_slug(u)}.html").exists(),
+                    "ok": st.get("ok"), "pages": st.get("pages"), "files": st.get("files"),
+                    "errors": st.get("errors", []), "limits": st.get("limits", {}),
+                    "ts": st.get("ts")})
     return out
 
 
@@ -673,6 +697,11 @@ def delete_web(url: str) -> dict:
     # 1) убрать из списка
     sites = [s["url"] for s in _web_list() if s["url"] != url]
     _WEB_SOURCES.write_text("\n".join(sites), encoding="utf-8")
+    # убрать сохранённую статистику парсинга по этому сайту
+    _st = _web_stats_load()
+    if url in _st:
+        _st.pop(url, None)
+        _web_stats_save(_st)
     # 2) удалить файл
     slug = _web_slug(url)
     f = Path(settings.get("DOCS_DIR")).expanduser() / "web" / f"{slug}.html"
@@ -868,11 +897,14 @@ def _web_links(html: str, base: str, seed_netloc: str, same_domain: bool) -> lis
 
 def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, renderer, log):
     """Обойти сайт из стартовой страницы (BFS) до depth/max_pages. Возвращает
-    (pages, files): pages — список (url, title, text); files — множество URL файлов
-    (любого типа) для скачивания. log(msg) — журналирование."""
+    (pages, files, stat): pages — список (url, title, text); files — множество URL
+    файлов для скачивания; stat — {errors:[...], pages_limit_hit, depth_limit_hit}.
+    log(msg) — журналирование."""
     from urllib.parse import urlparse
     seed_netloc = urlparse(seed).netloc
     seen, queue, pages, files = set(), [(seed, 0)], [], set()
+    errors = []
+    depth_limit_hit = False
     while queue and len(pages) < max_pages:
         url, d = queue.pop(0)
         if url in seen:
@@ -883,6 +915,7 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
             continue
         html = _web_fetch(url, renderer, log)
         if html is None:
+            errors.append(f"страница не загружена: {url}")
             continue
         text = _web_extract(html)
         if text:
@@ -890,6 +923,7 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
             log(f"  стр. {len(pages)}/{max_pages}: {url}  ({len(text)} симв.)")
         else:
             log(f"  стр. (без текста): {url}")
+            errors.append(f"страница без извлечённого текста (возможно, JS-сайт): {url}")
         # ссылки: файлы собираем всегда, страницы — пока не достигли глубины
         for link in _web_links(html, url, seed_netloc, same_domain):
             if link in seen:
@@ -898,7 +932,11 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
                 files.add(link)
             elif d < depth and all(link != q[0] for q in queue):
                 queue.append((link, d + 1))
-    return pages, files
+            elif d >= depth:
+                depth_limit_hit = True   # были более глубокие ссылки, но глубина не позволяет
+    pages_limit_hit = bool(queue) and len(pages) >= max_pages
+    return pages, files, {"errors": errors, "pages_limit_hit": pages_limit_hit,
+                          "depth_limit_hit": depth_limit_hit}
 
 
 def ingest_web(urls: list) -> dict:
@@ -947,18 +985,32 @@ def ingest_web(urls: list) -> dict:
                 fp.write(f"Парсинг: глубина {depth}, до {max_pages} стр. и {max_files} "
                          f"файлов/сайт, "
                          f"{'тот же домен' if same_domain else 'любой домен'}\n")
+                stats_map = {}
                 try:
                     for u in urls:
+                        site_errors, site_limits = [], {}
+                        pages, dl, site_ok = [], 0, False
                         try:
                             _log(f"САЙТ: {u}")
-                            pages, file_urls = _web_crawl(u, depth, max_pages,
-                                                          same_domain, renderer, _log)
+                            pages, file_urls, cstat = _web_crawl(u, depth, max_pages,
+                                                                 same_domain, renderer, _log)
+                            site_errors.extend(cstat.get("errors", []))
+                            if cstat.get("pages_limit_hit"):
+                                site_limits["pages"] = (f"достигнут лимит страниц ({max_pages}); "
+                                                        "часть страниц не обойдена — увеличьте «Макс. страниц»")
+                            if cstat.get("depth_limit_hit"):
+                                site_limits["depth"] = (f"достигнута глубина обхода ({depth}); "
+                                                        "более глубокие ссылки пропущены — увеличьте «Глубину обхода»")
                             # скачиваем найденные файлы (любого типа), лимит на сайт
-                            file_list = list(file_urls)[:max_files]
+                            all_files = list(file_urls)
+                            if len(all_files) > max_files:
+                                site_limits["files"] = (f"найдено файлов {len(all_files)}, скачано {max_files} "
+                                                        f"(лимит); {len(all_files) - max_files} пропущено — "
+                                                        "увеличьте «Макс. файлов»")
+                            file_list = all_files[:max_files]
                             nf = len(file_list)
                             if nf:
                                 _log(f"  файлов к скачиванию: {nf}")
-                            dl = 0
                             for fi, furl in enumerate(file_list, 1):
                                 fpct = int(fi * 100 / nf) if nf else 100
                                 _log(f"  [файл {fi}/{nf}] {fpct}% скачиваю: {furl}")
@@ -966,6 +1018,8 @@ def ingest_web(urls: list) -> dict:
                                 if p is not None:
                                     web_paths.append(p)
                                     dl += 1
+                                else:
+                                    site_errors.append(f"файл не скачан: {furl}")
                             # текст страниц — в один документ web/<slug>.html
                             if pages:
                                 parts, total = [], 0
@@ -984,18 +1038,26 @@ def ingest_web(urls: list) -> dict:
                                 web_paths.append(out)
                             if pages or dl:
                                 ok += 1
+                                site_ok = True
                                 fp.write(f"ИТОГО {u}: страниц {len(pages)}, файлов {dl}\n")
                             else:
                                 err += 1
+                                site_errors.append("ни текста, ни файлов (пустая страница "
+                                                   "или JS-сайт без headless-браузера)")
                                 fp.write(f"ERR {u}: ни текста, ни файлов (пустая страница "
                                          "или JS-сайт без headless-браузера)\n")
                         except Exception as e:
                             err += 1
+                            site_errors.append(str(e))
                             fp.write(f"ERR {u}: {e}\n")
+                        stats_map[u] = {"url": u, "ok": site_ok, "pages": len(pages),
+                                        "files": dl, "errors": site_errors,
+                                        "limits": site_limits, "ts": time.time()}
                         fp.flush()
                 finally:
                     if renderer is not None:
                         renderer.close()
+                    _web_stats_save(stats_map)
                 # активен каталог PostgreSQL — кладём спарсенные страницы и в него,
                 # чтобы индексация из БД их увидела (без папки)
                 added = catalog_add_paths(web_paths)

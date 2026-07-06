@@ -4639,6 +4639,7 @@ function webAdd(){
 }
 function webRemove(i){ webQueue.splice(i,1); webRenderQueue(); }
 function webClearQueue(){ if(!webQueue.length||confirm('Очистить очередь адресов?')){ webQueue=[]; webRenderQueue(); } }
+function webToggle(id){ const e=$('#'+id); if(e) e.style.display = (e.style.display==='none'?'block':'none'); }
 async function loadWebUrls(){
   let r; try{ r=await (await fetch('/api/admin/web-urls?t='+Date.now(),
     {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
@@ -4647,11 +4648,28 @@ async function loadWebUrls(){
   const lst=$('#weblist');
   if(lst){
     const sites=r.sites||[];
-    lst.innerHTML = sites.length ? sites.map(s=>
-      `<div style="display:flex;gap:8px;align-items:center;padding:6px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px">
-        <span style="flex:1;word-break:break-all">${esc(s.url)} ${s.indexed?'':'<span class="note">(нет файла)</span>'}</span>
-        <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="deleteWeb('${escAttr(s.url)}')">Удалить</button>
-      </div>`).join('') : '<span class="note">пока нет сайтов</span>';
+    lst.innerHTML = sites.length ? sites.map((s,i)=>{
+      const errs=s.errors||[], lims=Object.values(s.limits||{});
+      const nIssues=errs.length+lims.length, idc='webdet_'+i;
+      const badge = s.ok===false ? '<span style="color:#f87171">✗</span>'
+        : (nIssues ? '<span style="color:#f59e0b">⚠</span>' : (s.ok ? '<span style="color:#22c55e">✓</span>':''));
+      const meta = (s.pages!=null?(' · стр. '+s.pages):'')+(s.files!=null?(' · файлов '+s.files):'');
+      let detail='';
+      if(nIssues){
+        let rows='';
+        lims.forEach(t=> rows+='<div style="color:#f59e0b;margin:2px 0">⚠ лимит: '+esc(t)+'</div>');
+        errs.forEach(t=> rows+='<div style="color:#f87171;margin:2px 0">• '+esc(t)+'</div>');
+        detail=`<div id="${idc}" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.4;max-height:240px;overflow:auto">${rows}</div>`;
+      }
+      return `<div style="border:1px solid var(--line);border-radius:8px;margin-bottom:6px;padding:6px 10px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="flex:1;word-break:break-all">${esc(s.url)} ${s.indexed?'':'<span class="note">(нет файла)</span>'}<span class="note">${meta}</span></span>
+          ${badge}
+          ${nIssues?`<button class="dirbtn" onclick="webToggle('${idc}')" title="Ошибки и превышения лимитов">📋 ${nIssues}</button>`:''}
+          <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="deleteWeb('${escAttr(s.url)}')">Удалить</button>
+        </div>${detail}
+      </div>`;
+    }).join('') : '<span class="note">пока нет сайтов</span>';
   }
   // лог парсинга
   const log=$('#weblog');
