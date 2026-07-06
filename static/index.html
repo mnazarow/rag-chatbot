@@ -1793,6 +1793,11 @@
         <span id="webmsg"></span>
       </div>
       <div class="note" style="margin-top:8px">До 50 адресов за раз. Прогресс парсинга и индексации виден в логе ниже и в разделе «Администратор» → «Состояние и операции».</div>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin-top:10px">
+        <input type="checkbox" id="web_reparse" onchange="webReparseSave()">
+        <span>Ежедневный повторный парсинг всех сохранённых сайтов в <b>00:05</b> — обновляет их содержимое в базе знаний (пока приложение запущено).</span>
+      </label>
+      <span id="web_reparse_msg" class="note"></span>
 
       <div style="margin-top:14px"><b style="font-size:13px">Сайты в базе:</b> <span class="note">у каждого — статус и раскрытие (📋) со списком ошибок и превышений лимитов.</span></div>
       <div id="weblist" style="margin-top:6px"></div>
@@ -4580,6 +4585,8 @@ async function checkUpdates(){
   let r; try{ r=await (await fetch('/api/admin/check-updates?t='+Date.now(),
     {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }
   catch(e){ updMsg('✗ '+e.message,false); return; }
+  if(r.docker){ updMsg('ℹ Docker-вариант',true);
+    if($('#updinfo')){ $('#updinfo').style.display='block'; $('#updinfo').textContent=r.msg||''; } return; }
   if(!r.ok){ updMsg('✗ '+(r.msg||r.detail||'ошибка'),false); $('#updinfo').style.display='none'; return; }
   if(r.up_to_date){ updMsg('✓ установлена последняя версия ('+r.current+')'); $('#updinfo').style.display='none'; }
   else {
@@ -4803,7 +4810,18 @@ function webAdd(){
 function webRemove(i){ webQueue.splice(i,1); webRenderQueue(); }
 function webClearQueue(){ if(!webQueue.length||confirm('Очистить очередь адресов?')){ webQueue=[]; webRenderQueue(); } }
 function webToggle(id){ const e=$('#'+id); if(e) e.style.display = (e.style.display==='none'?'block':'none'); }
-async function loadWebsites(){ loadWebUrls(); }
+async function loadWebsites(){ loadWebUrls(); loadWebReparse(); }
+async function loadWebReparse(){
+  try{ const c=await (await fetch('/api/config?t='+Date.now(),{cache:'no-store'})).json();
+    if($('#web_reparse') && c && c.values) $('#web_reparse').checked=!!c.values.WEB_AUTO_REPARSE; }catch(e){}
+}
+async function webReparseSave(){
+  const v=$('#web_reparse')?$('#web_reparse').checked:false;
+  const m=$('#web_reparse_msg'); if(m){ m.textContent='сохранение…'; m.className='note'; }
+  const r=await adminPost('/api/config',{WEB_AUTO_REPARSE:v});
+  if(m){ m.textContent = (r&&r.ok!==false)?('✓ автопарсинг '+(v?'включён (ежедневно в 00:05)':'выключен')):'✗ ошибка (проверьте токен администратора)';
+    m.className=(r&&r.ok!==false)?'saved':'note'; }
+}
 async function loadWebUrls(){
   let r; try{ r=await (await fetch('/api/admin/web-urls?t='+Date.now(),
     {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }

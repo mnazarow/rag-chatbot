@@ -43,6 +43,7 @@ services:
       - .env.docker
     environment:
       - HF_HOME=/root/.cache/huggingface          # кеш моделей эмбеддингов/реранка
+      - RAG_DOCKER=1                               # признак контейнера (обновление — на хосте через update.cmd)
       # адрес Qdrant в сети compose — фиксируем здесь (имеет приоритет над .env.docker),
       # чтобы приложение всегда обращалось к сервису qdrant, а не к localhost
       - QDRANT_URL=http://qdrant:6333

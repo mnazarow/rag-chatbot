@@ -76,6 +76,35 @@ def _org_tick():
         print(f"[org] tick: {e}")
 
 
+def _web_tick():
+    """Раз в сутки в 00:05 заново парсить сохранённые сайты, если включено."""
+    try:
+        import settings
+        if not settings.get("WEB_AUTO_REPARSE"):
+            return
+        lt = time.localtime()
+        # окно 00:05–00:59: цикл раз в минуту — попадём и переспарсим один раз за сутки
+        if not (lt.tm_hour == 0 and lt.tm_min >= 5):
+            return
+        import db
+        today = time.strftime("%Y-%m-%d", lt)
+        if db.kv_get("web_reparse_last") == today:
+            return                               # уже запускали сегодня
+        import admin_ops
+        urls = admin_ops.web_saved_urls()
+        if not urls:
+            db.kv_set("web_reparse_last", today)
+            return
+        r = admin_ops.ingest_web(urls)
+        if r.get("ok"):
+            db.kv_set("web_reparse_last", today)  # помечаем день только при успешном запуске
+            print(f"[web] авто-переспарсинг {len(urls)} сайт(ов) запущен")
+        else:
+            print(f"[web] авто-переспарсинг отложен: {r.get('msg')}")
+    except Exception as e:
+        print(f"[web] tick: {e}")
+
+
 def _loop(interval: int):
     import db
     last_prune = 0.0
@@ -89,6 +118,7 @@ def _loop(interval: int):
         except Exception as e:
             print(f"[monitor] выборка не удалась: {e}")
         _org_tick()                              # ежечасная синхронизация справочника
+        _web_tick()                              # ежедневный переспарсинг сайтов (00:05)
         _stop.wait(interval)
 
 

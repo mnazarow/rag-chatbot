@@ -684,6 +684,13 @@ def _web_list() -> list:
     return out
 
 
+def web_saved_urls() -> list:
+    """Список сохранённых для парсинга сайтов (URL)."""
+    if _WEB_SOURCES.exists():
+        return [u.strip() for u in _WEB_SOURCES.read_text(encoding="utf-8").splitlines() if u.strip()]
+    return []
+
+
 def get_web_urls() -> dict:
     sites = _web_list()
     return {"urls": [s["url"] for s in sites], "sites": sites,
@@ -1610,8 +1617,24 @@ def _git(*args):
     return p.stdout.strip()
 
 
+def _in_docker() -> bool:
+    """Приложение запущено в контейнере (Docker)."""
+    if os.getenv("RAG_DOCKER"):
+        return True
+    try:
+        return os.path.exists("/.dockerenv")
+    except Exception:
+        return False
+
+
 def check_updates() -> dict:
-    """Сравнить локальную версию с origin (git fetch)."""
+    """Сравнить локальную версию с origin (git fetch). В Docker — иная схема обновления."""
+    if _in_docker():
+        return {"ok": True, "docker": True, "up_to_date": None,
+                "msg": "Docker-вариант: обновление выполняется на хосте пересборкой образа. "
+                       "Запустите на хосте update.cmd (он делает git pull и docker compose "
+                       "up -d --build). Проверка/обновление из контейнера недоступны, т.к. код "
+                       "вшит в образ, а приватный репозиторий из контейнера не тянется."}
     try:
         if not (ROOT / ".git").exists():
             return {"ok": False, "msg": "это не git-репозиторий (обновление через git недоступно)"}
@@ -1634,6 +1657,10 @@ def check_updates() -> dict:
 def update_app() -> dict:
     """git pull + зависимости в фоне, затем самоперезапуск (без sudo).
     Подхват новой версии — через systemd Restart=always / launchd KeepAlive."""
+    if _in_docker():
+        return {"ok": False, "docker": True,
+                "msg": "В Docker обновление из контейнера недоступно. На хосте запустите "
+                       "update.cmd (git pull + пересборка образа: docker compose up -d --build)."}
     if not (ROOT / ".git").exists():
         return {"ok": False, "msg": "это не git-репозиторий"}
     if _upd_job["running"]:

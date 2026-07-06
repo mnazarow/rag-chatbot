@@ -1,0 +1,19 @@
+# Единые правила окончаний строк, чтобы Windows-скрипты не ломались.
+# Windows CMD/PowerShell требуют CRLF; LF в .cmd приводит к ошибкам вида
+# «'s1"' is not recognized as an internal or external command».
+# Linux/Docker-скрипты (.sh) должны оставаться LF.
+
+# Windows-скрипты — всегда CRLF при выгрузке
+*.cmd               text eol=crlf
+*.bat               text eol=crlf
+*.ps1               text eol=crlf
+
+# Unix/Docker-скрипты — всегда LF (иначе не запустятся в контейнере/на сервере)
+*.sh                text eol=lf
+
+# бинарные файлы — не трогать
+*.deb               binary
+*.onnx              binary
+*.png               binary
+*.jpg               binary
+*.gz                binary
