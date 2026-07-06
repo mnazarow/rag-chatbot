@@ -9,9 +9,12 @@ Redis всё работает напрямую без кэша — прилож�
 from __future__ import annotations
 import json
 import threading
+import time
 
 _client = None
 _client_key = None          # параметры подключения, под которые создан клиент
+_last_check = 0.0           # когда последний раз проверяли живость клиента
+_HEALTH_EVERY = 10.0        # как часто перепроверять живость (сек)
 _lock = threading.Lock()
 
 
@@ -36,14 +39,26 @@ def _params():
 
 
 def client():
-    """Вернуть живой Redis-клиент или None (если выключен/недоступен/нет модуля)."""
-    global _client, _client_key
+    """Вернуть живой Redis-клиент или None (если выключен/недоступен/нет модуля).
+
+    Самовосстановление: закэшированный клиент периодически перепроверяется ping-ом,
+    и при сбое (например, Redis перезапустился или поднялся позже приложения)
+    пересоздаётся автоматически — без ручного вмешательства."""
+    global _client, _client_key, _last_check
     if not enabled():
         return None
     key = _params()
     with _lock:
+        now = time.time()
         if _client is not None and _client_key == key:
-            return _client
+            if now - _last_check < _HEALTH_EVERY:
+                return _client                      # недавно проверяли — не дёргаем Redis
+            try:
+                _client.ping()                      # клиент жив?
+                _last_check = now
+                return _client
+            except Exception:
+                _client = None                      # протух — переподключимся ниже
         try:
             import redis
         except Exception:
@@ -53,9 +68,10 @@ def client():
         try:
             c = redis.Redis(host=host, port=port, db=db, password=pw or None,
                             socket_connect_timeout=2, socket_timeout=2,
+                            retry_on_timeout=True, health_check_interval=15,
                             decode_responses=True)
             c.ping()
-            _client, _client_key = c, key
+            _client, _client_key, _last_check = c, key, now
             return c
         except Exception:
             _client = None
