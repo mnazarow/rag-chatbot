@@ -33,6 +33,13 @@ def _reranker() -> FlagReranker:
     return FlagReranker(settings.get("RERANK_MODEL"), use_fp16=True)
 
 
+def _rerank(pairs):
+    """Реранк пар [вопрос, текст] с замером для дашборда."""
+    import metrics
+    with metrics.timer("rerank"):
+        return _reranker().compute_score(pairs, normalize=True)
+
+
 def _tokenize(text: str) -> list[str]:
     return [t for t in text.lower().split() if t]
 
@@ -79,7 +86,9 @@ def _embed_query(question: str):
     model = settings.get("EMBED_MODEL")
 
     def _enc():
-        return _embedder().encode([question], normalize_embeddings=True)[0].tolist()
+        import metrics
+        with metrics.timer("embed"):
+            return _embedder().encode([question], normalize_embeddings=True)[0].tolist()
 
     try:
         import cache
@@ -90,14 +99,16 @@ def _embed_query(question: str):
 
 
 def _dense_search(qvec, qfilter):
+    import metrics
     qv = qvec.tolist() if hasattr(qvec, "tolist") else qvec
-    res = _client.query_points(
-        _COLLECTION,
-        query=qv,
-        query_filter=qfilter,
-        limit=settings.get("TOP_K_RETRIEVE"),
-        with_payload=True,
-    ).points
+    with metrics.timer("qdrant"):
+        res = _client.query_points(
+            _COLLECTION,
+            query=qv,
+            query_filter=qfilter,
+            limit=settings.get("TOP_K_RETRIEVE"),
+            with_payload=True,
+        ).points
     return [
         {"text": p.payload["text"], "source": p.payload["source"],
          "page": p.payload.get("page"), "doc_category": p.payload.get("doc_category"),
@@ -194,7 +205,7 @@ def _search_raw(question: str, filters: dict | None = None,
     # 3) кросс-энкодер реранк — финальная релевантность 0..1
     t = time.time()
     pairs = [[question, c["text"]] for c in cands]
-    scores = _reranker().compute_score(pairs, normalize=True)
+    scores = _rerank(pairs)
     if not isinstance(scores, list):
         scores = [scores]
     for c, s in zip(cands, scores):
@@ -277,7 +288,7 @@ def _rerank_keep(question: str, cands: list, relaxed: bool = True) -> list:
     bm = BM25Okapi([_tokenize(c["text"]) for c in cands])
     for c, s in zip(cands, bm.get_scores(_tokenize(_expand(question)))):
         c["bm25"] = float(s)
-    scores = _reranker().compute_score([[question, c["text"]] for c in cands], normalize=True)
+    scores = _rerank([[question, c["text"]] for c in cands])
     if not isinstance(scores, list):
         scores = [scores]
     for c, s in zip(cands, scores):
@@ -297,8 +308,10 @@ def lexical_search(question: str) -> list:
     cands = []
     try:
         qv = _embed_query(question)
-        pts = _client.query_points(_COLLECTION, query=qv, limit=200,
-                                   with_payload=True).points
+        import metrics
+        with metrics.timer("qdrant"):
+            pts = _client.query_points(_COLLECTION, query=qv, limit=200,
+                                       with_payload=True).points
         cands += [_hit_from_payload(p.payload or {}) for p in pts]
     except Exception:
         pass
@@ -373,7 +386,7 @@ def rerank_texts(question: str, items: list, top_k: int | None = None) -> list:
         idx = sorted(range(len(items)), key=lambda k: sc[k], reverse=True)[:120]
         items = [items[k] for k in idx]
     pairs = [[question, i["text"]] for i in items]
-    scores = _reranker().compute_score(pairs, normalize=True)
+    scores = _rerank(pairs)
     if not isinstance(scores, list):
         scores = [scores]
     for i, s in zip(items, scores):

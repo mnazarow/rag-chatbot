@@ -81,8 +81,10 @@ async def get_rag():
 
 async def answer(question: str) -> str:
     from lightrag import QueryParam
-    rag = await get_rag()
-    return await rag.aquery(question, param=QueryParam(mode=settings.get("GRAPH_MODE")))
+    import metrics
+    with metrics.timer("lightrag"):
+        rag = await get_rag()
+        return await rag.aquery(question, param=QueryParam(mode=settings.get("GRAPH_MODE")))
 
 
 # ----- построение графа из папки документов -----

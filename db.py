@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time as _time
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime
@@ -124,12 +125,23 @@ def _cursor(dialect: str | None = None, conn=None):
     own = conn is None
     if own:
         dialect, conn = _connect_for(dialect or _dialect())
+    _t0 = _time.perf_counter()
+    _ok = True
     try:
         cur = _mk_cursor(dialect, conn)
         yield dialect, conn, cur
         if dialect == "sqlite" and own:
             conn.commit()
+    except Exception:
+        _ok = False
+        raise
     finally:
+        try:
+            import metrics
+            metrics.record("db:" + (dialect or "db"),
+                           (_time.perf_counter() - _t0) * 1000.0, _ok)
+        except Exception:
+            pass
         if own:
             try:
                 conn.close()

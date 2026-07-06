@@ -240,6 +240,12 @@
       <table><thead><tr><th>Время</th><th>Добавочный / сотрудник</th><th>Вопрос</th><th>Ответ</th><th>Оценка</th><th>Комментарий</th></tr></thead>
       <tbody id="dashvoiprecent"></tbody></table>
     </div>
+
+    <div class="box">
+      <h3>📊 Расширенная статистика компонентов <span class="note" style="font-weight:400">— обращения и ресурсы в реальном времени</span></h3>
+      <div class="note" style="margin-bottom:8px">По каждому компоненту конвейера: скорость обращений (запросов/с) и средняя задержка — живые графики за последнюю минуту, плюс ресурсы. Учитывается «горячий» путь запросов (чат/Телеграм/VoIP); индексация считается отдельно.</div>
+      <div id="dash_components"><div class="note">загрузка…</div></div>
+    </div>
   </section>
 
   <!-- ===== СХЕМА ===== -->
@@ -1788,12 +1794,13 @@
       </div>
       <div id="webqueue" style="margin-top:8px"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
-        <button class="act" onclick="ingestWeb()">🌐 Спарсить и добавить в базу</button>
+        <button class="act" onclick="ingestWeb(true)">🌐 Спарсить и добавить в базу</button>
+        <button class="act ghost" onclick="ingestWeb(false)" title="Скачать содержимое без индексации — проиндексировать можно позже">📥 Только спарсить</button>
         <button class="act ghost" onclick="webClearQueue()">Очистить очередь</button>
         <button class="act ghost" onclick="loadWebUrls()">Обновить список</button>
         <span id="webmsg"></span>
       </div>
-      <div class="note" style="margin-top:8px">До 50 адресов за раз. Прогресс парсинга и индексации виден в логе ниже и в разделе «Администратор» → «Состояние и операции».</div>
+      <div class="note" style="margin-top:8px">До 50 адресов за раз. <b>«Спарсить и добавить в базу»</b> — скачать содержимое и сразу проиндексировать. <b>«Только спарсить»</b> — скачать/обновить содержимое без индексации (быстрее; проиндексировать можно позже кнопкой «Переиндексировать» в разделе «Администратор»). Прогресс виден в логе ниже и в «Состояние и операции».</div>
       <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin-top:10px">
         <input type="checkbox" id="web_reparse" onchange="webReparseSave()">
         <span>Ежедневный повторный парсинг всех сохранённых сайтов в <b>00:05</b> — обновляет их содержимое в базе знаний (пока приложение запущено).</span>
@@ -1900,7 +1907,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   b.classList.add('active'); $('#'+b.dataset.t).classList.add('active');
   if(b.dataset.t!=='server') stopSrvAuto();   // уходим с вкладки — гасим автообновление
   if(b.dataset.t!=='schema') clearInterval(schemaTimer);
-  if(b.dataset.t!=='dash') clearInterval(actTimer);          // живые запросы — только на дашборде
+  if(b.dataset.t!=='dash'){ clearInterval(actTimer); clearInterval(compTimer); }   // живые запросы — только на дашборде
   if(b.dataset.t!=='obsidian') obsStop();                    // граф — гасим анимацию вне вкладки
   if(b.dataset.t!=='telegram') tgWorkflowStop();             // workflow-граф — гасим вне вкладки
   document.body.classList.toggle('obs-full', b.dataset.t==='obsidian');  // граф во всю ширину
@@ -1909,8 +1916,53 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 });
 
 // ---- текущие запросы (живая активность) ----
-let actTimer=null;
-function startActivityPoll(){ clearInterval(actTimer); loadActivity(); loadLlmActivity(); actTimer=setInterval(()=>{ loadActivity(); loadLlmActivity(); },1500); }
+let actTimer=null, compTimer=null;
+function startActivityPoll(){ clearInterval(actTimer); loadActivity(); loadLlmActivity(); actTimer=setInterval(()=>{ loadActivity(); loadLlmActivity(); },1500);
+  clearInterval(compTimer); dashComponents(); compTimer=setInterval(dashComponents,2500); }
+let _compHist={}, _compPrevTs=0;
+function sparkline(vals,color){
+  vals=vals||[]; if(vals.length<2) return '';
+  const w=88,h=18,max=Math.max.apply(null,vals.concat([0.0001]));
+  const pts=vals.map((v,i)=>`${(i/(vals.length-1)*w).toFixed(1)},${(h-(v/max)*h).toFixed(1)}`).join(' ');
+  return `<svg width="${w}" height="${h}" style="vertical-align:middle;margin-left:6px"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+async function dashComponents(){
+  const el=$('#dash_components'); if(!el) return;
+  let d; try{ d=await (await fetch('/api/component-metrics?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
+  const comps=(d&&d.components)||[], ts=d.ts||Date.now()/1000;
+  const dt=_compPrevTs?Math.max(0.1,ts-_compPrevTs):0;
+  const groups={};
+  comps.forEach(c=>{
+    const h=_compHist[c.key]||(_compHist[c.key]={calls:c.calls||0,rate:[],lat:[]});
+    let rate=0; if(dt>0) rate=Math.max(0,((c.calls||0)-h.calls)/dt);
+    h.calls=c.calls||0;
+    h.rate.push(rate); if(h.rate.length>30) h.rate.shift();
+    h.lat.push(c.avg_ms||0); if(h.lat.length>30) h.lat.shift();
+    (groups[c.group||'Прочее']=groups[c.group||'Прочее']||[]).push(c);
+  });
+  _compPrevTs=ts;
+  let html='';
+  Object.keys(groups).forEach(g=>{
+    html+=`<div style="margin:12px 0 4px;font-weight:700;font-size:13px;opacity:.85">${esc(g)}</div><div class="cards">`;
+    groups[g].forEach(c=>{
+      const h=_compHist[c.key]||{rate:[],lat:[]};
+      const rNow=h.rate.length?h.rate[h.rate.length-1]:0;
+      const ok=c.resource&&c.resource.reachable, dot=ok?'#22c55e':'#94a3b8';
+      html+=`<div class="card" style="min-width:230px;max-width:280px;text-align:left">
+        <div class="k" style="display:flex;align-items:center;gap:6px;font-size:13px"><span style="width:8px;height:8px;border-radius:50%;background:${dot};display:inline-block"></span><b>${esc(c.name)}</b></div>
+        <div style="font-size:12px;line-height:1.7;margin:5px 0">
+          <div title="запросов в секунду (живой график за минуту)">⚡ <b>${rNow.toFixed(rNow<10?2:0)}</b> зпр/с ${sparkline(h.rate,'#3b82f6')}</div>
+          <div title="средняя задержка">⏱ <b>${(c.avg_ms||0).toFixed(1)}</b> мс ${sparkline(h.lat,'#a78bfa')}</div>
+          <div class="note">всего: ${c.calls||0}${c.errors?(' · ошибок '+c.errors):''}</div>
+          <div class="note">${esc((c.resource&&c.resource.label)||'')}</div>
+        </div>
+        <div class="note" style="font-size:11px;line-height:1.4;opacity:.85">${esc(c.desc||'')}</div>
+      </div>`;
+    });
+    html+='</div>';
+  });
+  el.innerHTML=html||'<div class="note">нет данных</div>';
+}
 const ACT_KIND={
   chat:{icon:'💬',label:'Веб-чат'}, telegram:{icon:'✈️',label:'Телеграм'},
   attach:{icon:'📎',label:'Документ в чате'}, parse:{icon:'🏢',label:'Парсинг'},
@@ -4883,12 +4935,14 @@ async function loadWebUrls(){
   const log=$('#weblog');
   if(log){ if(r.log){ log.style.display='block'; log.textContent=r.log; } else log.style.display='none'; }
 }
-async function ingestWeb(){
+async function ingestWeb(index){
+  if(index===undefined) index=true;
   webAdd();                       // подхватить адрес, оставшийся в поле ввода
   const urls=webQueue.slice();
   if(!urls.length){ webMsg('добавьте хотя бы один URL',false); return; }
   if(urls.length>50){ webMsg('максимум 50 адресов',false); return; }
-  webMsg('парсинг…'); const r=await adminPost('/api/admin/ingest-web',{urls});
+  webMsg(index?'парсинг + индексация…':'парсинг (без индексации)…');
+  const r=await adminPost('/api/admin/ingest-web',{urls, index});
   webMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
   pollJob(); pollWeb();
 }

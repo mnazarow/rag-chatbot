@@ -634,6 +634,14 @@ def api_server_load():
     return admin_ops.server_load()
 
 
+@app.get("/api/component-metrics")
+def api_component_metrics():
+    """Расширенная статистика по компонентам (Qdrant, эмбеддер, реранкер, LightRAG,
+    KAG, SQLite/PostgreSQL, Redis): обращения, ошибки, задержка и ресурсы — в реальном
+    времени для графиков на дашборде."""
+    return admin_ops.component_metrics()
+
+
 @app.get("/api/admin/price/status")
 def api_price_status(x_admin_token: str | None = Header(None)):
     """Состояние прайс-папки (включена, путь, число файлов/фрагментов)."""
@@ -1560,7 +1568,8 @@ def admin_web_urls(x_admin_token: str | None = Header(None)):
 @app.post("/api/admin/ingest-web")
 def admin_ingest_web(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
-    return admin_ops.ingest_web(payload.get("urls", []))
+    return admin_ops.ingest_web(payload.get("urls", []),
+                                index=payload.get("index", True))
 
 
 @app.post("/api/admin/web-delete")

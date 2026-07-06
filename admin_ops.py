@@ -1007,9 +1007,11 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
                           "depth_limit_hit": depth_limit_hit}
 
 
-def ingest_web(urls: list) -> dict:
+def ingest_web(urls: list, index: bool = True) -> dict:
     """Скачать до 50 сайтов (с обходом ссылок), извлечь текст в DOCS_DIR/web и
-    переиндексировать. Глубина/лимит/домен — настройки WEB_CRAWL_DEPTH/MAX_PAGES/SAME_DOMAIN."""
+    (при index=True) переиндексировать. При index=False — только парсинг без
+    индексации (быстро обновить содержимое; проиндексировать можно позже кнопкой
+    «Переиндексировать»). Глубина/лимит/домен — настройки WEB_CRAWL_DEPTH/MAX_PAGES/SAME_DOMAIN."""
     import re
     urls = [u.strip() for u in (urls or []) if u.strip().startswith(("http://", "https://"))][:50]
     if not urls:
@@ -1152,11 +1154,17 @@ def ingest_web(urls: list) -> dict:
                 added = catalog_add_paths(web_paths)
                 if added:
                     fp.write(f"В PostgreSQL добавлено страниц: {added}\n")
-                fp.write(f"Скачано: {ok}, ошибок: {err}. Запускаю индексацию...\n")
-                fp.flush()
-                rc = subprocess.Popen([sys.executable, "-u", "ingest.py"], cwd=ROOT,
-                                      stdout=fp, stderr=subprocess.STDOUT).wait(timeout=24 * 3600)
-                fp.write(f"SUMMARY web_ok={ok} web_err={err} index_rc={rc}\n")
+                if index:
+                    fp.write(f"Скачано: {ok}, ошибок: {err}. Запускаю индексацию...\n")
+                    fp.flush()
+                    rc = subprocess.Popen([sys.executable, "-u", "ingest.py"], cwd=ROOT,
+                                          stdout=fp, stderr=subprocess.STDOUT).wait(timeout=24 * 3600)
+                    fp.write(f"SUMMARY web_ok={ok} web_err={err} index_rc={rc}\n")
+                else:
+                    rc = 0
+                    fp.write(f"Скачано: {ok}, ошибок: {err}. Индексация ПРОПУЩЕНА "
+                             "(только парсинг) — запустите «Переиндексировать», когда нужно.\n")
+                    fp.write(f"SUMMARY web_ok={ok} web_err={err} index_rc=skipped\n")
             _web_job["log"] = _tail(logfile)
             _web_job["summary"] = _extract_summary(_web_job["log"])
             _web_job["ok"] = (err == 0 and rc == 0)
@@ -1172,7 +1180,8 @@ def ingest_web(urls: list) -> dict:
             print(f"[web] не удалось сохранить лог в БД: {e}")
 
     threading.Thread(target=run, daemon=True).start()
-    return {"ok": True, "msg": f"парсинг {len(urls)} сайт(ов) запущен; затем — индексация"}
+    tail = "затем — индексация" if index else "без индексации (только парсинг)"
+    return {"ok": True, "msg": f"парсинг {len(urls)} сайт(ов) запущен; {tail}"}
 
 
 def _run_dep_job(label: str, cmd: list, timeout: int = 3600) -> dict:
@@ -2212,6 +2221,134 @@ def component_status(gpu: dict | None = None) -> dict:
         "gpus": [{"index": d.get("index"), "name": d.get("name"),
                   "mem_used": d.get("mem_used"), "mem_total": d.get("mem_total")} for d in devs],
     }
+
+
+def _qdrant_stats() -> dict:
+    """Быстрая сводка по коллекции Qdrant (для расширенной статистики)."""
+    try:
+        coll = settings.get("QDRANT_COLLECTION")
+        r = httpx.get(f"{settings.get('QDRANT_URL')}/collections/{coll}", timeout=3)
+        res = (r.json().get("result") or {})
+        return {"reachable": r.status_code == 200, "points": res.get("points_count"),
+                "status": res.get("status"), "segments": res.get("segments_count")}
+    except Exception as e:
+        return {"reachable": False, "error": str(e)[:100]}
+
+
+def component_metrics() -> dict:
+    """Расширенная статистика конвейера в реальном времени: по каждому компоненту —
+    число обращений/ошибок и средняя задержка (из metrics), плюс ресурсы (точки
+    Qdrant, размер БД, память Redis, устройство модели). Фронт из кумулятивных
+    счётчиков считает скорость (запросов/с) между опросами."""
+    import metrics
+    snap = metrics.snapshot()
+    C = snap.get("components", {})
+
+    def cnt(name):
+        d = C.get(name) or {}
+        return {"calls": d.get("calls", 0), "errors": d.get("errors", 0),
+                "avg_ms": d.get("avg_ms", 0.0)}
+
+    try:
+        dev = settings.device()
+    except Exception:
+        dev = (settings.get("DEVICE") or "cpu").lower()
+    dev_label = {"cuda": "GPU (CUDA)", "mps": "GPU (Apple Metal)"}.get(dev, "CPU")
+
+    try:
+        import retriever
+        emb_loaded = retriever._embedder.cache_info().currsize > 0
+        rr_loaded = retriever._reranker.cache_info().currsize > 0
+    except Exception:
+        emb_loaded = rr_loaded = False
+
+    active_db = "sqlite"
+    try:
+        active_db = db._dialect()
+    except Exception:
+        pass
+    db_size = None
+    try:
+        if db.DB_PATH.exists():
+            db_size = round(db.DB_PATH.stat().st_size / 1048576, 2)
+    except Exception:
+        pass
+
+    engine = (settings.get("ENGINE") or "").lower()
+    graph_on = bool(settings.get("GRAPH_RAG")) or engine == "lightrag" or bool(settings.get("KAG_GRAPH"))
+    kag_on = engine == "kag"
+
+    q = _qdrant_stats()
+    # лёгкая проверка Redis без сканирования ключей (status() сканирует — тяжело для частого опроса)
+    rstat = {"enabled": False, "reachable": False}
+    try:
+        import cache
+        rstat["enabled"] = cache.enabled()
+        cc = cache.client()
+        if cc is not None:
+            info = cc.info()
+            hits = info.get("keyspace_hits") or 0
+            misses = info.get("keyspace_misses") or 0
+            tot = hits + misses
+            rstat.update(reachable=True, used_memory=info.get("used_memory_human"),
+                         total_keys=cc.dbsize(), hits=hits, misses=misses,
+                         hit_rate=round(hits / tot * 100, 1) if tot else None)
+    except Exception:
+        pass
+
+    comps = [
+        {"key": "qdrant", "name": "Qdrant", "group": "Хранилище",
+         "desc": "Векторная БД: хранит эмбеддинги чанков и выполняет ANN-поиск (dense) "
+                 "при каждом вопросе.", **cnt("qdrant"),
+         "resource": {"reachable": q.get("reachable"),
+                      "label": (f"точек: {q.get('points')}" if q.get("points") is not None else "—")
+                               + (f" · {q.get('status')}" if q.get("status") else ""),
+                      "points": q.get("points"), "status": q.get("status")}},
+        {"key": "embed", "name": "Эмбеддер (bge-m3)", "group": "Модели",
+         "desc": "Превращает текст вопроса/чанков в векторы. Выполняется в процессе "
+                 "приложения на устройстве DEVICE.", **cnt("embed"),
+         "resource": {"reachable": emb_loaded, "label": dev_label + (" · загружен" if emb_loaded else " · не загружен"),
+                      "device": dev, "model": settings.get("EMBED_MODEL")}},
+        {"key": "rerank", "name": "Реранкер (bge-reranker)", "group": "Модели",
+         "desc": "Cross-encoder: переоценивает релевантность кандидатов к вопросу. "
+                 "Обычно самый тяжёлый по времени этап поиска.", **cnt("rerank"),
+         "resource": {"reachable": rr_loaded, "label": dev_label + (" · загружен" if rr_loaded else " · не загружен"),
+                      "device": dev, "model": settings.get("RERANK_MODEL")}},
+        {"key": "lightrag", "name": "LightRAG (граф-RAG)", "group": "Движки",
+         "desc": "Ответы по графу знаний для сводных/глобальных вопросов. Используется, "
+                 "когда включён граф-режим.", **cnt("lightrag"),
+         "resource": {"reachable": graph_on, "label": "включён" if graph_on else "выключен"}},
+        {"key": "kag", "name": "KAG", "group": "Движки",
+         "desc": "Knowledge-Augmented Generation: многошаговая декомпозиция вопроса и "
+                 "обход графа. Активен при ENGINE=kag.", **cnt("kag"),
+         "resource": {"reachable": kag_on, "label": "включён" if kag_on else "выключен"}},
+        {"key": "sqlite", "name": "SQLite", "group": "База данных",
+         "desc": "Локальная БД: журнал, настройки, метаданные, оценки, кэш-версии. "
+                 "Активна, если не настроен внешний сервер БД.",
+         **(cnt("db:sqlite") if active_db == "sqlite" else {"calls": 0, "errors": 0, "avg_ms": 0.0}),
+         "resource": {"reachable": active_db == "sqlite",
+                      "label": (f"активна · {db_size} МБ" if active_db == "sqlite" and db_size is not None
+                                else ("активна" if active_db == "sqlite" else "не используется")),
+                      "size_mb": db_size if active_db == "sqlite" else None}},
+        {"key": "postgresql", "name": "PostgreSQL", "group": "База данных",
+         "desc": "Внешний сервер БД (альтернатива SQLite): те же журнал/настройки/каталог "
+                 "документов. Активен, если выбран в настройках БД.",
+         **(cnt("db:postgresql") if active_db == "postgresql" else {"calls": 0, "errors": 0, "avg_ms": 0.0}),
+         "resource": {"reachable": active_db == "postgresql",
+                      "label": "активна" if active_db == "postgresql" else "не используется"}},
+        {"key": "redis", "name": "Redis", "group": "Кэш",
+         "desc": "Опциональный кэш агрегатов и общий межпроцессный реестр. Ускоряет "
+                 "статистику/поиск; при отсутствии всё работает напрямую.",
+         "calls": rstat.get("hits", 0) if rstat.get("reachable") else 0,
+         "errors": rstat.get("misses", 0) if rstat.get("reachable") else 0, "avg_ms": 0.0,
+         "resource": {"reachable": bool(rstat.get("reachable")),
+                      "label": (f"{rstat.get('used_memory','?')} · ключей {rstat.get('total_keys','?')}"
+                                if rstat.get("reachable")
+                                else ("включён, недоступен" if rstat.get("enabled") else "выключен")),
+                      "enabled": rstat.get("enabled"), "hit_rate": rstat.get("hit_rate"),
+                      "used_memory": rstat.get("used_memory")}},
+    ]
+    return {"ts": snap.get("ts"), "components": comps}
 
 
 def server_load() -> dict:

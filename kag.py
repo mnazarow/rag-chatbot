@@ -72,6 +72,13 @@ async def _graph_knowledge(question: str) -> str:
 
 
 async def answer(question: str, history=None, trace=None) -> dict:
+    """Обёртка с замером времени для дашборда (см. _answer_impl)."""
+    import metrics
+    with metrics.timer("kag"):
+        return await _answer_impl(question, history, trace)
+
+
+async def _answer_impl(question: str, history=None, trace=None) -> dict:
     """Вернуть {text, hits, sub, graph, answered}. trace (если список) наполняется
     этапами {key, ms, info} для анимации конвейера."""
     t0 = time.time()
