@@ -23,6 +23,14 @@ def _cfg():
     return settings
 
 
+def norm_q(s: str) -> str:
+    """Нормализация вопроса для КЛЮЧА кэша (не для самого запроса): тримминг,
+    схлопывание пробелов, нижний регистр. Повышает попадания в кэш на мелких
+    вариациях («Цена X» и «цена x » → один ключ). На сам поиск/эмбеддинг не влияет."""
+    import re
+    return re.sub(r"\s+", " ", (s or "").strip()).lower()
+
+
 def enabled() -> bool:
     try:
         return bool(_cfg().get("REDIS_ENABLED"))

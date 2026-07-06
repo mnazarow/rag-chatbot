@@ -2278,6 +2278,25 @@ def component_metrics() -> dict:
     graph_on = bool(settings.get("GRAPH_RAG")) or engine == "lightrag" or bool(settings.get("KAG_GRAPH"))
     kag_on = engine == "kag"
 
+    # LLM — из реестра llm_activity (генерация/vision/служебные), с токенами
+    try:
+        import llm_activity
+        la = llm_activity.snapshot(1)
+    except Exception:
+        la = {}
+    llm_calls = la.get("total_calls", 0)
+    llm_gen_ms = la.get("total_gen_ms", 0)
+    llm_avg_ms = round(llm_gen_ms / llm_calls, 1) if llm_calls else 0.0
+    _tps = la.get("avg_tps")
+    _ttok = la.get("total_tokens", 0)
+    _lparts = [str(settings.active_model() or "")]
+    if _tps:
+        _lparts.append(f"{_tps} ток/с")
+    if _ttok:
+        _lparts.append(f"токенов {_ttok}")
+    if la.get("running"):
+        _lparts.append(f"идёт {la['running']}")
+
     q = _qdrant_stats()
     # лёгкая проверка Redis без сканирования ключей (status() сканирует — тяжело для частого опроса)
     rstat = {"enabled": False, "reachable": False}
@@ -2314,6 +2333,14 @@ def component_metrics() -> dict:
                  "Обычно самый тяжёлый по времени этап поиска.", **cnt("rerank"),
          "resource": {"reachable": rr_loaded, "label": dev_label + (" · загружен" if rr_loaded else " · не загружен"),
                       "device": dev, "model": settings.get("RERANK_MODEL")}},
+        {"key": "llm", "name": "Генерация LLM", "group": "LLM",
+         "desc": "Формирование ответов моделью (чат/Телеграм/VoIP), описание изображений "
+                 "vision-моделью и служебные вызовы (фильтр запроса, ИИ-интент). Считает внешний "
+                 "движок (Ollama/vLLM); скорость — токены/с.",
+         "calls": llm_calls, "errors": la.get("total_errors", 0), "avg_ms": llm_avg_ms,
+         "resource": {"reachable": llm_calls > 0 or bool(la.get("running")),
+                      "label": " · ".join([p for p in _lparts if p]),
+                      "tps": _tps, "total_tokens": _ttok}},
         {"key": "lightrag", "name": "LightRAG (граф-RAG)", "group": "Движки",
          "desc": "Ответы по графу знаний для сводных/глобальных вопросов. Используется, "
                  "когда включён граф-режим.", **cnt("lightrag"),
@@ -3425,6 +3452,27 @@ def redis_install() -> dict:
             log.append(f"[ошибка запуска] {e}")
             return 1
 
+    # В Docker Redis — отдельный сервис compose (персистентный, restart:unless-stopped).
+    # НЕ ставим Redis внутрь контейнера приложения: такой процесс гибнет при каждом
+    # перезапуске контейнера — отсюда «после перезапуска недоступен, пока не нажмёшь
+    # установить». Просто указываем сервис compose и проверяем доступность.
+    if _in_docker():
+        host = (settings.get("REDIS_HOST") or "").strip()
+        if host.lower() in ("", "127.0.0.1", "localhost", "::1", "0.0.0.0"):
+            host = "redis"                      # имя сервиса redis в сети compose
+        port = int(settings.get("REDIS_PORT") or 6379)
+        settings.update({"REDIS_ENABLED": True, "REDIS_HOST": host, "REDIS_PORT": port})
+        if _redis_ping(host, port):
+            return {"ok": True,
+                    "msg": f"Redis (Docker): подключено к сервису «{host}:{port}»",
+                    "log": f"Docker-режим: используется сервис compose «{host}» "
+                           "(постоянный, авто-рестарт). Ping OK. REDIS_HOST зафиксирован."}
+        return {"ok": False,
+                "msg": f"Задан REDIS_HOST=«{host}», но сервис не отвечает. Поднимите Redis на "
+                       "хосте: redis.cmd (или docker compose up -d — сервис redis есть в compose). "
+                       "Внутрь контейнера приложения Redis не ставим — он не переживает перезапуск.",
+                "log": f"Docker-режим: {host}:{port} не отвечает; ожидается сервис redis из compose."}
+
     # 0) уже доступен?
     if _redis_ping():
         settings.update({"REDIS_ENABLED": True})
@@ -3473,8 +3521,7 @@ def redis_install() -> dict:
     if ok:
         # включаем кэш и указываем локальный хост, если он ещё не задан явно
         changes = {"REDIS_ENABLED": True}
-        if not (settings.get("REDIS_HOST") or "").strip() or \
-                settings.get("REDIS_HOST") in ("redis",):
+        if not (settings.get("REDIS_HOST") or "").strip():
             changes["REDIS_HOST"] = "127.0.0.1"
         settings.update(changes)
         log.append("Redis отвечает на PING. REDIS_ENABLED включён.")

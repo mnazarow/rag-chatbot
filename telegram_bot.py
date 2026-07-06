@@ -316,7 +316,7 @@ def _answer(question: str, trace: list | None = None):
             import cache
             import hashlib
             ckey = "ans:" + hashlib.sha1("|".join([
-                question, settings.get("SYSTEM_PROMPT") or "",
+                cache.norm_q(question), settings.get("SYSTEM_PROMPT") or "",
                 settings.active_model() or "",
                 str(settings.get("TEMPERATURE"))]).encode("utf-8")).hexdigest()
             c = cache.get_json(ckey, ns="index")

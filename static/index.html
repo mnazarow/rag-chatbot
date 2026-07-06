@@ -1920,12 +1920,22 @@ let actTimer=null, compTimer=null;
 function startActivityPoll(){ clearInterval(actTimer); loadActivity(); loadLlmActivity(); actTimer=setInterval(()=>{ loadActivity(); loadLlmActivity(); },1500);
   clearInterval(compTimer); dashComponents(); compTimer=setInterval(dashComponents,2500); }
 let _compHist={}, _compPrevTs=0;
-function sparkline(vals,color){
-  vals=vals||[]; if(vals.length<2) return '';
-  const w=88,h=18,max=Math.max.apply(null,vals.concat([0.0001]));
-  const pts=vals.map((v,i)=>`${(i/(vals.length-1)*w).toFixed(1)},${(h-(v/max)*h).toFixed(1)}`).join(' ');
-  return `<svg width="${w}" height="${h}" style="vertical-align:middle;margin-left:6px"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+let _chartId=0;
+function areaChart(vals,color,h){
+  vals=vals||[]; const w=240; h=h||46;
+  if(vals.length<2) return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block;opacity:.35"><line x1="0" y1="${h-1}" x2="${w}" y2="${h-1}" stroke="${color}" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>`;
+  const max=Math.max.apply(null,vals.concat([0.0001])), n=vals.length;
+  const X=i=>(i/(n-1))*w, Y=v=>Math.max(1,(h-2)-(v/max)*(h-6));
+  const line=vals.map((v,i)=>`${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(' ');
+  const id='ac'+(_chartId++), lx=X(n-1), ly=Y(vals[n-1]);
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${color}" stop-opacity="0.38"/><stop offset="100%" stop-color="${color}" stop-opacity="0.02"/></linearGradient></defs>
+    <polygon points="0,${h} ${line} ${w},${h}" fill="url(#${id})"/>
+    <polyline points="${line}" fill="none" stroke="${color}" stroke-width="1.9" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+    <circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.6" fill="${color}" vector-effect="non-scaling-stroke"/></svg>`;
 }
+const _compIcons={qdrant:'🧭',embed:'🧬',rerank:'🎯',llm:'🤖',lightrag:'🕸️',kag:'🧠',sqlite:'🗃️',postgresql:'🐘',redis:'⚡'};
+function _chip(t,extra){ return '<span style="display:inline-block;padding:2px 9px;border:1px solid var(--line);border-radius:999px;font-size:11px;background:var(--panel);white-space:nowrap;'+(extra||'')+'">'+t+'</span>'; }
 async function dashComponents(){
   const el=$('#dash_components'); if(!el) return;
   let d; try{ d=await (await fetch('/api/component-metrics?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
@@ -1936,27 +1946,44 @@ async function dashComponents(){
     const h=_compHist[c.key]||(_compHist[c.key]={calls:c.calls||0,rate:[],lat:[]});
     let rate=0; if(dt>0) rate=Math.max(0,((c.calls||0)-h.calls)/dt);
     h.calls=c.calls||0;
-    h.rate.push(rate); if(h.rate.length>30) h.rate.shift();
-    h.lat.push(c.avg_ms||0); if(h.lat.length>30) h.lat.shift();
+    h.rate.push(rate); if(h.rate.length>40) h.rate.shift();
+    h.lat.push(c.avg_ms||0); if(h.lat.length>40) h.lat.shift();
     (groups[c.group||'Прочее']=groups[c.group||'Прочее']||[]).push(c);
   });
   _compPrevTs=ts;
   let html='';
   Object.keys(groups).forEach(g=>{
-    html+=`<div style="margin:12px 0 4px;font-weight:700;font-size:13px;opacity:.85">${esc(g)}</div><div class="cards">`;
+    html+=`<div style="margin:16px 0 8px;font-weight:700;font-size:12px;letter-spacing:.6px;text-transform:uppercase;opacity:.65">${esc(g)}</div>`
+      +`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(272px,1fr));gap:12px">`;
     groups[g].forEach(c=>{
       const h=_compHist[c.key]||{rate:[],lat:[]};
       const rNow=h.rate.length?h.rate[h.rate.length-1]:0;
-      const ok=c.resource&&c.resource.reachable, dot=ok?'#22c55e':'#94a3b8';
-      html+=`<div class="card" style="min-width:230px;max-width:280px;text-align:left">
-        <div class="k" style="display:flex;align-items:center;gap:6px;font-size:13px"><span style="width:8px;height:8px;border-radius:50%;background:${dot};display:inline-block"></span><b>${esc(c.name)}</b></div>
-        <div style="font-size:12px;line-height:1.7;margin:5px 0">
-          <div title="запросов в секунду (живой график за минуту)">⚡ <b>${rNow.toFixed(rNow<10?2:0)}</b> зпр/с ${sparkline(h.rate,'#3b82f6')}</div>
-          <div title="средняя задержка">⏱ <b>${(c.avg_ms||0).toFixed(1)}</b> мс ${sparkline(h.lat,'#a78bfa')}</div>
-          <div class="note">всего: ${c.calls||0}${c.errors?(' · ошибок '+c.errors):''}</div>
-          <div class="note">${esc((c.resource&&c.resource.label)||'')}</div>
+      const rPeak=h.rate.length?Math.max.apply(null,h.rate):0;
+      const latNow=c.avg_ms||0;
+      const ok=c.resource&&c.resource.reachable;
+      const dot=`<span title="${ok?'доступен':'нет данных / недоступен'}" style="width:9px;height:9px;border-radius:50%;background:${ok?'#22c55e':'#94a3b8'};box-shadow:0 0 6px ${ok?'#22c55e88':'transparent'};display:inline-block"></span>`;
+      const errPct = (c.calls&&c.errors)?Math.round(c.errors*100/c.calls):0;
+      html+=`<div style="border:1px solid var(--line);border-radius:14px;padding:13px 14px;background:var(--panel2);display:flex;flex-direction:column;gap:9px">
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="font-size:19px">${_compIcons[c.key]||'🔧'}</span>
+          <b style="font-size:14px;flex:1;line-height:1.2">${esc(c.name)}</b>${dot}
         </div>
-        <div class="note" style="font-size:11px;line-height:1.4;opacity:.85">${esc(c.desc||'')}</div>
+        <div style="display:flex;align-items:baseline;gap:7px">
+          <span style="font-size:27px;font-weight:800;color:#60a5fa;line-height:1;font-variant-numeric:tabular-nums">${rNow.toFixed(rNow<10?2:0)}</span>
+          <span class="note" style="font-size:12px">зпр/с</span>
+          <span class="note" style="margin-left:auto;font-size:11px">пик ${rPeak.toFixed(rPeak<10?1:0)}/с</span>
+        </div>
+        ${areaChart(h.rate,'#60a5fa',48)}
+        <div style="display:flex;align-items:center;gap:10px">
+          <span class="note" style="min-width:82px;font-size:12px">⏱ <b style="color:var(--txt)">${latNow.toFixed(1)}</b> мс</span>
+          <div style="flex:1;opacity:.9">${areaChart(h.lat,'#c4b5fd',22)}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${_chip('всего '+(c.calls||0))}
+          ${c.errors?_chip('ошибок '+c.errors+(errPct?(' · '+errPct+'%'):''),'color:#f87171;border-color:#f8717144'):''}
+          ${(c.resource&&c.resource.label)?_chip(esc(c.resource.label)):''}
+        </div>
+        <div class="note" style="font-size:11px;line-height:1.5;opacity:.75;margin-top:1px">${esc(c.desc||'')}</div>
       </div>`;
     });
     html+='</div>';

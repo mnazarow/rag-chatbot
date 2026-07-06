@@ -704,6 +704,11 @@ FIELDS: list[dict] = [
      "type": "int", "scope": "live", "default": config.REDIS_PORT},
     {"key": "REDIS_DB", "label": "Redis: номер БД (0–15)", "group": "База данных и кэш",
      "type": "int", "scope": "live", "default": config.REDIS_DB},
+    {"key": "CACHE_SEARCH_TTL", "label": "TTL кэша поиска, сек", "group": "База данных и кэш",
+     "type": "int", "scope": "live", "default": config.CACHE_SEARCH_TTL,
+     "desc": "Сколько секунд держать в Redis результат поиска по вопросу. Кэш и так сбрасывается "
+             "при переиндексации (версионная инвалидация), а ключ учитывает влияющие настройки — "
+             "поэтому большое значение (6–24 ч) безопасно и повышает долю попаданий. Требует Redis."},
     {"key": "REDIS_PASSWORD", "label": "Redis: пароль (если задан)",
      "group": "База данных и кэш", "type": "secret", "scope": "live",
      "default": config.REDIS_PASSWORD},

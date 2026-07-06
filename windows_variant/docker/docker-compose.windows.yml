@@ -23,7 +23,9 @@ services:
     image: redis:7-alpine
     container_name: rag_redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no"]   # чистый кэш, без персистентности
+    # чистый кэш без персистентности + лимит памяти и LRU-вытеснение (не даёт разрастись)
+    command: ["redis-server", "--save", "", "--appendonly", "no",
+              "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

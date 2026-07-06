@@ -107,6 +107,22 @@ def _start_telegram():
 
 
 @app.on_event("startup")
+def _fix_redis_host_docker():
+    """В Docker исправить «залипший» REDIS_HOST=127.0.0.1 (мог остаться от старой кнопки
+    «Установить Redis», ставившей одноразовый Redis внутрь контейнера) на сервис compose
+    «redis» — чтобы после перезапуска кэш подключался сам, без ручных действий."""
+    try:
+        if not admin_ops._in_docker() or not settings.get("REDIS_ENABLED"):
+            return
+        host = (settings.get("REDIS_HOST") or "").strip().lower()
+        if host in ("", "127.0.0.1", "localhost", "::1", "0.0.0.0"):
+            settings.update({"REDIS_HOST": "redis"})   # сервис redis в сети compose (постоянный)
+            print("[redis] Docker: REDIS_HOST исправлен на сервис compose 'redis'")
+    except Exception as e:
+        print(f"[redis] авто-исправление хоста: {e}")
+
+
+@app.on_event("startup")
 def _start_monitor():
     """Фоновый сбор метрик загрузки хоста (история час/день/неделя/месяц/год)."""
     try:
@@ -305,8 +321,9 @@ async def chat(req: ChatRequest):
     # сбрасывается при переиндексации (пространство index).
     acache_key = None
     if settings.get("ANSWER_CACHE") and not req.history:
+        import cache as _cache
         acache_key = "ans:" + hashlib.sha1("|".join(str(x) for x in [
-            req.question, req.filters, settings.get("SYSTEM_PROMPT"),
+            _cache.norm_q(req.question), req.filters, settings.get("SYSTEM_PROMPT"),
             settings.active_model(), settings.get("TEMPERATURE")]).encode("utf-8")).hexdigest()
         try:
             import cache

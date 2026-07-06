@@ -92,7 +92,7 @@ def _embed_query(question: str):
 
     try:
         import cache
-        key = "emb:" + hashlib.sha1(f"{model}|{question}".encode("utf-8")).hexdigest()
+        key = "emb:" + hashlib.sha1(f"{model}|{cache.norm_q(question)}".encode("utf-8")).hexdigest()
         return cache.get_or_set(key, 86400, _enc, ns="embed")
     except Exception:
         return _enc()
@@ -132,21 +132,21 @@ def search(question: str, filters: dict | None = None,
         syn_sig = synonyms.signature()
     except Exception:
         syn_sig = ""
+    import cache
     keyparts = "|".join(str(x) for x in [
-        question, filters, auto_filter,
+        cache.norm_q(question), filters, auto_filter,
         settings.get("EMBED_MODEL"), settings.get("RERANK_MODEL"),
         settings.get("TOP_K_RETRIEVE"), settings.get("TOP_K_RERANK"),
         settings.get("MIN_SCORE"), settings.get("SMART_FILTER"), syn_sig])
     ckey = "search:" + hashlib.sha1(keyparts.encode("utf-8")).hexdigest()
     try:
-        import cache
         hit = cache.get_json(ckey, ns="index")
         if hit is not None:
             if trace is not None:
                 trace.append({"key": "cache", "ms": 0, "info": {"hit": True}})
             return hit
         res = _search_raw(question, filters, auto_filter, trace)
-        cache.set_json(ckey, 300, res, ns="index")
+        cache.set_json(ckey, int(settings.get("CACHE_SEARCH_TTL") or 21600), res, ns="index")
         return res
     except Exception:
         return _search_raw(question, filters, auto_filter, trace)
