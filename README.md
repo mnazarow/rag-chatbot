@@ -219,10 +219,12 @@ reverse-proxy (Caddy/Nginx) с авторизацией или ограничь�
 | `reinstall.sh`             | Переустановка окружения (.venv + зависимости)       |
 | `scripts/checklist.sh` / `.ps1` | Полная проверка нативной установки (пакеты, Python-зависимости, сервисы); запускается инсталляторами и отдельно |
 | `scripts/checklist_docker.sh` | Полная проверка Docker-развёртывания (контейнеры, сервисы, инструменты и Python-пакеты внутри образа) |
+| `scripts/install_oda.sh`   | Автоустановка ODA File Converter (DWG→DXF) из `vendor/oda/*.deb` + xvfb (Linux/образ) |
+| `vendor/oda/`              | Дистрибутив ODA File Converter (`*.deb`) для авто-установки при развёртывании |
 | `reinstall_server.sh`      | Полная переустановка GPU-сервера (destructive)      |
 | `gpu_variant/`             | Linux + NVIDIA: vLLM, Qdrant, systemd, hybrid+, дообучение |
 | `mac_variant/`             | Деплой/управление/переустановка на Mac (launchd)    |
-| `windows_variant/`         | Windows: нативная установка (PowerShell) и Docker-вариант (`docker/`); папка документов по умолчанию `C:\db` |
+| `windows_variant/`         | Windows: нативная установка (PowerShell) и Docker-вариант (`docker/`) с one-click скриптами `start`/`restart`/`update`/`gpus`/`redis` (GPU по умолчанию, `-Cpu` для CPU); папка документов по умолчанию `C:\db` |
 | `docker_variant/`          | Кросс-платформенный Docker с Redis (Windows/Linux/macOS), авто-установка одной командой; GPU-override (`docker-compose.gpu.yml`) |
 | `lightrag_variant/`        | Отдельная ветка LightRAG для сравнения              |
 | `remote_variant/`          | Split-развёртывание: бэкенд (Qdrant+vLLM) + сервер приложения |

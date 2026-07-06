@@ -2839,6 +2839,14 @@ async function loadServer(){
   $('#srv_cards').innerHTML='<div class="cards">'+cards.join('')+'</div>';
   // GPU
   const g=s.gpu||{}; let gh='';
+  // Текущий режим вычислений (эмбеддинги/реранк) — всегда сверху блока GPU
+  const _dev=(g.compute_device||'cpu');
+  const _modeMap={cuda:['⚡ Работа на GPU (CUDA)','#22c55e'],mps:['⚡ Работа на GPU (Apple Metal / MPS)','#22c55e'],cpu:['🖥 Работа на CPU','#f59e0b']};
+  const _m=_modeMap[_dev]||['устройство: '+esc(_dev),'#9ca3af'];
+  const modeBadge='<div style="margin-bottom:10px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;display:flex;align-items:center;gap:10px">'
+    +'<span class="k" style="opacity:.8">Текущий режим</span>'
+    +'<b style="color:'+_m[1]+';font-size:15px">'+_m[0]+'</b>'
+    +'<span class="note" style="margin-left:auto">эмбеддинги и реранк; генерация LLM — отдельно (vLLM/Ollama)</span></div>';
   if(g.vendor==='nvidia' && (g.devices||[]).length){
     gh=g.devices.map(d=>`<div style="margin:6px 0;padding:8px 10px;border:1px solid var(--line);border-radius:8px">
       <b>GPU ${esc(d.index)}: ${esc(d.name)}</b>
@@ -2871,7 +2879,7 @@ async function loadServer(){
         +'но вычисления идут на <b>'+esc(devName)+'</b> (устройство '+esc(dev)+').</div>';
     }
   }
-  $('#srv_gpu').innerHTML=gh;
+  $('#srv_gpu').innerHTML=modeBadge+gh;
   // CPU по ядрам
   const pc=cpu.per_core||[];
   $('#srv_cpu').innerHTML = pc.length
