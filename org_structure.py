@@ -211,49 +211,67 @@ def _fetch(url: str, timeout: int = 30) -> str:
 
 
 def sync(url: str | None = None) -> dict:
-    """Скачать, распарсить и заменить справочник. Возвращает статус."""
+    """Скачать, распарсить и заменить справочник. Возвращает статус с подробным логом."""
+    import time
     url = (url or db.kv_get(KV_URL) or "").strip()
+    log: list[str] = []
+    def L(m):
+        log.append(time.strftime("%H:%M:%S ") + m)
     if not url:
         _set_status(False, 0, "URL не задан")
-        return {"ok": False, "error": "URL не задан", "count": 0}
+        return {"ok": False, "error": "URL не задан", "count": 0, "log": "URL не задан"}
     aid = None
     try:
         import activity
         aid = activity.start("parse", "Структура компании", "загрузка по URL")
     except Exception:
         aid = None
+    L(f"Источник: {url}")
+    L(f"Хост: {_host_of(url)}")
     try:
+        L("Скачиваю выгрузку по URL…")
         text = _fetch(url)
+        L(f"Получено {len(text)} символов (формат SpreadsheetML)")
         if aid is not None:
             import activity
             activity.update(aid, stage="разбор и сохранение")
+        L("Разбираю строки выгрузки…")
         rows = parse_xml(text)
+        L(f"Распознано записей сотрудников: {len(rows)}")
     except Exception as e:
         msg = _friendly_error(e, url)
         _set_status(False, 0, msg)
+        L(f"ОШИБКА: {msg}")
         if aid is not None:
             import activity
             activity.finish(aid, ok=False, stage="ошибка")
-        return {"ok": False, "error": msg, "count": 0}
+        return {"ok": False, "error": msg, "count": 0, "log": "\n".join(log)}
     n = db.org_replace(rows)
+    L(f"Справочник заменён в базе данных: сохранено {n} сотрудник(ов)")
     # индексация карточек сотрудников в базу знаний (инкрементально)
     idx = None
     try:
         if aid is not None:
             import activity
             activity.update(aid, stage="индексация в базу знаний")
+        L("Индексирую карточки сотрудников в базу знаний (инкрементально)…")
         import org_index
         idx = org_index.sync_index(rows)
+        if idx:
+            L(f"Индекс обновлён: добавлено {idx.get('added', 0)}, "
+              f"обновлено {idx.get('updated', 0)}, удалено {idx.get('removed', 0)}")
     except Exception as e:
+        L(f"Индексация в базу знаний не удалась: {e}")
         print(f"[org] индексация в базу знаний не удалась: {e}")
     _set_status(True, n, None)
+    L("Синхронизация завершена успешно.")
     if aid is not None:
         import activity
         st = f"загружено {n}"
         if idx:
             st += f" · индекс +{idx['added']}/~{idx['updated']}/-{idx['removed']}"
         activity.finish(aid, ok=True, stage=st)
-    return {"ok": True, "count": n, "error": None, "index": idx}
+    return {"ok": True, "count": n, "error": None, "index": idx, "log": "\n".join(log)}
 
 
 def due_for_sync(interval: int = 3600) -> bool:

@@ -1605,6 +1605,10 @@
         <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="orgClear()">🗑 Очистить</button>
       </div>
       <div id="org_status" class="note" style="margin-top:8px"></div>
+      <div style="margin-top:8px">
+        <button class="act ghost" id="org_logbtn" style="display:none" onclick="orgToggleLog()">📋 Подробный лог синхронизации</button>
+        <pre id="org_log" style="display:none;white-space:pre-wrap;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.45;max-height:280px;overflow:auto"></pre>
+      </div>
     </div>
 
     <div class="box"><h3>👥 Сотрудники <span id="org_count" class="tag"></span></h3>
@@ -5453,7 +5457,9 @@ async function orgSaveConfig(){
 }
 async function orgSyncNow(){
   orgMsg('синхронизация…');
+  orgSetLog('Синхронизация запущена…');
   const r=await adminPost('/api/admin/org/sync',{url:$('#org_url').value.trim()});
+  orgSetLog((r&&r.log)||'');
   if(r && r.ok){
     let m='готово · загружено записей: '+(r.count||0);
     if(r.index) m+=` · база знаний: +${r.index.added} обновлено ${r.index.updated} удалено ${r.index.removed}`;
@@ -5461,6 +5467,13 @@ async function orgSyncNow(){
   }
   else orgMsg('ошибка: '+esc((r&&r.error)||'неизвестно'), false);
 }
+function orgSetLog(text){
+  const btn=$('#org_logbtn'), pre=$('#org_log');
+  if(!pre||!btn) return;
+  if(text){ pre.textContent=text; btn.style.display=''; pre.style.display='block'; }
+  else { btn.style.display='none'; pre.style.display='none'; }
+}
+function orgToggleLog(){ const p=$('#org_log'); if(p) p.style.display=(p.style.display==='none'?'block':'none'); }
 async function orgClear(){
   if(!confirm('Очистить весь справочник сотрудников?')) return;
   const r=await adminPost('/api/admin/org/clear');
