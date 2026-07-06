@@ -746,6 +746,7 @@
       <button class="act ghost" onclick="loadServer()">Обновить</button></div>
     <div id="srv_host" class="note" style="margin-bottom:10px"></div>
     <div class="cards" id="srv_cards"></div>
+    <div class="box"><h3>🧠 Компоненты: что где выполняется (CPU/GPU)</h3><div id="srv_components"></div></div>
     <div class="box"><h3>🎮 GPU</h3><div id="srv_gpu"></div></div>
     <div class="box"><h3>🧮 Процессор (по ядрам)</h3><div id="srv_cpu"></div></div>
     <div class="box"><h3>💾 Диски</h3><div id="srv_disks"></div></div>
@@ -2984,6 +2985,29 @@ async function tgBlock(id){ await tgPost('/api/admin/telegram/block',{chat_id:id
 async function tgUnblock(id){ await tgPost('/api/admin/telegram/unblock',{chat_id:id}); loadTelegram(); }
 async function tgClearHistory(){ if(!confirm('Очистить историю и запросы Телеграм? Пользователи останутся.'))return;
   const r=await tgPost('/api/admin/telegram/clear-history'); tgMsg(r.msg||'очищено'); loadTelegram(); }
+function renderComponents(c){
+  const el=$('#srv_components'); if(!el) return;
+  c=c||{};
+  if(c.error){ el.innerHTML='<div class="note">нет данных ('+esc(c.error)+')</div>'; return; }
+  const p=c.process||{}, cards=[];
+  cards.push(`<div class="card"><div class="k">Устройство вычислений</div><div class="v" style="font-size:15px">${esc(c.device_label||'—')}</div></div>`);
+  if(p.ram_mb!=null) cards.push(`<div class="card"><div class="k">ОЗУ процесса</div><div class="v" style="font-size:16px">${p.ram_mb} МБ</div></div>`);
+  if(p.cuda_alloc_mb!=null) cards.push(`<div class="card"><div class="k">Видеопамять процесса${p.gpu_name?(' · '+esc(p.gpu_name)):''}</div><div class="v" style="font-size:15px">${p.cuda_alloc_mb} МБ<br><span class="note">резерв ${p.cuda_reserved_mb} МБ</span></div></div>`);
+  (c.gpus||[]).forEach(d=>{ if(d.mem_total) cards.push(`<div class="card"><div class="k">GPU ${esc(d.index)}: ${esc(d.name)}</div><div class="v" style="font-size:15px">${nz(d.mem_used)} / ${nz(d.mem_total)} МБ</div>${bar(d.mem_total?Math.round(d.mem_used*100/d.mem_total):0)}</div>`); });
+  const rows=(c.components||[]).map(k=>{
+    const badge = k.external ? '<span class="tag" style="background:#64748b22;color:#94a3b8">внешний</span>'
+      : (k.loaded===true ? '<span class="tag ok">загружен</span>'
+        : (k.loaded===false ? '<span class="note">не загружен</span>' : '<span class="note">по требованию</span>'));
+    const gpuish=/GPU/.test(k.where||'');
+    return `<tr>
+      <td><b>${esc(k.name)}</b>${k.model?('<br><span class="note" style="font-size:11px">'+esc(k.model)+'</span>'):''}</td>
+      <td><span style="color:${gpuish?'#22c55e':'inherit'}">${esc(k.where||'—')}</span>${k.note?('<br><span class="note" style="font-size:11px">'+esc(k.note)+'</span>'):''}</td>
+      <td>${badge}</td></tr>`;
+  }).join('');
+  el.innerHTML = '<div class="cards" style="margin-bottom:10px">'+cards.join('')+'</div>'
+    + '<div style="overflow:auto"><table><thead><tr><th>Компонент</th><th>Где выполняется</th><th>Состояние</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    + '<div class="note" style="margin-top:6px">Эмбеддинги, реранкер и Whisper выполняются в этом процессе (устройство — по настройке DEVICE). Генерацию LLM и vision выполняет внешний движок (Ollama/vLLM) на своём GPU — его память здесь не видна.</div>';
+}
 async function loadServer(){
   let s; try{ s=await (await fetch('/api/server-load?t='+Date.now(),{cache:'no-store'})).json(); }catch(e){ return; }
   const p=s.platform||{};
@@ -3048,6 +3072,8 @@ async function loadServer(){
     }
   }
   $('#srv_gpu').innerHTML=modeBadge+gh;
+  // Компоненты: что где выполняется
+  renderComponents(s.components);
   // CPU по ядрам
   const pc=cpu.per_core||[];
   $('#srv_cpu').innerHTML = pc.length

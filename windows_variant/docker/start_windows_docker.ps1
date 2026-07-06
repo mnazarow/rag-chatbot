@@ -146,6 +146,13 @@ if (-not $Cpu) { Log "Режим GPU (по умолчанию): собираю C
 Log "Собираю и запускаю контейнеры (первый раз — долго: качаются образы и модели)..."
 # docker пишет прогресс в stderr; при ErrorActionPreference=Stop это прервало бы скрипт.
 $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+# Убрать одиночный rag_redis (из старого обходного запуска) — иначе конфликт имени с compose.
+try {
+    if (docker ps -aq -f "name=^rag_redis$") {
+        $proj = (docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' rag_redis 2>$null)
+        if (-not $proj) { docker rm -f rag_redis *> $null }
+    }
+} catch {}
 docker compose @Compose up -d --build
 $composeOk = ($LASTEXITCODE -eq 0)
 $ErrorActionPreference = $eap

@@ -643,19 +643,48 @@ _WEB_STATS = ROOT / "web_stats.json"    # результаты парсинга 
 _web_dl_lock = threading.Lock()         # защита выбора имени файла при параллельном скачивании
 
 
-def _web_stats_load() -> dict:
-    """Сохранённые результаты парсинга по сайтам: {url: {ok, pages, files, errors, limits, ts}}."""
+# Список сайтов и статистику парсинга храним в БД (таблица kv_store), чтобы они
+# переживали пересоздание контейнера в Docker: файлы в /app не персистентны, а
+# rag_logs.db смонтирован. Старые файлы web_sources.txt/web_stats.json один раз
+# мигрируются в БД (для нативных установок, где они уже есть).
+
+def _web_sources_load() -> list:
+    """URL сохранённых сайтов из БД (с одноразовой миграцией из web_sources.txt)."""
+    raw = db.kv_get("web_sources")
+    if raw is None and _WEB_SOURCES.exists():
+        try:
+            raw = _WEB_SOURCES.read_text(encoding="utf-8")
+            db.kv_set("web_sources", raw)
+        except Exception:
+            raw = ""
+    return [u.strip() for u in (raw or "").splitlines() if u.strip()]
+
+
+def _web_sources_save(urls: list) -> None:
     try:
-        if _WEB_STATS.exists():
-            return _json.loads(_WEB_STATS.read_text(encoding="utf-8")) or {}
+        db.kv_set("web_sources", "\n".join(urls))
+    except Exception as e:
+        print(f"[web] не удалось сохранить список сайтов: {e}")
+
+
+def _web_stats_load() -> dict:
+    """Результаты парсинга по сайтам из БД (с миграцией из web_stats.json)."""
+    raw = db.kv_get("web_stats")
+    if raw is None and _WEB_STATS.exists():
+        try:
+            raw = _WEB_STATS.read_text(encoding="utf-8")
+            db.kv_set("web_stats", raw)
+        except Exception:
+            raw = ""
+    try:
+        return _json.loads(raw) if raw else {}
     except Exception:
-        pass
-    return {}
+        return {}
 
 
 def _web_stats_save(stats: dict) -> None:
     try:
-        _WEB_STATS.write_text(_json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+        db.kv_set("web_stats", _json.dumps(stats, ensure_ascii=False))
     except Exception as e:
         print(f"[web] не удалось сохранить статистику парсинга: {e}")
 
@@ -667,9 +696,7 @@ def _web_slug(url: str) -> str:
 
 def _web_list() -> list:
     """Список сохранённых сайтов: URL + файл + признак наличия в папке."""
-    urls = []
-    if _WEB_SOURCES.exists():
-        urls = [u.strip() for u in _WEB_SOURCES.read_text(encoding="utf-8").splitlines() if u.strip()]
+    urls = _web_sources_load()
     webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
     stats = _web_stats_load()
     out = []
@@ -686,9 +713,7 @@ def _web_list() -> list:
 
 def web_saved_urls() -> list:
     """Список сохранённых для парсинга сайтов (URL)."""
-    if _WEB_SOURCES.exists():
-        return [u.strip() for u in _WEB_SOURCES.read_text(encoding="utf-8").splitlines() if u.strip()]
-    return []
+    return _web_sources_load()
 
 
 def get_web_urls() -> dict:
@@ -704,7 +729,7 @@ def delete_web(url: str) -> dict:
         return {"ok": False, "msg": "не указан URL"}
     # 1) убрать из списка
     sites = [s["url"] for s in _web_list() if s["url"] != url]
-    _WEB_SOURCES.write_text("\n".join(sites), encoding="utf-8")
+    _web_sources_save(sites)
     # убрать сохранённую статистику парсинга по этому сайту
     _st = _web_stats_load()
     if url in _st:
@@ -991,7 +1016,7 @@ def ingest_web(urls: list) -> dict:
         return {"ok": False, "msg": "укажите хотя бы один URL (http/https), максимум 50"}
     if _web_job["running"]:
         return {"ok": False, "msg": "парсинг сайтов уже идёт"}
-    _WEB_SOURCES.write_text("\n".join(urls), encoding="utf-8")
+    _web_sources_save(urls)
     webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
     logfile = "/tmp/rag_web.log"
     _slug = _web_slug
@@ -2099,6 +2124,96 @@ def _gpu_info() -> dict:
     return g
 
 
+def component_status(gpu: dict | None = None) -> dict:
+    """Что где выполняется в реальном времени: устройство каждого компонента RAG
+    (CPU/GPU/внешний), загружен ли он, память процесса (ОЗУ) и видеопамять (CUDA)."""
+    MB = 1024 * 1024
+    try:
+        dev = settings.device()
+    except Exception:
+        dev = (settings.get("DEVICE") or "cpu").lower()
+    g = gpu if gpu is not None else _gpu_info()
+    devs = (g or {}).get("devices") or []
+    gpu_name = devs[0].get("name") if devs else None
+
+    def dl(d):
+        if d == "cuda":
+            return ("GPU: " + gpu_name) if gpu_name else "GPU (CUDA)"
+        if d == "mps":
+            return "GPU: Apple Metal (MPS)"
+        return "CPU"
+
+    # память процесса приложения: ОЗУ (RSS) и видеопамять (CUDA), выделенная этим процессом
+    ram_mb = cuda_alloc = cuda_reserved = None
+    try:
+        import psutil
+        ram_mb = round(psutil.Process().memory_info().rss / MB)
+    except Exception:
+        pass
+    if dev == "cuda":
+        try:
+            import torch
+            cuda_alloc = round(torch.cuda.memory_allocated() / MB)
+            cuda_reserved = round(torch.cuda.memory_reserved() / MB)
+        except Exception:
+            pass
+
+    comps = []
+    # эмбеддинги и реранкер (torch, в этом процессе; @lru_cache → currsize>0 если загружены)
+    try:
+        import retriever
+        comps.append({"name": "Эмбеддинги", "model": settings.get("EMBED_MODEL"),
+                      "loaded": retriever._embedder.cache_info().currsize > 0, "where": dl(dev)})
+        comps.append({"name": "Реранкер", "model": settings.get("RERANK_MODEL"),
+                      "loaded": retriever._reranker.cache_info().currsize > 0, "where": dl(dev)})
+    except Exception:
+        pass
+    # Whisper (STT) — грузится при первой транскрибации
+    try:
+        import loaders
+        wback = (settings.get("WHISPER_BACKEND") or "faster").lower()
+        wdev = (settings.get("DEVICE") or "cpu").lower()
+        if wback == "mlx":
+            comps.append({"name": "Whisper (STT)", "model": settings.get("WHISPER_MODEL"),
+                          "loaded": None, "where": "GPU: Apple Metal (MPS)"})
+        else:
+            wloaded = getattr(loaders, "_FASTER_WHISPER", None) is not None
+            comps.append({"name": "Whisper (STT)", "model": settings.get("WHISPER_MODEL"),
+                          "loaded": wloaded, "where": dl(wdev if wdev in ("cuda", "mps") else "cpu"),
+                          "note": "" if wloaded else "загрузится при первой транскрибации"})
+    except Exception:
+        pass
+    # Генерация LLM и vision — внешний движок (Ollama/vLLM), считает на своём GPU
+    backend = (settings.get("LLM_BACKEND") or "ollama").lower()
+    if backend == "ollama":
+        ourl = settings.get("OLLAMA_URL")
+        if not ourl:
+            try:
+                import config as _c
+                ourl = getattr(_c, "OLLAMA_URL", "http://localhost:11434")
+            except Exception:
+                ourl = "http://localhost:11434"
+        llm_where = f"внешний: Ollama ({ourl}) — на GPU/CPU хоста, не видно из приложения"
+    else:
+        llm_where = "внешний: OpenAI-совместимый API (vLLM) — на GPU сервера"
+    comps.append({"name": "Генерация LLM", "model": settings.active_model(),
+                  "loaded": None, "where": llm_where, "external": True})
+    vm = settings.get("VISION_MODEL")
+    if vm:
+        comps.append({"name": "Vision-модель", "model": vm, "loaded": None,
+                      "where": llm_where, "external": True})
+
+    return {
+        "compute_device": dev, "device_label": dl(dev),
+        "process": {"ram_mb": ram_mb, "cuda_alloc_mb": cuda_alloc,
+                    "cuda_reserved_mb": cuda_reserved,
+                    "gpu_name": gpu_name if dev == "cuda" else None},
+        "components": comps,
+        "gpus": [{"index": d.get("index"), "name": d.get("name"),
+                  "mem_used": d.get("mem_used"), "mem_total": d.get("mem_total")} for d in devs],
+    }
+
+
 def server_load() -> dict:
     """Подробная текущая загрузка хоста: CPU, память, диски, GPU, сеть, аптайм."""
     import platform
@@ -2238,6 +2353,12 @@ def server_load() -> dict:
                                   "compute_device": out["gpu"].get("compute_device")}
         except Exception:
             pass
+
+    # что где выполняется (CPU/GPU/внешний) + память процесса — в реальном времени
+    try:
+        out["components"] = component_status(out.get("gpu"))
+    except Exception as e:
+        out["components"] = {"error": str(e)}
     return out
 
 

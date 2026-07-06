@@ -70,6 +70,13 @@ Log "Пересобираю образ приложения и перезапу�
 # прервало бы скрипт (NativeCommandError). На время команды переключаемся на Continue
 # и определяем успех по коду возврата.
 $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+# Убрать одиночный rag_redis (из старого обходного запуска) — иначе конфликт имени с compose.
+try {
+    if (docker ps -aq -f "name=^rag_redis$") {
+        $proj = (docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' rag_redis 2>$null)
+        if (-not $proj) { Log "Удаляю одиночный контейнер rag_redis (конфликт имени с compose)..."; docker rm -f rag_redis *> $null }
+    }
+} catch {}
 docker compose @Compose up -d --build
 $composeOk = ($LASTEXITCODE -eq 0)
 $ErrorActionPreference = $eap
