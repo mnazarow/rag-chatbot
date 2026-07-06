@@ -2363,6 +2363,12 @@ def component_metrics() -> dict:
          **(cnt("db:postgresql") if active_db == "postgresql" else {"calls": 0, "errors": 0, "avg_ms": 0.0}),
          "resource": {"reachable": active_db == "postgresql",
                       "label": "активна" if active_db == "postgresql" else "не используется"}},
+        {"key": "mysql", "name": "MySQL", "group": "База данных",
+         "desc": "Внешний сервер БД (альтернатива SQLite/PostgreSQL): те же журнал/настройки/"
+                 "каталог документов. Активен, если выбран в настройках БД.",
+         **(cnt("db:mysql") if active_db == "mysql" else {"calls": 0, "errors": 0, "avg_ms": 0.0}),
+         "resource": {"reachable": active_db == "mysql",
+                      "label": "активна" if active_db == "mysql" else "не используется"}},
         {"key": "redis", "name": "Redis", "group": "Кэш",
          "desc": "Опциональный кэш агрегатов и общий межпроцессный реестр. Ускоряет "
                  "статистику/поиск; при отсутствии всё работает напрямую.",

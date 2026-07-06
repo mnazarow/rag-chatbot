@@ -1934,7 +1934,7 @@ function areaChart(vals,color,h){
     <polyline points="${line}" fill="none" stroke="${color}" stroke-width="1.9" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
     <circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.6" fill="${color}" vector-effect="non-scaling-stroke"/></svg>`;
 }
-const _compIcons={qdrant:'🧭',embed:'🧬',rerank:'🎯',llm:'🤖',lightrag:'🕸️',kag:'🧠',sqlite:'🗃️',postgresql:'🐘',redis:'⚡'};
+const _compIcons={qdrant:'🧭',embed:'🧬',rerank:'🎯',llm:'🤖',lightrag:'🕸️',kag:'🧠',sqlite:'🗃️',postgresql:'🐘',mysql:'🐬',redis:'⚡'};
 function _chip(t,extra){ return '<span style="display:inline-block;padding:2px 9px;border:1px solid var(--line);border-radius:999px;font-size:11px;background:var(--panel);white-space:nowrap;'+(extra||'')+'">'+t+'</span>'; }
 async function dashComponents(){
   const el=$('#dash_components'); if(!el) return;
