@@ -187,6 +187,8 @@
     <button data-t="admin">⚙️ Администратор</button>
     <button data-t="org">🏢 Структура компании</button>
     <button data-t="syn">🔤 Синонимы</button>
+    <button data-t="apihooks">🔌 Внешние API</button>
+    <button data-t="websites">🌐 Сайты в базе знаний</button>
     <button data-t="obsidian">🔮 База знаний (Obsidian)</button>
   </nav>
   <div class="spacer"></div>
@@ -1186,49 +1188,6 @@
       </div>
     </div>
 
-    <!-- внешние API-хуки -->
-    <div class="box">
-      <h3>🔌 Внешние API (хуки) <span id="apih_count" class="tag"></span></h3>
-      <div class="note" style="line-height:1.5">Для определённых типов вопросов бот вызывает сторонний REST-сервис и подставляет его ответ в контекст (модель формулирует ответ по данным со ссылкой на источник). Триггер — ключевые слова, регэксп или ИИ-интент; параметры из вопроса подставляются в URL/тело шаблоном <code>{имя}</code> (и <code>{q}</code> — весь вопрос). Работает в чате и Телеграме; запросы идут с учётом DNS-записей.</div>
-      <div class="grid2" style="margin-top:10px">
-        <div class="field" style="margin:0"><label>Название</label><input id="apih_name" placeholder="Остатки склада"></div>
-        <div class="field" style="margin:0"><label>Метка источника (для ссылки)</label><input id="apih_label" placeholder="Складская система"></div>
-        <div class="field" style="margin:0"><label>Триггер</label>
-          <select id="apih_ttype" style="width:100%">
-            <option value="keywords">по ключевым словам</option>
-            <option value="regex">по регэкспу (с параметрами)</option>
-            <option value="intent">по ИИ-интенту</option>
-          </select></div>
-        <div class="field" style="margin:0"><label>Значение триггера</label><input id="apih_trig" placeholder="остаток, склад · или регэксп · или описание для ИИ"></div>
-        <div class="field" style="margin:0"><label>Параметры</label><input id="apih_pspec" placeholder="keywords/regex: регэксп с (?P<art>…) · intent: art, city"></div>
-        <div class="field" style="margin:0"><label>Метод</label>
-          <select id="apih_method" style="width:100%"><option>GET</option><option>POST</option></select></div>
-      </div>
-      <div class="field" style="margin:8px 0 0"><label>URL (шаблон)</label><input id="apih_url" placeholder="http://in.local/stock?art={art}" style="width:100%"></div>
-      <div class="grid2" style="margin-top:8px">
-        <div class="field" style="margin:0"><label>Заголовки (JSON)</label><input id="apih_headers" placeholder='{"X-API-Key":"…"}' style="width:100%"></div>
-        <div class="field" style="margin:0"><label>resp_path (путь в JSON-ответе)</label><input id="apih_rpath" placeholder="data.qty"></div>
-      </div>
-      <div class="field" style="margin:8px 0 0"><label>Тело (для POST, шаблон)</label><input id="apih_body" placeholder='{"article":"{art}"}' style="width:100%"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
-        <label class="note" style="cursor:pointer"><input type="checkbox" id="apih_enabled" checked> включён</label>
-        <label class="note">таймаут, с <input id="apih_timeout" type="number" value="15" style="width:64px"></label>
-        <button class="act" onclick="apihSave()">Сохранить хук</button>
-        <button class="act ghost" onclick="apihReset()">Очистить форму</button>
-        <input type="hidden" id="apih_id" value="">
-        <span id="apih_msg" class="note"></span>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
-        <input id="apih_testq" placeholder="Тестовый вопрос (напр. «остаток 12345»)" style="flex:1;min-width:240px">
-        <button class="act ghost" onclick="apihTest()">Проверить</button>
-      </div>
-      <div id="apih_testres" class="note" style="margin-top:6px"></div>
-      <div style="overflow:auto;margin-top:10px">
-        <table><thead><tr><th>Вкл</th><th>Название</th><th>Триггер</th><th>URL</th><th>Действия</th></tr></thead>
-        <tbody id="apih_rows"></tbody></table>
-      </div>
-    </div>
-
     <!-- прайс-папка: статус -->
     <div class="box">
       <h3>💲 Прайс-папка <span id="price_badge" class="tag"></span></h3>
@@ -1278,30 +1237,6 @@
       <div class="note">Qdrant поднимается контейнером (нужен Docker). LightRAG ставится в окружение (pip). Статус и логи — в блоке «Состояние и операции».</div>
     </div>
 
-    <!-- сайты в базе знаний -->
-    <div class="box">
-      <h3>Сайты в базе знаний</h3>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <input type="text" id="weburl" placeholder="https://example.com — добавляйте по одному"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();webAdd();}"
-               style="flex:1;min-width:240px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:13px monospace">
-        <button class="act ghost" onclick="webAdd()">➕ Добавить</button>
-      </div>
-      <div id="webqueue" style="margin-top:8px"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
-        <button class="act" onclick="ingestWeb()">🌐 Спарсить и добавить в базу</button>
-        <button class="act ghost" onclick="webClearQueue()">Очистить очередь</button>
-        <button class="act ghost" onclick="loadWebUrls()">Обновить список</button>
-        <span id="webmsg"></span>
-      </div>
-      <div class="note">До 50 адресов. С каждого сайта обходятся ссылки в пределах домена (настройки <b>«Сайты (парсинг)»</b> ниже: глубина, макс. страниц/файлов, только тот же домен, headless-браузер). Извлекается основной текст всех страниц (объединяется в документ в папке <code>web/</code>), а <b>все файлы по ссылкам</b> (PDF, изображения, документы, архивы и т.д.) скачиваются в <code>web/files/</code> и тоже индексируются. Для сайтов на <b>JavaScript</b> включён headless-браузер (Playwright) — он рендерит страницы как настоящий браузер. Больше текста — увеличьте «Глубину обхода» и лимиты.</div>
-
-      <div style="margin-top:14px"><b style="font-size:13px">Сайты в базе:</b></div>
-      <div id="weblist" style="margin-top:6px"></div>
-
-      <div style="margin-top:12px"><b style="font-size:13px">Лог парсинга:</b></div>
-      <pre id="weblog" style="margin-top:6px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;display:none"></pre>
-    </div>
 
     <!-- добавление файлов -->
     <div class="box">
@@ -1689,6 +1624,230 @@
       </div>
     </div>
   </section>
+
+  <!-- ===== ВНЕШНИЕ API (ХУКИ) ===== -->
+  <section id="apihooks">
+    <h1>Внешние API (хуки)</h1>
+    <div class="sub">Обогащение ответов данными из сторонних REST-сервисов в реальном времени
+      <button class="act ghost" onclick="apihLoad()">Обновить</button></div>
+
+    <div class="box">
+      <h3>Что это и когда использовать</h3>
+      <div class="note" style="line-height:1.6">
+        Для некоторых вопросов ответ должен браться <b>не из базы знаний, а из «живых» систем</b> —
+        например остатки на складе, статус заказа, цена по артикулу, курс валют, погода. Хук ловит
+        такие вопросы, вызывает ваш REST-сервис, а его ответ подставляется в контекст — модель
+        формулирует итог по свежим данным и ставит <b>ссылку на источник</b> (метку). Срабатывание
+        видно этапом <b>🔌 Внешний API</b> в структуре ответа (в чате и Телеграме).
+        <br><br>
+        <b>Как срабатывает (триггер):</b>
+        <ul style="margin:6px 0 0 18px;line-height:1.6">
+          <li><b>по ключевым словам</b> — простейший вариант: список слов через запятую (<code>остаток, наличие, склад</code>). Сработает, если в вопросе есть любое из них.</li>
+          <li><b>по регэкспу</b> — когда из вопроса нужно <b>извлечь параметр</b> (артикул, номер заказа, город). Именованные группы <code>(?P&lt;имя&gt;…)</code> становятся параметрами шаблона.</li>
+          <li><b>по ИИ-интенту</b> — когда формулировки разные и ключевые слова ненадёжны: описываете смысл словами, LLM решает, подходит ли вопрос, и вытаскивает параметры.</li>
+        </ul>
+        <b>Параметры</b> из вопроса подставляются в URL/тело/заголовки шаблоном <code>{имя}</code>;
+        <code>{q}</code> — весь текст вопроса. <b>resp_path</b> — путь к нужному полю в JSON-ответе
+        (через точку: <code>data.items.0.qty</code>). Запросы идут <b>с учётом DNS-записей</b>
+        (раздел «DNS») — удобно для внутренних адресов. Есть короткий кэш по параметрам.
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>🔌 Хуки <span id="apih_count" class="tag"></span></h3>
+      <div class="grid2" style="margin-top:4px">
+        <div class="field" style="margin:0"><label>Название</label><input id="apih_name" placeholder="Остатки склада"></div>
+        <div class="field" style="margin:0"><label>Метка источника (для ссылки)</label><input id="apih_label" placeholder="Складская система"></div>
+        <div class="field" style="margin:0"><label>Триггер</label>
+          <select id="apih_ttype" style="width:100%">
+            <option value="keywords">по ключевым словам</option>
+            <option value="regex">по регэкспу (с параметрами)</option>
+            <option value="intent">по ИИ-интенту</option>
+          </select></div>
+        <div class="field" style="margin:0"><label>Значение триггера</label><input id="apih_trig" placeholder="остаток, склад · или регэксп · или описание для ИИ"></div>
+        <div class="field" style="margin:0"><label>Параметры</label><input id="apih_pspec" placeholder="keywords/regex: регэксп с (?P<art>…) · intent: art, city"></div>
+        <div class="field" style="margin:0"><label>Метод</label>
+          <select id="apih_method" style="width:100%"><option>GET</option><option>POST</option></select></div>
+      </div>
+      <div class="field" style="margin:8px 0 0"><label>URL (шаблон)</label><input id="apih_url" placeholder="http://in.local/stock?art={art}" style="width:100%"></div>
+      <div class="grid2" style="margin-top:8px">
+        <div class="field" style="margin:0"><label>Заголовки (JSON)</label><input id="apih_headers" placeholder='{"X-API-Key":"…"}' style="width:100%"></div>
+        <div class="field" style="margin:0"><label>resp_path (путь в JSON-ответе)</label><input id="apih_rpath" placeholder="data.qty"></div>
+      </div>
+      <div class="field" style="margin:8px 0 0"><label>Тело (для POST, шаблон)</label><input id="apih_body" placeholder='{"article":"{art}"}' style="width:100%"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <label class="note" style="cursor:pointer"><input type="checkbox" id="apih_enabled" checked> включён</label>
+        <label class="note">таймаут, с <input id="apih_timeout" type="number" value="15" style="width:64px"></label>
+        <button class="act" onclick="apihSave()">Сохранить хук</button>
+        <button class="act ghost" onclick="apihReset()">Очистить форму</button>
+        <input type="hidden" id="apih_id" value="">
+        <span id="apih_msg" class="note"></span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <input id="apih_testq" placeholder="Тестовый вопрос (напр. «остаток 12345»)" style="flex:1;min-width:240px">
+        <button class="act ghost" onclick="apihTest()">Проверить</button>
+      </div>
+      <div id="apih_testres" class="note" style="margin-top:6px"></div>
+      <div style="overflow:auto;margin-top:10px">
+        <table><thead><tr><th>Вкл</th><th>Название</th><th>Триггер</th><th>URL</th><th>Действия</th></tr></thead>
+        <tbody id="apih_rows"></tbody></table>
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>✅ Рекомендации по настройке</h3>
+      <div class="note" style="line-height:1.7">
+        • <b>Выбор триггера:</b> ключевые слова — для однозначных тем; регэксп — когда нужен точный
+        параметр из вопроса (артикул/номер); ИИ-интент — для свободных формулировок (дороже: тратит
+        вызов LLM на проверку).<br>
+        • <b>Держите сервис быстрым.</b> Хук блокирует ответ до получения данных — ставьте таймаут
+        5–15 с; медленный API замедлит весь ответ бота.<br>
+        • <b>Возвращайте компактные данные</b> и точный <code>resp_path</code> — подавать в модель
+        весь большой JSON не нужно; достаточно нужного поля/фрагмента.<br>
+        • <b>Секреты — в заголовки</b> (<code>X-API-Key</code> и т.п.), а не в URL. Внутренние адреса
+        добавьте в раздел <b>«DNS»</b>, чтобы имя резолвилось из контейнера/сервера.<br>
+        • <b>Проверяйте кнопкой «Проверить»</b> на реальном вопросе перед включением: видно, сработал
+        ли триггер, какие параметры извлечены, что вернул сервис и по какому <code>resp_path</code>.<br>
+        • <b>GET — для чтения, POST — когда нужно тело.</b> В теле/URL используйте <code>{параметр}</code>
+        и <code>{q}</code>.<br>
+        • <b>Меньше — лучше:</b> несколько узких хуков надёжнее одного «на всё». Пересекающиеся триггеры
+        могут срабатывать одновременно.
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>📋 Примеры настройки</h3>
+      <div class="note" style="margin-bottom:8px">Скопируйте значения в форму выше и нажмите «Сохранить хук».</div>
+
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px">
+        <b>1) Остаток по артикулу (регэксп с параметром)</b>
+        <div class="note" style="line-height:1.6;margin-top:4px">
+          Вопрос: «остаток 123456» / «сколько на складе арт 123456».<br>
+          Триггер: <b>по регэкспу</b> · Значение: <code>(?:остат\w*|наличи\w*|склад\w*).*?(?P&lt;art&gt;\d{4,})</code><br>
+          Параметры: <code>(?P&lt;art&gt;\d{4,})</code> (или оставьте пусто — берутся из групп)<br>
+          Метод <code>GET</code> · URL: <code>http://in.local/api/stock?article={art}</code><br>
+          Заголовки: <code>{"X-API-Key":"…"}</code> · resp_path: <code>data.qty</code> · Метка: <code>Складская система</code>
+        </div>
+      </div>
+
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px">
+        <b>2) Статус заказа (POST + тело)</b>
+        <div class="note" style="line-height:1.6;margin-top:4px">
+          Вопрос: «статус заказа 7788».<br>
+          Триггер: <b>по регэкспу</b> · Значение: <code>заказ\w*\s*(?:№|номер)?\s*(?P&lt;ord&gt;\d+)</code><br>
+          Метод <code>POST</code> · URL: <code>http://in.local/api/orders/status</code><br>
+          Тело: <code>{"order":"{ord}"}</code> · Заголовки: <code>{"Content-Type":"application/json"}</code><br>
+          resp_path: <code>result.status</code> · Метка: <code>ERP: заказы</code>
+        </div>
+      </div>
+
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+        <b>3) Свободный вопрос через ИИ-интент (курс/погода и т.п.)</b>
+        <div class="note" style="line-height:1.6;margin-top:4px">
+          Вопрос: «какой курс доллара сейчас» / «доллар к рублю».<br>
+          Триггер: <b>по ИИ-интенту</b> · Значение (описание): <code>вопрос о текущем курсе валюты; извлеки код валюты</code><br>
+          Параметры: <code>cur</code> (что должен вернуть интент)<br>
+          Метод <code>GET</code> · URL: <code>https://api.example.com/rate?base={cur}&quote=RUB</code><br>
+          resp_path: <code>rate</code> · Метка: <code>Курсы валют</code>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== САЙТЫ В БАЗЕ ЗНАНИЙ ===== -->
+  <section id="websites">
+    <h1>Сайты в базе знаний</h1>
+    <div class="sub">Парсинг сайтов: текст страниц и файлы по ссылкам добавляются в базу знаний
+      <button class="act ghost" onclick="loadWebUrls()">Обновить</button></div>
+
+    <div class="box">
+      <h3>Что это и как работает</h3>
+      <div class="note" style="line-height:1.6">
+        Бот забирает содержимое указанных сайтов и добавляет его в базу знаний, чтобы отвечать
+        по нему наравне с документами. С каждого адреса выполняется <b>обход ссылок</b> (в пределах
+        домена) до заданной глубины и лимитов. Со страниц извлекается <b>основной текст</b> (все
+        страницы объединяются в один документ в папке <code>web/</code>), а <b>все файлы по ссылкам</b>
+        (PDF, изображения, документы, архивы и т.д.) скачиваются в <code>web/files/</code> и тоже
+        индексируются. Для сайтов на <b>JavaScript</b> используется headless-браузер (Playwright) —
+        он рендерит страницы как настоящий браузер. После парсинга запускается индексация.
+        <br><br>
+        Запросы идут <b>с учётом DNS-записей</b> (раздел «DNS») — можно парсить внутренние адреса.
+        Параметры обхода (глубина, лимиты, домен, headless, параллелизм) — в разделе
+        <b>«Администратор» → группа настроек «Сайты (парсинг)»</b>.
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>➕ Добавить и спарсить</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="weburl" placeholder="https://example.com — добавляйте по одному"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();webAdd();}"
+               style="flex:1;min-width:240px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:13px monospace">
+        <button class="act ghost" onclick="webAdd()">➕ Добавить</button>
+      </div>
+      <div id="webqueue" style="margin-top:8px"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+        <button class="act" onclick="ingestWeb()">🌐 Спарсить и добавить в базу</button>
+        <button class="act ghost" onclick="webClearQueue()">Очистить очередь</button>
+        <button class="act ghost" onclick="loadWebUrls()">Обновить список</button>
+        <span id="webmsg"></span>
+      </div>
+      <div class="note" style="margin-top:8px">До 50 адресов за раз. Прогресс парсинга и индексации виден в логе ниже и в разделе «Администратор» → «Состояние и операции».</div>
+
+      <div style="margin-top:14px"><b style="font-size:13px">Сайты в базе:</b> <span class="note">у каждого — статус и раскрытие (📋) со списком ошибок и превышений лимитов.</span></div>
+      <div id="weblist" style="margin-top:6px"></div>
+
+      <div style="margin-top:12px"><b style="font-size:13px">Лог парсинга (последний запуск):</b></div>
+      <pre id="weblog" style="margin-top:6px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+    </div>
+
+    <div class="box">
+      <h3>✅ Рекомендации по настройке</h3>
+      <div class="note" style="line-height:1.7">
+        • <b>Глубина обхода</b> (<code>WEB_CRAWL_DEPTH</code>): 0 — только указанная страница; 1 — она и
+        страницы по её ссылкам; 2+ — глубже. Начните с 1–2; большая глубина резко увеличивает объём и время.<br>
+        • <b>Макс. страниц/файлов на сайт</b> — защита от «скачивания всего интернета». Ставьте столько,
+        сколько реально нужно (напр. 20–100 страниц). Если увидите в статусе сайта «достигнут лимит» —
+        увеличьте соответствующий лимит.<br>
+        • <b>Только тот же домен</b> — держите включённым, чтобы обход не ушёл на внешние сайты по ссылкам.<br>
+        • <b>Headless-браузер (Playwright)</b> — нужен только для сайтов, где текст подгружается
+        JavaScript. Он <b>заметно медленнее</b>; для обычных статических сайтов выключите — будет
+        быстрее и параллельно.<br>
+        • <b>Параллельных загрузок</b> (<code>WEB_CONCURRENCY</code>): 4–8 ускоряет обход и скачивание
+        файлов. Слишком большое значение может нагрузить сайт-источник.<br>
+        • <b>Внутренние адреса</b> — добавьте имя хоста → IP в разделе «DNS», чтобы оно резолвилось
+        из контейнера/сервера.<br>
+        • <b>После правки лимитов</b> перезапустите парсинг сайта, чтобы добрать пропущенное.<br>
+        • Файлы (PDF и пр.) индексируются как обычные документы — крупные наборы увеличивают время индексации.
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>📋 Примеры настройки</h3>
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px">
+        <b>1) Одна страница (быстро, без обхода)</b>
+        <div class="note" style="line-height:1.6;margin-top:4px">
+          Глубина обхода: <code>0</code> · Макс. страниц: <code>1</code> · Headless: выкл (если сайт статический).<br>
+          Добавьте точный URL страницы и нажмите «Спарсить». Подойдёт для конкретной статьи/прайса.
+        </div>
+      </div>
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:10px">
+        <b>2) Раздел сайта с файлами (каталог, документация)</b>
+        <div class="note" style="line-height:1.6;margin-top:4px">
+          Глубина обхода: <code>1–2</code> · Макс. страниц: <code>50–100</code> · Макс. файлов: <code>500+</code> ·
+          Только тот же домен: вкл · Параллельных загрузок: <code>8</code>.<br>
+          Соберёт текст раздела и все прикреплённые PDF/документы.
+        </div>
+      </div>
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px">
+        <b>3) Сайт на JavaScript (SPA)</b>
+        <div class="note" style="line-height:1.6;margin-top:4px">
+          Headless-браузер: <b>вкл</b> · Глубина: <code>1</code> · Макс. страниц: небольшой (напр. <code>20</code>).<br>
+          Playwright отрендерит страницы; учитывайте, что это медленнее — держите лимиты умеренными.
+        </div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <!-- модальный браузер папок -->
@@ -1739,7 +1898,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t!=='obsidian') obsStop();                    // граф — гасим анимацию вне вкладки
   if(b.dataset.t!=='telegram') tgWorkflowStop();             // workflow-граф — гасим вне вкладки
   document.body.classList.toggle('obs-full', b.dataset.t==='obsidian');  // граф во всю ширину
-  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,voip:loadVoip,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
+  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,voip:loadVoip,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,apihooks:loadApiHooks,websites:loadWebsites,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
   if(b.dataset.t==='dash') startActivityPoll();
 });
 
@@ -3477,7 +3636,7 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); loadWebUrls(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns(); loadPrice(); apihLoad(); loadSip(); loadSipReg();
+  loadMode(); loadOps(); loadModels(); rhLoad(); loadBackups(); loadDbCache(); loadIngestLogs(); loadDns(); loadPrice(); loadSip(); loadSipReg();
 }
 
 // ---- автокалибровка параметров ----
@@ -4644,6 +4803,7 @@ function webAdd(){
 function webRemove(i){ webQueue.splice(i,1); webRenderQueue(); }
 function webClearQueue(){ if(!webQueue.length||confirm('Очистить очередь адресов?')){ webQueue=[]; webRenderQueue(); } }
 function webToggle(id){ const e=$('#'+id); if(e) e.style.display = (e.style.display==='none'?'block':'none'); }
+async function loadWebsites(){ loadWebUrls(); }
 async function loadWebUrls(){
   let r; try{ r=await (await fetch('/api/admin/web-urls?t='+Date.now(),
     {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
@@ -5105,6 +5265,7 @@ let APIH=[];
 function apihMsg(t,ok=true){ const e=$('#apih_msg'); if(e){ e.textContent=t; e.className=ok?'saved':'note'; } }
 function apihReset(){ ['name','label','trig','pspec','url','headers','rpath','body','testq'].forEach(k=>{const e=$('#apih_'+k); if(e)e.value='';});
   $('#apih_id').value=''; $('#apih_ttype').value='keywords'; $('#apih_method').value='GET'; $('#apih_timeout').value='15'; $('#apih_enabled').checked=true; apihMsg(''); }
+async function loadApiHooks(){ apihLoad(); }
 async function apihLoad(){
   if(!$('#apih_rows')) return;
   const d=await adminGet('/api/admin/api-hooks'); APIH=(d&&d.hooks)||[];

@@ -640,6 +640,7 @@ def self_test() -> dict:
 
 _WEB_SOURCES = ROOT / "web_sources.txt"
 _WEB_STATS = ROOT / "web_stats.json"    # результаты парсинга по каждому сайту (ошибки, лимиты)
+_web_dl_lock = threading.Lock()         # защита выбора имени файла при параллельном скачивании
 
 
 def _web_stats_load() -> dict:
@@ -800,12 +801,16 @@ def _web_download(url: str, dest_dir, log):
         name = unquote(os.path.basename(urlparse(url).path)) or _web_slug(url)
         name = re.sub(r"[^\w.\-]+", "_", name)[:150] or "file"
         dest_dir.mkdir(parents=True, exist_ok=True)
-        out = dest_dir / name
-        i = 1
-        while out.exists():
-            out = dest_dir / f"{i}_{name}"
-            i += 1
-        tmp = out.with_name(out.name + ".part")
+        # выбор уникального имени + резервирование .part — под локом (безопасно при
+        # параллельном скачивании: два потока не займут одно имя)
+        with _web_dl_lock:
+            out = dest_dir / name
+            i = 1
+            while out.exists() or out.with_name(out.name + ".part").exists():
+                out = dest_dir / f"{i}_{name}"
+                i += 1
+            tmp = out.with_name(out.name + ".part")
+            tmp.touch()
         with httpx.stream("GET", url, timeout=120, follow_redirects=True,
                           headers={"User-Agent": "Mozilla/5.0 (RAGBot)"}) as r:
             if r.status_code != 200:
@@ -895,46 +900,77 @@ def _web_links(html: str, base: str, seed_netloc: str, same_domain: bool) -> lis
     return out
 
 
-def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, renderer, log):
-    """Обойти сайт из стартовой страницы (BFS) до depth/max_pages. Возвращает
+def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, renderer, log,
+               workers: int = 1):
+    """Обойти сайт из стартовой страницы (BFS по уровням) до depth/max_pages. Возвращает
     (pages, files, stat): pages — список (url, title, text); files — множество URL
-    файлов для скачивания; stat — {errors:[...], pages_limit_hit, depth_limit_hit}.
-    log(msg) — журналирование."""
+    файлов для скачивания; stat — {errors, pages_limit_hit, depth_limit_hit}.
+    При workers>1 и без headless-браузера страницы уровня грузятся параллельно."""
     from urllib.parse import urlparse
+    from concurrent.futures import ThreadPoolExecutor
     seed_netloc = urlparse(seed).netloc
-    seen, queue, pages, files = set(), [(seed, 0)], [], set()
+    seen, level, pages, files = set(), [(seed, 0)], [], set()
     errors = []
     depth_limit_hit = False
-    while queue and len(pages) < max_pages:
-        url, d = queue.pop(0)
-        if url in seen:
-            continue
-        seen.add(url)
-        if _web_is_file(url):          # сам адрес — файл (например, прямая ссылка на PDF)
-            files.add(url)
-            continue
-        html = _web_fetch(url, renderer, log)
-        if html is None:
-            errors.append(f"страница не загружена: {url}")
-            continue
-        text = _web_extract(html)
-        if text:
-            pages.append((url, _web_title(html, url), text))
-            log(f"  стр. {len(pages)}/{max_pages}: {url}  ({len(text)} симв.)")
-        else:
-            log(f"  стр. (без текста): {url}")
-            errors.append(f"страница без извлечённого текста (возможно, JS-сайт): {url}")
-        # ссылки: файлы собираем всегда, страницы — пока не достигли глубины
-        for link in _web_links(html, url, seed_netloc, same_domain):
-            if link in seen:
+    # параллелим только обычную загрузку; с рендерером (Playwright) — последовательно
+    par = max(1, int(workers or 1)) if renderer is None else 1
+
+    while level and len(pages) < max_pages:
+        # отобрать новые URL уровня; прямые ссылки на файлы отложить в files
+        batch = []
+        for url, d in level:
+            if url in seen:
                 continue
-            if _web_is_file(link):
-                files.add(link)
-            elif d < depth and all(link != q[0] for q in queue):
-                queue.append((link, d + 1))
-            elif d >= depth:
-                depth_limit_hit = True   # были более глубокие ссылки, но глубина не позволяет
-    pages_limit_hit = bool(queue) and len(pages) >= max_pages
+            seen.add(url)
+            if _web_is_file(url):
+                files.add(url)
+            else:
+                batch.append((url, d))
+        if not batch:
+            break
+
+        # загрузка страниц уровня (параллельно или последовательно)
+        fetched = []   # (url, d, html)
+        if par > 1 and len(batch) > 1:
+            with ThreadPoolExecutor(max_workers=min(par, len(batch))) as ex:
+                futs = {ex.submit(_web_fetch, u, None, log): (u, dd) for (u, dd) in batch}
+                for fu in futs:
+                    u, dd = futs[fu]
+                    try:
+                        fetched.append((u, dd, fu.result()))
+                    except Exception as e:
+                        log(f"ERR {u}: {e}")
+                        fetched.append((u, dd, None))
+        else:
+            for (u, dd) in batch:
+                fetched.append((u, dd, _web_fetch(u, renderer, log)))
+
+        next_level = []
+        for url, d, html in fetched:
+            if len(pages) >= max_pages:
+                break
+            if html is None:
+                errors.append(f"страница не загружена: {url}")
+                continue
+            text = _web_extract(html)
+            if text:
+                pages.append((url, _web_title(html, url), text))
+                log(f"  стр. {len(pages)}/{max_pages}: {url}  ({len(text)} симв.)")
+            else:
+                log(f"  стр. (без текста): {url}")
+                errors.append(f"страница без извлечённого текста (возможно, JS-сайт): {url}")
+            for link in _web_links(html, url, seed_netloc, same_domain):
+                if link in seen:
+                    continue
+                if _web_is_file(link):
+                    files.add(link)
+                elif d < depth:
+                    next_level.append((link, d + 1))
+                else:
+                    depth_limit_hit = True   # были более глубокие ссылки, но глубина не позволяет
+        level = next_level
+
+    pages_limit_hit = bool(level) and len(pages) >= max_pages
     return pages, files, {"errors": errors, "pages_limit_hit": pages_limit_hit,
                           "depth_limit_hit": depth_limit_hit}
 
@@ -966,6 +1002,7 @@ def ingest_web(urls: list) -> dict:
             max_pages = max(1, int(settings.get("WEB_MAX_PAGES") or 1))
             max_files = max(0, int(settings.get("WEB_MAX_FILES") or 0))
             same_domain = bool(settings.get("WEB_SAME_DOMAIN"))
+            workers = max(1, int(settings.get("WEB_CONCURRENCY") or 1))
             filesdir = webdir / "files"
             with open(logfile, "w", buffering=1, errors="ignore") as fp:
                 def _log(m):
@@ -993,7 +1030,8 @@ def ingest_web(urls: list) -> dict:
                         try:
                             _log(f"САЙТ: {u}")
                             pages, file_urls, cstat = _web_crawl(u, depth, max_pages,
-                                                                 same_domain, renderer, _log)
+                                                                 same_domain, renderer, _log,
+                                                                 workers)
                             site_errors.extend(cstat.get("errors", []))
                             if cstat.get("pages_limit_hit"):
                                 site_limits["pages"] = (f"достигнут лимит страниц ({max_pages}); "
@@ -1010,16 +1048,35 @@ def ingest_web(urls: list) -> dict:
                             file_list = all_files[:max_files]
                             nf = len(file_list)
                             if nf:
-                                _log(f"  файлов к скачиванию: {nf}")
-                            for fi, furl in enumerate(file_list, 1):
-                                fpct = int(fi * 100 / nf) if nf else 100
-                                _log(f"  [файл {fi}/{nf}] {fpct}% скачиваю: {furl}")
-                                p = _web_download(furl, filesdir, _log)
-                                if p is not None:
-                                    web_paths.append(p)
-                                    dl += 1
-                                else:
-                                    site_errors.append(f"файл не скачан: {furl}")
+                                _log(f"  файлов к скачиванию: {nf}"
+                                     + (f" (параллельно ×{workers})" if workers > 1 and nf > 1 else ""))
+                            if workers > 1 and nf > 1:
+                                # параллельное скачивание файлов (потокобезопасно: httpx.stream + уникальные имена)
+                                from concurrent.futures import ThreadPoolExecutor
+                                done_n = [0]
+                                def _dl_one(furl):
+                                    p = _web_download(furl, filesdir, _log)
+                                    done_n[0] += 1
+                                    _log(f"  [файл {done_n[0]}/{nf}] {int(done_n[0]*100/nf)}%: {furl}"
+                                         + ("" if p is not None else "  — не скачан"))
+                                    return furl, p
+                                with ThreadPoolExecutor(max_workers=min(workers, nf)) as ex:
+                                    for furl, p in ex.map(_dl_one, file_list):
+                                        if p is not None:
+                                            web_paths.append(p)
+                                            dl += 1
+                                        else:
+                                            site_errors.append(f"файл не скачан: {furl}")
+                            else:
+                                for fi, furl in enumerate(file_list, 1):
+                                    fpct = int(fi * 100 / nf) if nf else 100
+                                    _log(f"  [файл {fi}/{nf}] {fpct}% скачиваю: {furl}")
+                                    p = _web_download(furl, filesdir, _log)
+                                    if p is not None:
+                                        web_paths.append(p)
+                                        dl += 1
+                                    else:
+                                        site_errors.append(f"файл не скачан: {furl}")
                             # текст страниц — в один документ web/<slug>.html
                             if pages:
                                 parts, total = [], 0
