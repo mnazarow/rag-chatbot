@@ -947,7 +947,7 @@ class _Renderer:
         self._pw = sync_playwright().start()
         self._b = self._pw.chromium.launch(
             args=["--no-sandbox", "--disable-dev-shm-usage"])
-        self._ctx = self._b.new_context(user_agent="Mozilla/5.0 (RAGBot)")
+        self._ctx = self._b.new_context(user_agent=_WEB_UA)
         self._wait = (settings.get("WEB_JS_WAIT") or "domcontentloaded").strip()
         if self._wait not in ("domcontentloaded", "load", "networkidle"):
             self._wait = "domcontentloaded"
@@ -1019,6 +1019,18 @@ class _Renderer:
 _WEB_TAGSTRIP = None
 _WEB_JS_MIN_WORDS = 40   # меньше стольких слов видимого текста → страница считается «JS-пустой»
 
+# Реалистичный «браузерный» User-Agent + заголовки: многие сайты (в т.ч. на Bitrix,
+# за WAF/Cloudflare) блокируют явно ботовые UA (403), особенно на скачивании файлов
+# из /upload/. Притворяемся обычным Chrome — это резко снижает число отказов.
+_WEB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+_WEB_HEADERS = {
+    "User-Agent": _WEB_UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+              "image/webp,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+}
+
 
 def _web_client(workers: int = 6):
     """Общий httpx-клиент с пулом keep-alive соединений для всего прогона парсинга —
@@ -1029,8 +1041,7 @@ def _web_client(workers: int = 6):
         to = max(5, int(settings.get("WEB_PAGE_TIMEOUT") or 25))
     except Exception:
         to = 25
-    kw = dict(follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 (RAGBot)"},
-              limits=limits, timeout=to)
+    kw = dict(follow_redirects=True, headers=dict(_WEB_HEADERS), limits=limits, timeout=to)
     try:
         return httpx.Client(http2=True, **kw)      # HTTP/2, если установлен пакет h2
     except Exception:
@@ -1057,8 +1068,7 @@ def _web_fetch_http(url: str, client, log):
     общем клиенте — можно звать из пула потоков."""
     try:
         r = (client.get(url) if client is not None
-             else httpx.get(url, timeout=25, follow_redirects=True,
-                            headers={"User-Agent": "Mozilla/5.0 (RAGBot)"}))
+             else httpx.get(url, timeout=25, follow_redirects=True, headers=dict(_WEB_HEADERS)))
         if r.status_code != 200:
             return None
         ct = r.headers.get("content-type", "")
@@ -1095,12 +1105,17 @@ def _fmt_bytes(n: int) -> str:
 
 def _web_download(url: str, dest_dir, log, client=None):
     """Скачать файл по ссылке (любого типа) в dest_dir потоково, с процентом загрузки.
-    Возвращает путь или None. При общем клиенте переиспользует keep-alive соединения."""
+    Возвращает (path, reason): path — Path при успехе или None; reason — короткая причина
+    отказа (HTTP-код/ошибка) для показа в сводке. При общем клиенте переиспользует
+    keep-alive соединения. Заголовки — «браузерные» (UA + Referer на корень сайта),
+    чтобы сайты на Bitrix/за WAF не отдавали 403 на скачивании из /upload/."""
     import re
     from urllib.parse import urlparse, unquote
     tmp = None
     try:
-        name = unquote(os.path.basename(urlparse(url).path)) or _web_slug(url)
+        pr = urlparse(url)
+        referer = f"{pr.scheme}://{pr.netloc}/"
+        name = unquote(os.path.basename(pr.path)) or _web_slug(url)
         name = re.sub(r"[^\w.\-]+", "_", name)[:150] or "file"
         dest_dir.mkdir(parents=True, exist_ok=True)
         # выбор уникального имени + резервирование .part — под локом (безопасно при
@@ -1114,12 +1129,20 @@ def _web_download(url: str, dest_dir, log, client=None):
             tmp = out.with_name(out.name + ".part")
             tmp.touch()
         _streamer = (client.stream if client is not None else httpx.stream)
-        _skw = {} if client is not None else {"follow_redirects": True,
-                                              "headers": {"User-Agent": "Mozilla/5.0 (RAGBot)"}}
+        _hdrs = {"Referer": referer, "Accept": "*/*"}
+        if client is None:
+            _hdrs["User-Agent"] = _WEB_UA
+        _skw = {"headers": _hdrs} if client is not None else \
+               {"follow_redirects": True, "headers": _hdrs}
         with _streamer("GET", url, timeout=120, **_skw) as r:
             if r.status_code != 200:
                 log(f"    ERR файл {url}: HTTP {r.status_code}")
-                return None
+                try:
+                    if tmp is not None:
+                        tmp.unlink()
+                except Exception:
+                    pass
+                return None, f"HTTP {r.status_code}"
             total = int(r.headers.get("content-length") or 0)
             got, last = 0, -20
             with open(tmp, "wb") as f:
@@ -1134,7 +1157,7 @@ def _web_download(url: str, dest_dir, log, client=None):
                                 f"({_fmt_bytes(got)} из {_fmt_bytes(total)})")
         tmp.rename(out)
         log(f"    ФАЙЛ сохранён: {out.name} ({_fmt_bytes(got)})")
-        return out
+        return out, None
     except Exception as e:
         try:
             if tmp is not None:
@@ -1142,7 +1165,7 @@ def _web_download(url: str, dest_dir, log, client=None):
         except Exception:
             pass
         log(f"    ERR файл {url}: {e}")
-        return None
+        return None, (str(e)[:120] or "ошибка сети")
 
 
 def _web_extract(html: str) -> str:
@@ -1443,29 +1466,29 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                 from concurrent.futures import ThreadPoolExecutor
                                 done_n = [0]
                                 def _dl_one(furl):
-                                    p = _web_download(furl, filesdir, _log, client)
+                                    p, reason = _web_download(furl, filesdir, _log, client)
                                     done_n[0] += 1
                                     _log(f"  [файл {done_n[0]}/{nf}] {int(done_n[0]*100/nf)}%: {furl}"
-                                         + ("" if p is not None else "  — не скачан"))
-                                    return furl, p
+                                         + ("" if p is not None else f"  — не скачан ({reason})"))
+                                    return furl, p, reason
                                 with ThreadPoolExecutor(max_workers=min(workers, nf)) as ex:
-                                    for furl, p in ex.map(_dl_one, file_list):
+                                    for furl, p, reason in ex.map(_dl_one, file_list):
                                         if p is not None:
                                             web_paths.append(p)
                                             dl += 1
                                         else:
-                                            site_errors.append(f"файл не скачан: {furl}")
+                                            site_errors.append(f"файл не скачан ({reason}): {furl}")
                                         _rec_file(furl, p)
                             else:
                                 for fi, furl in enumerate(file_list, 1):
                                     fpct = int(fi * 100 / nf) if nf else 100
                                     _log(f"  [файл {fi}/{nf}] {fpct}% скачиваю: {furl}")
-                                    p = _web_download(furl, filesdir, _log, client)
+                                    p, reason = _web_download(furl, filesdir, _log, client)
                                     if p is not None:
                                         web_paths.append(p)
                                         dl += 1
                                     else:
-                                        site_errors.append(f"файл не скачан: {furl}")
+                                        site_errors.append(f"файл не скачан ({reason}): {furl}")
                                     _rec_file(furl, p)
                             # текст страниц — в один документ web/<slug>.html
                             if pages:
