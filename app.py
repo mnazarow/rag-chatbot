@@ -1637,6 +1637,15 @@ def admin_web_delete(payload: dict = Body(...), x_admin_token: str | None = Head
     return admin_ops.delete_web(payload.get("url", ""))
 
 
+@app.post("/api/admin/web-excludes")
+def admin_web_excludes(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    """Задать исключения по ключевым словам для сайта: URL, содержащие любое из слов,
+    пропускаются при парсинге. payload: {url, keywords: строка или список}."""
+    _check_admin(x_admin_token)
+    return admin_ops.web_set_excludes(payload.get("url", ""),
+                                      payload.get("keywords", ""))
+
+
 @app.get("/api/admin/web-structure")
 def admin_web_structure(x_admin_token: str | None = Header(None)):
     """Структура спарсенных сайтов в реальном времени: прогресс + дерево файлов/страниц

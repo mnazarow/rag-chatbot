@@ -5232,10 +5232,12 @@ async function loadWebUrls(){
     const sites=r.sites||[];
     lst.innerHTML = sites.length ? sites.map((s,i)=>{
       const errs=s.errors||[], lims=Object.values(s.limits||{});
-      const nIssues=errs.length+lims.length, idc='webdet_'+i;
+      const nIssues=errs.length+lims.length, idc='webdet_'+i, exc='webexc_'+i;
       const badge = s.ok===false ? '<span style="color:#f87171">✗</span>'
         : (nIssues ? '<span style="color:#f59e0b">⚠</span>' : (s.ok ? '<span style="color:#22c55e">✓</span>':''));
-      const meta = (s.pages!=null?(' · стр. '+s.pages):'')+(s.files!=null?(' · файлов '+s.files):'');
+      const exList=s.exclude||[];
+      const meta = (s.pages!=null?(' · стр. '+s.pages):'')+(s.files!=null?(' · файлов '+s.files):'')
+        +(exList.length?(' · <span style="color:#f59e0b">🚫 '+exList.length+'</span>'):'');
       let detail='';
       if(nIssues){
         let rows='';
@@ -5243,13 +5245,23 @@ async function loadWebUrls(){
         errs.forEach(t=> rows+='<div style="color:#f87171;margin:2px 0">• '+esc(t)+'</div>');
         detail=`<div id="${idc}" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.4;max-height:240px;overflow:auto">${rows}</div>`;
       }
+      const excBox=`<div id="${exc}" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px">
+        <div class="note" style="margin-bottom:4px">Исключить URL, содержащие эти слова (через запятую/пробел). Пример: <code>missed-call, /tag/, .zip</code></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <input id="${exc}_in" placeholder="ключевые слова…" style="flex:1;min-width:200px" value="${escAttr(exList.join(', '))}">
+          <button class="dirbtn" onclick="webSaveExcludes('${escAttr(s.url)}','${exc}_in')">💾 Сохранить</button>
+          <span id="${exc}_msg" class="note"></span>
+        </div>
+        <div class="note" style="margin-top:4px;font-size:11px">Применяется при следующем парсинге этого сайта (кнопки «Спарсить»/«Только спарсить» или ежедневный автопарсинг).</div>
+      </div>`;
       return `<div style="border:1px solid var(--line);border-radius:8px;margin-bottom:6px;padding:6px 10px">
         <div style="display:flex;gap:8px;align-items:center">
           <span style="flex:1;word-break:break-all">${esc(s.url)} ${s.indexed?'':'<span class="note">(нет файла)</span>'}<span class="note">${meta}</span></span>
           ${badge}
+          <button class="dirbtn" onclick="webToggle('${exc}')" title="Исключения по ключевым словам">🚫${exList.length?(' '+exList.length):''}</button>
           ${nIssues?`<button class="dirbtn" onclick="webToggle('${idc}')" title="Ошибки и превышения лимитов">📋 ${nIssues}</button>`:''}
           <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="deleteWeb('${escAttr(s.url)}')">Удалить</button>
-        </div>${detail}
+        </div>${excBox}${detail}
       </div>`;
     }).join('') : '<span class="note">пока нет сайтов</span>';
   }
@@ -5272,6 +5284,14 @@ async function deleteWeb(url){
   if(!confirm('Удалить сайт из базы знаний?\n'+url))return;
   webMsg('удаление…'); const r=await adminPost('/api/admin/web-delete',{url});
   webMsg(r.msg||(r.ok?'удалено':'ошибка'),r.ok!==false); loadWebUrls(); loadOps();
+}
+async function webSaveExcludes(url, inputId){
+  const inp=$('#'+inputId); if(!inp) return;
+  const msg=$('#'+inputId.replace(/_in$/,'')+'_msg'); if(msg){ msg.textContent='сохранение…'; msg.className='note'; }
+  const r=await adminPost('/api/admin/web-excludes',{url, keywords:inp.value});
+  if(msg){ msg.textContent=(r&&r.ok!==false)?('✓ '+(r.msg||'сохранено')):'✗ ошибка';
+    msg.className=(r&&r.ok!==false)?'saved':'note'; }
+  loadWebUrls();
 }
 let webT=null;
 function pollWeb(){ clearInterval(webT); webT=setInterval(()=>{ loadWebUrls(); loadWebStructure(); },4000);

@@ -690,6 +690,65 @@ def _web_stats_save(stats: dict) -> None:
         print(f"[web] не удалось сохранить статистику парсинга: {e}")
 
 
+def _web_excludes_load() -> dict:
+    """Исключения по ключевым словам для каждого сайта: {url: [kw, ...]} из БД."""
+    raw = db.kv_get("web_excludes")
+    try:
+        d = _json.loads(raw) if raw else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _web_excludes_save(m: dict) -> None:
+    try:
+        db.kv_set("web_excludes", _json.dumps(m, ensure_ascii=False))
+    except Exception as e:
+        print(f"[web] не удалось сохранить исключения: {e}")
+
+
+def _web_parse_keywords(val) -> list:
+    """Строку/список ключевых слов → нормализованный список (нижний регистр, без дублей)."""
+    import re
+    if isinstance(val, str):
+        parts = re.split(r"[\s,;\n]+", val)
+    else:
+        parts = list(val or [])
+    out, seen = [], set()
+    for p in parts:
+        k = str(p).strip().lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out[:50]
+
+
+def _web_excluded(url: str, excludes) -> bool:
+    """URL исключён, если содержит любое из ключевых слов (без учёта регистра)."""
+    if not excludes:
+        return False
+    u = (url or "").lower()
+    return any(kw in u for kw in excludes if kw)
+
+
+def web_set_excludes(url: str, keywords) -> dict:
+    """Задать/обновить список исключений по ключевым словам для сайта. Применяется при
+    следующем парсинге этого сайта (ручном или по расписанию)."""
+    url = (url or "").strip()
+    if not url:
+        return {"ok": False, "msg": "не указан URL сайта"}
+    kws = _web_parse_keywords(keywords)
+    m = _web_excludes_load()
+    if kws:
+        m[url] = kws
+    else:
+        m.pop(url, None)
+    _web_excludes_save(m)
+    return {"ok": True, "url": url, "exclude": kws,
+            "msg": (f"исключения сохранены ({len(kws)} слов) — применятся при следующем "
+                    "парсинге этого сайта") if kws else "исключения очищены"}
+
+
 def _web_slug(url: str) -> str:
     import re
     return re.sub(r"[^a-zA-Z0-9._-]", "_", url)[:120] or "page"
@@ -700,6 +759,7 @@ def _web_list() -> list:
     urls = _web_sources_load()
     webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
     stats = _web_stats_load()
+    excl = _web_excludes_load()
     out = []
     for u in urls:
         rel = f"web/{_web_slug(u)}.html"
@@ -709,6 +769,7 @@ def _web_list() -> list:
                     "ok": st.get("ok"), "pages": st.get("pages"), "files": st.get("files"),
                     "errors": st.get("errors", []), "limits": st.get("limits", {}),
                     "ts": st.get("ts"),
+                    "exclude": excl.get(u, []),
                     "progress": st.get("progress"),
                     "n_items": len(st.get("items") or [])})
     return out
@@ -809,6 +870,11 @@ def delete_web(url: str) -> dict:
     if url in _st:
         _st.pop(url, None)
         _web_stats_save(_st)
+    # убрать исключения по ключевым словам для этого сайта
+    _ex = _web_excludes_load()
+    if url in _ex:
+        _ex.pop(url, None)
+        _web_excludes_save(_ex)
     # 2) удалить файл
     slug = _web_slug(url)
     f = Path(settings.get("DOCS_DIR")).expanduser() / "web" / f"{slug}.html"
@@ -1004,10 +1070,11 @@ def _web_links(html: str, base: str, seed_netloc: str, same_domain: bool) -> lis
 
 
 def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, renderer, log,
-               workers: int = 1):
+               workers: int = 1, excludes=None):
     """Обойти сайт из стартовой страницы (BFS по уровням) до depth/max_pages. Возвращает
     (pages, files, stat): pages — список (url, title, text); files — множество URL
-    файлов для скачивания; stat — {errors, pages_limit_hit, depth_limit_hit}.
+    файлов для скачивания; stat — {errors, pages_limit_hit, depth_limit_hit, excluded}.
+    excludes — список ключевых слов: URL, содержащие любое из них, пропускаются.
     При workers>1 и без headless-браузера страницы уровня грузятся параллельно."""
     from urllib.parse import urlparse
     from concurrent.futures import ThreadPoolExecutor
@@ -1015,6 +1082,7 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
     seen, level, pages, files = set(), [(seed, 0)], [], set()
     errors = []
     depth_limit_hit = False
+    excluded_n = 0
     # параллелим только обычную загрузку; с рендерером (Playwright) — последовательно
     par = max(1, int(workers or 1)) if renderer is None else 1
 
@@ -1025,6 +1093,9 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
             if url in seen:
                 continue
             seen.add(url)
+            if _web_excluded(url, excludes):
+                excluded_n += 1
+                continue
             if _web_is_file(url):
                 files.add(url)
             else:
@@ -1065,6 +1136,9 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
             for link in _web_links(html, url, seed_netloc, same_domain):
                 if link in seen:
                     continue
+                if _web_excluded(link, excludes):
+                    excluded_n += 1
+                    continue
                 if _web_is_file(link):
                     files.add(link)
                 elif d < depth:
@@ -1075,7 +1149,7 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
 
     pages_limit_hit = bool(level) and len(pages) >= max_pages
     return pages, files, {"errors": errors, "pages_limit_hit": pages_limit_hit,
-                          "depth_limit_hit": depth_limit_hit}
+                          "depth_limit_hit": depth_limit_hit, "excluded": excluded_n}
 
 
 def ingest_web(urls: list, index: bool = True) -> dict:
@@ -1090,6 +1164,7 @@ def ingest_web(urls: list, index: bool = True) -> dict:
     if _web_job["running"]:
         return {"ok": False, "msg": "парсинг сайтов уже идёт"}
     _web_sources_save(urls)
+    excludes_map = _web_excludes_load()
     webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
     logfile = "/tmp/rag_web.log"
     _slug = _web_slug
@@ -1137,10 +1212,15 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                         _web_stats_save(stats_map)
                         try:
                             _log(f"САЙТ: {u}")
+                            site_excludes = excludes_map.get(u) or []
+                            if site_excludes:
+                                _log(f"  исключения по словам: {', '.join(site_excludes)}")
                             pages, file_urls, cstat = _web_crawl(u, depth, max_pages,
                                                                  same_domain, renderer, _log,
-                                                                 workers)
+                                                                 workers, excludes=site_excludes)
                             site_errors.extend(cstat.get("errors", []))
+                            if cstat.get("excluded"):
+                                _log(f"  исключено URL по ключевым словам: {cstat['excluded']}")
                             if cstat.get("pages_limit_hit"):
                                 site_limits["pages"] = (f"достигнут лимит страниц ({max_pages}); "
                                                         "часть страниц не обойдена — увеличьте «Макс. страниц»")
@@ -1148,7 +1228,8 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                 site_limits["depth"] = (f"достигнута глубина обхода ({depth}); "
                                                         "более глубокие ссылки пропущены — увеличьте «Глубину обхода»")
                             # скачиваем найденные файлы (любого типа), лимит на сайт
-                            all_files = list(file_urls)
+                            all_files = [f for f in file_urls
+                                         if not _web_excluded(f, site_excludes)]
                             if len(all_files) > max_files:
                                 site_limits["files"] = (f"найдено файлов {len(all_files)}, скачано {max_files} "
                                                         f"(лимит); {len(all_files) - max_files} пропущено — "
