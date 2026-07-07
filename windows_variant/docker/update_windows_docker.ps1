@@ -77,8 +77,19 @@ try {
         if (-not $proj) { Log "Удаляю одиночный контейнер rag_redis (конфликт имени с compose)..."; docker rm -f rag_redis *> $null }
     }
 } catch {}
-docker compose @Compose up -d --build
-$composeOk = ($LASTEXITCODE -eq 0)
+# Сборка/запуск с авто-повтором: временные сбои сети к Docker Hub (например
+# «TLS handshake timeout» при получении токена/базового образа) — не редкость.
+# Повторяем до 3 раз с паузой; кэш слоёв переиспользуется, повторяется только
+# упавший сетевой шаг.
+$composeOk = $false
+for ($try = 1; $try -le 3; $try++) {
+    if ($try -gt 1) {
+        Log "Сетевой сбой при сборке. Повтор $try из 3 через 6 c (проверьте интернет/Docker Hub)..."
+        Start-Sleep 6
+    }
+    docker compose @Compose up -d --build
+    if ($LASTEXITCODE -eq 0) { $composeOk = $true; break }
+}
 $ErrorActionPreference = $eap
 
 # ----- 3. Чеклист после обновления -----

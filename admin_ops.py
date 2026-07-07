@@ -978,19 +978,25 @@ class _Renderer:
             except Exception:
                 pass
 
-    def render(self, url: str):
+    def render(self, url: str, patient: bool = False):
+        """patient=True — «терпеливый» рендер для тяжёлых SPA: дожидаемся простоя сети
+        (networkidle) и даём странице время дорисоваться. Используется как повтор, если
+        быстрый рендер (domcontentloaded) вернул почти пустую страницу."""
+        wait = "networkidle" if patient else self._wait
+        to = max(self._to, 40000) if patient else self._to
+        settle = max(self._settle, 2500) if patient else self._settle
         try:
             pg = self._ctx.new_page()
             try:
-                pg.goto(url, wait_until=self._wait, timeout=self._to)
+                pg.goto(url, wait_until=wait, timeout=to)
             except Exception:
                 try:
-                    pg.goto(url, wait_until="domcontentloaded", timeout=self._to)
+                    pg.goto(url, wait_until="domcontentloaded", timeout=to)
                 except Exception:
                     pass
-            if self._settle:
+            if settle:
                 try:
-                    pg.wait_for_timeout(self._settle)
+                    pg.wait_for_timeout(settle)
                 except Exception:
                     pass
             html = pg.content()
@@ -1255,12 +1261,18 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
 
         # фаза 2: браузер (последовательно, только где реально нужен)
         fetched = []   # (url, d, html)
+        base_wait = (settings.get("WEB_JS_WAIT") or "domcontentloaded").strip().lower()
         for (u, dd) in batch:
             html = http_html.get(u)
             if renderer is not None:
                 need = (html is None) or (not js_auto) or (_visible_text_len(html) < _WEB_JS_MIN_WORDS)
                 if need:
                     rhtml = renderer.render(u)
+                    # тяжёлая SPA не успела отрисоваться на быстром ожидании — терпеливый повтор
+                    if base_wait != "networkidle" and _visible_text_len(rhtml or "") < _WEB_JS_MIN_WORDS:
+                        rhtml2 = renderer.render(u, patient=True)
+                        if _visible_text_len(rhtml2 or "") > _visible_text_len(rhtml or ""):
+                            rhtml = rhtml2
                     if rhtml:
                         html = rhtml
             fetched.append((u, dd, html))
