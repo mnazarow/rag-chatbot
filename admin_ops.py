@@ -1034,18 +1034,21 @@ _WEB_HEADERS = {
 
 def _web_client(workers: int = 6):
     """Общий httpx-клиент с пулом keep-alive соединений для всего прогона парсинга —
-    убирает повторные TLS-рукопожатия (особенно на множестве файлов одного хоста)."""
+    убирает повторные TLS-рукопожатия (особенно на множестве файлов одного хоста).
+
+    ВАЖНО: только HTTP/1.1. HTTP/2 мультиплексирует все запросы через ОДНО соединение,
+    и если сервер его сбрасывает (частое поведение под нагрузкой), рушатся сразу все
+    параллельные запросы («Server disconnected») и портится h2-стейт-машина («Invalid
+    input … CLOSED»). На HTTP/1.1 сбой затрагивает лишь один запрос, а битое соединение
+    просто выбрасывается из пула — обход устойчив."""
     conns = max(10, int(workers or 1) * 3)
     limits = httpx.Limits(max_connections=conns, max_keepalive_connections=conns)
     try:
         to = max(5, int(settings.get("WEB_PAGE_TIMEOUT") or 25))
     except Exception:
         to = 25
-    kw = dict(follow_redirects=True, headers=dict(_WEB_HEADERS), limits=limits, timeout=to)
-    try:
-        return httpx.Client(http2=True, **kw)      # HTTP/2, если установлен пакет h2
-    except Exception:
-        return httpx.Client(**kw)
+    return httpx.Client(follow_redirects=True, headers=dict(_WEB_HEADERS),
+                        limits=limits, timeout=to)
 
 
 def _visible_text_len(html: str) -> int:
@@ -1063,21 +1066,33 @@ def _visible_text_len(html: str) -> int:
     return len(s.split())
 
 
-def _web_fetch_http(url: str, client, log):
+def _web_fetch_http(url: str, client, log, retries: int = 2):
     """Быстрая обычная загрузка страницы (httpx, без браузера). Потокобезопасна при
-    общем клиенте — можно звать из пула потоков."""
-    try:
-        r = (client.get(url) if client is not None
-             else httpx.get(url, timeout=25, follow_redirects=True, headers=dict(_WEB_HEADERS)))
-        if r.status_code != 200:
-            return None
-        ct = r.headers.get("content-type", "")
-        if ct and "html" not in ct.lower():
-            return None
-        return r.text
-    except Exception as e:
-        log(f"ERR {url}: {e}")
-        return None
+    общем клиенте. Разрыв соединения сервером (частое под нагрузкой: «Server
+    disconnected») повторяется несколько раз с короткой паузой — на новом соединении
+    из пула обычно проходит."""
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            r = (client.get(url) if client is not None
+                 else httpx.get(url, timeout=25, follow_redirects=True, headers=dict(_WEB_HEADERS)))
+            if r.status_code != 200:
+                return None
+            ct = r.headers.get("content-type", "")
+            if ct and "html" not in ct.lower():
+                return None
+            return r.text
+        except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError,
+                httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout) as e:
+            last = e
+            if attempt < retries:
+                time.sleep(0.4 * (attempt + 1))
+                continue
+        except Exception as e:
+            last = e
+            break
+    log(f"ERR {url}: {last}")
+    return None
 
 
 def _web_fetch(url: str, renderer, log, client=None):
@@ -1134,30 +1149,47 @@ def _web_download(url: str, dest_dir, log, client=None):
             _hdrs["User-Agent"] = _WEB_UA
         _skw = {"headers": _hdrs} if client is not None else \
                {"follow_redirects": True, "headers": _hdrs}
-        with _streamer("GET", url, timeout=120, **_skw) as r:
-            if r.status_code != 200:
-                log(f"    ERR файл {url}: HTTP {r.status_code}")
-                try:
-                    if tmp is not None:
-                        tmp.unlink()
-                except Exception:
-                    pass
-                return None, f"HTTP {r.status_code}"
-            total = int(r.headers.get("content-length") or 0)
-            got, last = 0, -20
-            with open(tmp, "wb") as f:
-                for chunk in r.iter_bytes(256 * 1024):
-                    f.write(chunk)
-                    got += len(chunk)
-                    if total:
-                        pct = int(got * 100 / total)
-                        if pct >= last + 20:          # отметки 0/20/40/60/80/100%
-                            last = pct
-                            log(f"        {name}: {pct}% "
-                                f"({_fmt_bytes(got)} из {_fmt_bytes(total)})")
-        tmp.rename(out)
-        log(f"    ФАЙЛ сохранён: {out.name} ({_fmt_bytes(got)})")
-        return out, None
+        # обрыв соединения (Server disconnected) повторяем несколько раз, каждый раз
+        # заново открывая файл
+        retries, last_err = 2, None
+        for attempt in range(retries + 1):
+            try:
+                with _streamer("GET", url, timeout=120, **_skw) as r:
+                    if r.status_code != 200:
+                        log(f"    ERR файл {url}: HTTP {r.status_code}")
+                        try:
+                            tmp.unlink()
+                        except Exception:
+                            pass
+                        return None, f"HTTP {r.status_code}"
+                    total = int(r.headers.get("content-length") or 0)
+                    got, last = 0, -20
+                    with open(tmp, "wb") as f:
+                        for chunk in r.iter_bytes(256 * 1024):
+                            f.write(chunk)
+                            got += len(chunk)
+                            if total:
+                                pct = int(got * 100 / total)
+                                if pct >= last + 20:      # отметки 0/20/40/60/80/100%
+                                    last = pct
+                                    log(f"        {name}: {pct}% "
+                                        f"({_fmt_bytes(got)} из {_fmt_bytes(total)})")
+                tmp.rename(out)
+                log(f"    ФАЙЛ сохранён: {out.name} ({_fmt_bytes(got)})")
+                return out, None
+            except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError,
+                    httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout) as e:
+                last_err = e
+                if attempt < retries:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                break
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+        log(f"    ERR файл {url}: {last_err}")
+        return None, (str(last_err)[:120] or "обрыв соединения")
     except Exception as e:
         try:
             if tmp is not None:
