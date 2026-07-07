@@ -1646,6 +1646,14 @@ def admin_web_excludes(payload: dict = Body(...), x_admin_token: str | None = He
                                       payload.get("keywords", ""))
 
 
+@app.post("/api/admin/web-excludes-all")
+def admin_web_excludes_all(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    """Глобальные исключения по ключевым словам — для ВСЕХ сайтов. Объединяются с
+    исключениями конкретного сайта. payload: {keywords: строка или список}."""
+    _check_admin(x_admin_token)
+    return admin_ops.web_set_excludes_all(payload.get("keywords", ""))
+
+
 @app.get("/api/admin/web-structure")
 def admin_web_structure(x_admin_token: str | None = Header(None)):
     """Структура спарсенных сайтов в реальном времени: прогресс + дерево файлов/страниц

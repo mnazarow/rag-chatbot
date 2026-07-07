@@ -749,6 +749,37 @@ def web_set_excludes(url: str, keywords) -> dict:
                     "парсинге этого сайта") if kws else "исключения очищены"}
 
 
+def _web_excludes_all_load() -> list:
+    """Глобальные исключения по ключевым словам — действуют для ВСЕХ сайтов."""
+    return _web_parse_keywords(db.kv_get("web_excludes_all") or "")
+
+
+def _web_excludes_all_save(kws: list) -> None:
+    try:
+        db.kv_set("web_excludes_all", ", ".join(kws))
+    except Exception as e:
+        print(f"[web] не удалось сохранить глобальные исключения: {e}")
+
+
+def web_set_excludes_all(keywords) -> dict:
+    """Задать глобальные исключения (для всех сайтов). Объединяются с исключениями
+    конкретного сайта при парсинге."""
+    kws = _web_parse_keywords(keywords)
+    _web_excludes_all_save(kws)
+    return {"ok": True, "exclude_all": kws,
+            "msg": (f"глобальные исключения сохранены ({len(kws)} слов) — применятся ко "
+                    "всем сайтам при следующем парсинге") if kws else "глобальные исключения очищены"}
+
+
+def _web_site_excludes(url: str, per_site_map: dict | None = None,
+                       global_list: list | None = None) -> list:
+    """Итоговые исключения для сайта: глобальные + персональные (объединение без дублей)."""
+    per_site_map = _web_excludes_load() if per_site_map is None else per_site_map
+    global_list = _web_excludes_all_load() if global_list is None else global_list
+    merged = list(dict.fromkeys([*(global_list or []), *(per_site_map.get(url) or [])]))
+    return merged
+
+
 def _web_slug(url: str) -> str:
     import re
     return re.sub(r"[^a-zA-Z0-9._-]", "_", url)[:120] or "page"
@@ -854,6 +885,7 @@ def web_structure() -> dict:
 def get_web_urls() -> dict:
     sites = _web_list()
     return {"urls": [s["url"] for s in sites], "sites": sites,
+            "exclude_all": _web_excludes_all_load(),
             "log": _tail(_web_job["logfile"]) if _web_job.get("logfile") else _web_job.get("log", "")}
 
 
@@ -1165,6 +1197,7 @@ def ingest_web(urls: list, index: bool = True) -> dict:
         return {"ok": False, "msg": "парсинг сайтов уже идёт"}
     _web_sources_save(urls)
     excludes_map = _web_excludes_load()
+    excludes_all = _web_excludes_all_load()
     webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
     logfile = "/tmp/rag_web.log"
     _slug = _web_slug
@@ -1212,9 +1245,10 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                         _web_stats_save(stats_map)
                         try:
                             _log(f"САЙТ: {u}")
-                            site_excludes = excludes_map.get(u) or []
+                            site_excludes = _web_site_excludes(u, excludes_map, excludes_all)
                             if site_excludes:
-                                _log(f"  исключения по словам: {', '.join(site_excludes)}")
+                                _log(f"  исключения по словам: {', '.join(site_excludes)}"
+                                     + (f" (глобальных: {len(excludes_all)})" if excludes_all else ""))
                             pages, file_urls, cstat = _web_crawl(u, depth, max_pages,
                                                                  same_domain, renderer, _log,
                                                                  workers, excludes=site_excludes)

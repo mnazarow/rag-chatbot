@@ -1875,6 +1875,16 @@
       </label>
       <span id="web_reparse_msg" class="note"></span>
 
+      <div style="margin-top:12px;padding:8px 10px;border:1px solid var(--line);border-radius:8px">
+        <div style="display:flex;gap:8px;align-items:center;font-size:13px"><b>🚫 Глобальные исключения (для всех сайтов)</b></div>
+        <div class="note" style="margin:4px 0">URL, содержащий любое из этих слов, пропускается при парсинге <b>любого</b> сайта. Через запятую/пробел. Пример: <code>missed-call, /tag/, ?utm_, .zip</code>. Объединяются с исключениями конкретного сайта (🚫 у каждого сайта в списке).</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="web_exclude_all" placeholder="ключевые слова для всех сайтов…" style="flex:1;min-width:220px">
+          <button class="act ghost" onclick="webSaveExcludesAll()">💾 Сохранить</button>
+          <span id="web_exclude_all_msg" class="note"></span>
+        </div>
+      </div>
+
       <div style="margin-top:14px"><b style="font-size:13px">Сайты в базе:</b> <span class="note">у каждого — статус и раскрытие (📋) со списком ошибок и превышений лимитов.</span></div>
       <div id="weblist" style="margin-top:6px"></div>
 
@@ -5226,6 +5236,9 @@ async function loadWebUrls(){
   let r; try{ r=await (await fetch('/api/admin/web-urls?t='+Date.now(),
     {cache:'no-store',headers:{'X-Admin-Token':tok()}})).json(); }catch(e){ return; }
   webQueue=(r.urls||[]).slice(); webRenderQueue();
+  // глобальные исключения (не перезаписываем, пока пользователь редактирует поле)
+  const eall=$('#web_exclude_all');
+  if(eall && document.activeElement!==eall) eall.value=(r.exclude_all||[]).join(', ');
   // список сайтов с кнопками удаления
   const lst=$('#weblist');
   if(lst){
@@ -5289,6 +5302,14 @@ async function webSaveExcludes(url, inputId){
   const inp=$('#'+inputId); if(!inp) return;
   const msg=$('#'+inputId.replace(/_in$/,'')+'_msg'); if(msg){ msg.textContent='сохранение…'; msg.className='note'; }
   const r=await adminPost('/api/admin/web-excludes',{url, keywords:inp.value});
+  if(msg){ msg.textContent=(r&&r.ok!==false)?('✓ '+(r.msg||'сохранено')):'✗ ошибка';
+    msg.className=(r&&r.ok!==false)?'saved':'note'; }
+  loadWebUrls();
+}
+async function webSaveExcludesAll(){
+  const inp=$('#web_exclude_all'); if(!inp) return;
+  const msg=$('#web_exclude_all_msg'); if(msg){ msg.textContent='сохранение…'; msg.className='note'; }
+  const r=await adminPost('/api/admin/web-excludes-all',{keywords:inp.value});
   if(msg){ msg.textContent=(r&&r.ok!==false)?('✓ '+(r.msg||'сохранено')):'✗ ошибка';
     msg.className=(r&&r.ok!==false)?'saved':'note'; }
   loadWebUrls();
