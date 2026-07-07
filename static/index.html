@@ -5251,12 +5251,18 @@ async function loadWebUrls(){
       const exList=s.exclude||[];
       const meta = (s.pages!=null?(' · стр. '+s.pages):'')+(s.files!=null?(' · файлов '+s.files):'')
         +(exList.length?(' · <span style="color:#f59e0b">🚫 '+exList.length+'</span>'):'');
+      const depthUrls=s.depth_urls||[];
       let detail='';
       if(nIssues){
         let rows='';
         lims.forEach(t=> rows+='<div style="color:#f59e0b;margin:2px 0">⚠ лимит: '+esc(t)+'</div>');
         errs.forEach(t=> rows+='<div style="color:#f87171;margin:2px 0">• '+esc(t)+'</div>');
-        detail=`<div id="${idc}" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.4;max-height:240px;overflow:auto">${rows}</div>`;
+        if(depthUrls.length){
+          rows+='<div style="margin-top:6px;color:#f59e0b">📉 Превышена глубина обхода на '
+            +depthUrls.length+' страниц(ах) — здесь были более глубокие ссылки, не пройденные (увеличьте «Глубину обхода»):</div>';
+          depthUrls.forEach(u2=> rows+='<div style="margin:1px 0 1px 12px;word-break:break-all"><a href="'+escAttr(u2)+'" target="_blank" rel="noopener" style="color:#93c5fd">'+esc(u2)+'</a></div>');
+        }
+        detail=`<div id="${idc}" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.4;max-height:300px;overflow:auto">${rows}</div>`;
       }
       const excBox=`<div id="${exc}" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px">
         <div class="note" style="margin-bottom:4px">Исключить URL, содержащие эти слова (через запятую/пробел). Пример: <code>missed-call, /tag/, .zip</code></div>

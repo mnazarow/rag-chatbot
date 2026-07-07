@@ -801,6 +801,7 @@ def _web_list() -> list:
                     "errors": st.get("errors", []), "limits": st.get("limits", {}),
                     "ts": st.get("ts"),
                     "exclude": excl.get(u, []),
+                    "depth_urls": st.get("depth_urls", []),
                     "progress": st.get("progress"),
                     "n_items": len(st.get("items") or [])})
     return out
@@ -934,21 +935,64 @@ def _web_is_file(url: str) -> bool:
 
 
 class _Renderer:
-    """Однократно запущенный headless-Chromium (Playwright) для JS-страниц."""
+    """Однократно запущенный headless-Chromium (Playwright) для JS-страниц.
+
+    Оптимизации скорости: один переиспользуемый контекст (не создаём браузерный
+    контекст на каждую страницу), блокировка картинок/стилей/шрифтов/медиа (на текст
+    не влияют), быстрый критерий готовности (domcontentloaded вместо networkidle) и
+    настраиваемый таймаут — раньше networkidle ждал до 45 с на каждой странице."""
 
     def __init__(self):
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().start()
         self._b = self._pw.chromium.launch(
             args=["--no-sandbox", "--disable-dev-shm-usage"])
+        self._ctx = self._b.new_context(user_agent="Mozilla/5.0 (RAGBot)")
+        self._wait = (settings.get("WEB_JS_WAIT") or "domcontentloaded").strip()
+        if self._wait not in ("domcontentloaded", "load", "networkidle"):
+            self._wait = "domcontentloaded"
+        try:
+            self._to = max(5, int(settings.get("WEB_PAGE_TIMEOUT") or 25)) * 1000
+        except Exception:
+            self._to = 25000
+        try:
+            self._settle = max(0, int(settings.get("WEB_JS_WAIT_MS") or 0))
+        except Exception:
+            self._settle = 0
+        if settings.get("WEB_JS_BLOCK_ASSETS"):
+            try:
+                self._ctx.route("**/*", self._route)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _route(route):
+        try:
+            if route.request.resource_type in ("image", "media", "font", "stylesheet"):
+                route.abort()
+            else:
+                route.continue_()
+        except Exception:
+            try:
+                route.continue_()
+            except Exception:
+                pass
 
     def render(self, url: str):
         try:
-            pg = self._b.new_page(user_agent="Mozilla/5.0 (RAGBot)")
+            pg = self._ctx.new_page()
             try:
-                pg.goto(url, wait_until="networkidle", timeout=45000)
+                pg.goto(url, wait_until=self._wait, timeout=self._to)
             except Exception:
-                pg.goto(url, wait_until="domcontentloaded", timeout=45000)
+                try:
+                    pg.goto(url, wait_until="domcontentloaded", timeout=self._to)
+                except Exception:
+                    pass
+            if self._settle:
+                try:
+                    pg.wait_for_timeout(self._settle)
+                except Exception:
+                    pass
             html = pg.content()
             pg.close()
             return html
@@ -957,7 +1001,8 @@ class _Renderer:
             return None
 
     def close(self):
-        for fn in (getattr(self._b, "close", None), getattr(self._pw, "stop", None)):
+        for fn in (getattr(self._ctx, "close", None), getattr(self._b, "close", None),
+                   getattr(self._pw, "stop", None)):
             try:
                 if fn:
                     fn()
@@ -965,15 +1010,51 @@ class _Renderer:
                 pass
 
 
-def _web_fetch(url: str, renderer, log):
-    """HTML страницы: через headless-браузер (если включён и доступен) или httpx."""
-    if renderer is not None:
-        html = renderer.render(url)
-        if html:
-            return html
+_WEB_TAGSTRIP = None
+_WEB_JS_MIN_WORDS = 40   # меньше стольких слов видимого текста → страница считается «JS-пустой»
+
+
+def _web_client(workers: int = 6):
+    """Общий httpx-клиент с пулом keep-alive соединений для всего прогона парсинга —
+    убирает повторные TLS-рукопожатия (особенно на множестве файлов одного хоста)."""
+    conns = max(10, int(workers or 1) * 3)
+    limits = httpx.Limits(max_connections=conns, max_keepalive_connections=conns)
     try:
-        r = httpx.get(url, timeout=30, follow_redirects=True,
-                      headers={"User-Agent": "Mozilla/5.0 (RAGBot)"})
+        to = max(5, int(settings.get("WEB_PAGE_TIMEOUT") or 25))
+    except Exception:
+        to = 25
+    kw = dict(follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 (RAGBot)"},
+              limits=limits, timeout=to)
+    try:
+        return httpx.Client(http2=True, **kw)      # HTTP/2, если установлен пакет h2
+    except Exception:
+        return httpx.Client(**kw)
+
+
+def _visible_text_len(html: str) -> int:
+    """Грубая оценка объёма видимого текста (для решения «нужен ли браузер»). Дёшево:
+    вырезаем script/style и теги регуляркой — без полноценного парсинга."""
+    global _WEB_TAGSTRIP
+    if not html:
+        return 0
+    import re
+    if _WEB_TAGSTRIP is None:
+        _WEB_TAGSTRIP = (re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>", re.S | re.I),
+                         re.compile(r"<[^>]+>"))
+    s = _WEB_TAGSTRIP[0].sub(" ", html)
+    s = _WEB_TAGSTRIP[1].sub(" ", s)
+    return len(s.split())
+
+
+def _web_fetch_http(url: str, client, log):
+    """Быстрая обычная загрузка страницы (httpx, без браузера). Потокобезопасна при
+    общем клиенте — можно звать из пула потоков."""
+    try:
+        r = (client.get(url) if client is not None
+             else httpx.get(url, timeout=25, follow_redirects=True,
+                            headers={"User-Agent": "Mozilla/5.0 (RAGBot)"}))
+        if r.status_code != 200:
+            return None
         ct = r.headers.get("content-type", "")
         if ct and "html" not in ct.lower():
             return None
@@ -981,6 +1062,20 @@ def _web_fetch(url: str, renderer, log):
     except Exception as e:
         log(f"ERR {url}: {e}")
         return None
+
+
+def _web_fetch(url: str, renderer, log, client=None):
+    """HTML страницы: сначала быстрая обычная загрузка; браузер — только если включён
+    и (в умном режиме) обычной загрузкой получилось мало текста."""
+    html = _web_fetch_http(url, client, log)
+    if renderer is not None:
+        js_auto = bool(settings.get("WEB_JS_AUTO"))
+        need = (html is None) or (not js_auto) or (_visible_text_len(html) < _WEB_JS_MIN_WORDS)
+        if need:
+            rhtml = renderer.render(url)
+            if rhtml:
+                return rhtml
+    return html
 
 
 def _fmt_bytes(n: int) -> str:
@@ -992,9 +1087,9 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f} ГБ"
 
 
-def _web_download(url: str, dest_dir, log):
+def _web_download(url: str, dest_dir, log, client=None):
     """Скачать файл по ссылке (любого типа) в dest_dir потоково, с процентом загрузки.
-    Возвращает путь или None."""
+    Возвращает путь или None. При общем клиенте переиспользует keep-alive соединения."""
     import re
     from urllib.parse import urlparse, unquote
     tmp = None
@@ -1012,8 +1107,10 @@ def _web_download(url: str, dest_dir, log):
                 i += 1
             tmp = out.with_name(out.name + ".part")
             tmp.touch()
-        with httpx.stream("GET", url, timeout=120, follow_redirects=True,
-                          headers={"User-Agent": "Mozilla/5.0 (RAGBot)"}) as r:
+        _streamer = (client.stream if client is not None else httpx.stream)
+        _skw = {} if client is not None else {"follow_redirects": True,
+                                              "headers": {"User-Agent": "Mozilla/5.0 (RAGBot)"}}
+        with _streamer("GET", url, timeout=120, **_skw) as r:
             if r.status_code != 200:
                 log(f"    ERR файл {url}: HTTP {r.status_code}")
                 return None
@@ -1102,12 +1199,16 @@ def _web_links(html: str, base: str, seed_netloc: str, same_domain: bool) -> lis
 
 
 def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, renderer, log,
-               workers: int = 1, excludes=None):
+               workers: int = 1, excludes=None, client=None):
     """Обойти сайт из стартовой страницы (BFS по уровням) до depth/max_pages. Возвращает
     (pages, files, stat): pages — список (url, title, text); files — множество URL
     файлов для скачивания; stat — {errors, pages_limit_hit, depth_limit_hit, excluded}.
     excludes — список ключевых слов: URL, содержащие любое из них, пропускаются.
-    При workers>1 и без headless-браузера страницы уровня грузятся параллельно."""
+
+    Ускорение: обычная загрузка страниц уровня идёт ПАРАЛЛЕЛЬНО (httpx, общий клиент),
+    а тяжёлый headless-браузер (Playwright не потокобезопасен) запускается ПОСЛЕ, в
+    основном потоке и только для страниц, где обычной загрузкой мало текста (умный
+    режим WEB_JS_AUTO) — большинство страниц браузер не трогает."""
     from urllib.parse import urlparse
     from concurrent.futures import ThreadPoolExecutor
     seed_netloc = urlparse(seed).netloc
@@ -1115,8 +1216,9 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
     errors = []
     depth_limit_hit = False
     excluded_n = 0
-    # параллелим только обычную загрузку; с рендерером (Playwright) — последовательно
-    par = max(1, int(workers or 1)) if renderer is None else 1
+    depth_pages, depth_seen = [], set()   # страницы, на которых обрезаны более глубокие ссылки
+    par = max(1, int(workers or 1))       # обычная загрузка — всегда параллельно
+    js_auto = bool(settings.get("WEB_JS_AUTO"))
 
     while level and len(pages) < max_pages:
         # отобрать новые URL уровня; прямые ссылки на файлы отложить в files
@@ -1135,21 +1237,33 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
         if not batch:
             break
 
-        # загрузка страниц уровня (параллельно или последовательно)
-        fetched = []   # (url, d, html)
+        # фаза 1: быстрая обычная загрузка (httpx) — параллельно
+        http_html = {}
         if par > 1 and len(batch) > 1:
             with ThreadPoolExecutor(max_workers=min(par, len(batch))) as ex:
-                futs = {ex.submit(_web_fetch, u, None, log): (u, dd) for (u, dd) in batch}
+                futs = {ex.submit(_web_fetch_http, u, client, log): u for (u, dd) in batch}
                 for fu in futs:
-                    u, dd = futs[fu]
+                    u = futs[fu]
                     try:
-                        fetched.append((u, dd, fu.result()))
+                        http_html[u] = fu.result()
                     except Exception as e:
                         log(f"ERR {u}: {e}")
-                        fetched.append((u, dd, None))
+                        http_html[u] = None
         else:
             for (u, dd) in batch:
-                fetched.append((u, dd, _web_fetch(u, renderer, log)))
+                http_html[u] = _web_fetch_http(u, client, log)
+
+        # фаза 2: браузер (последовательно, только где реально нужен)
+        fetched = []   # (url, d, html)
+        for (u, dd) in batch:
+            html = http_html.get(u)
+            if renderer is not None:
+                need = (html is None) or (not js_auto) or (_visible_text_len(html) < _WEB_JS_MIN_WORDS)
+                if need:
+                    rhtml = renderer.render(u)
+                    if rhtml:
+                        html = rhtml
+            fetched.append((u, dd, html))
 
         next_level = []
         for url, d, html in fetched:
@@ -1177,11 +1291,15 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
                     next_level.append((link, d + 1))
                 else:
                     depth_limit_hit = True   # были более глубокие ссылки, но глубина не позволяет
+                    if url not in depth_seen and len(depth_pages) < 200:
+                        depth_seen.add(url)
+                        depth_pages.append(url)   # страница, на которой обрезаны ссылки
         level = next_level
 
     pages_limit_hit = bool(level) and len(pages) >= max_pages
     return pages, files, {"errors": errors, "pages_limit_hit": pages_limit_hit,
-                          "depth_limit_hit": depth_limit_hit, "excluded": excluded_n}
+                          "depth_limit_hit": depth_limit_hit, "excluded": excluded_n,
+                          "depth_pages": depth_pages}
 
 
 def ingest_web(urls: list, index: bool = True) -> dict:
@@ -1222,23 +1340,28 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                     fp.write(m + "\n")
                     fp.flush()
 
+                # общий httpx-клиент (keep-alive/HTTP2) на весь прогон — быстрее
+                client = _web_client(workers)
                 # headless-браузер (Playwright) — один на весь прогон, если включён/доступен
                 renderer = None
                 if settings.get("WEB_JS_RENDER"):
                     try:
                         renderer = _Renderer()
-                        _log("Headless-браузер (Playwright Chromium) активен")
+                        _log("Headless-браузер (Playwright Chromium) активен"
+                             + (" · умный режим (браузер только для JS-страниц)"
+                                if settings.get("WEB_JS_AUTO") else " · рендер каждой страницы"))
                     except Exception as e:
                         _log(f"Headless-браузер недоступен ({e}); обычная загрузка. "
                              "Установка: pip install playwright && playwright install chromium")
                         renderer = None
                 fp.write(f"Парсинг: глубина {depth}, до {max_pages} стр. и {max_files} "
-                         f"файлов/сайт, "
+                         f"файлов/сайт, параллельно ×{workers}, "
                          f"{'тот же домен' if same_domain else 'любой домен'}\n")
                 stats_map = {}
                 try:
                     for u in urls:
                         site_errors, site_limits, site_items = [], {}, []
+                        site_depth_urls = []
                         pages, dl, site_ok = [], 0, False
                         stats_map[u] = {"url": u, "ts": time.time(), "items": [],
                                         "progress": {"phase": "crawl", "pct": 8}}
@@ -1251,7 +1374,8 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                      + (f" (глобальных: {len(excludes_all)})" if excludes_all else ""))
                             pages, file_urls, cstat = _web_crawl(u, depth, max_pages,
                                                                  same_domain, renderer, _log,
-                                                                 workers, excludes=site_excludes)
+                                                                 workers, excludes=site_excludes,
+                                                                 client=client)
                             site_errors.extend(cstat.get("errors", []))
                             if cstat.get("excluded"):
                                 _log(f"  исключено URL по ключевым словам: {cstat['excluded']}")
@@ -1259,8 +1383,15 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                 site_limits["pages"] = (f"достигнут лимит страниц ({max_pages}); "
                                                         "часть страниц не обойдена — увеличьте «Макс. страниц»")
                             if cstat.get("depth_limit_hit"):
+                                site_depth_urls = cstat.get("depth_pages", [])
+                                _nd = len(site_depth_urls)
                                 site_limits["depth"] = (f"достигнута глубина обхода ({depth}); "
-                                                        "более глубокие ссылки пропущены — увеличьте «Глубину обхода»")
+                                                        f"более глубокие ссылки пропущены на {_nd} "
+                                                        "страниц(ах) — увеличьте «Глубину обхода» "
+                                                        "(список URL — ниже)")
+                                _log(f"  глубина превышена на страницах ({_nd}):")
+                                for _du in site_depth_urls[:200]:
+                                    _log(f"    • {_du}")
                             # скачиваем найденные файлы (любого типа), лимит на сайт
                             all_files = [f for f in file_urls
                                          if not _web_excluded(f, site_excludes)]
@@ -1300,7 +1431,7 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                 from concurrent.futures import ThreadPoolExecutor
                                 done_n = [0]
                                 def _dl_one(furl):
-                                    p = _web_download(furl, filesdir, _log)
+                                    p = _web_download(furl, filesdir, _log, client)
                                     done_n[0] += 1
                                     _log(f"  [файл {done_n[0]}/{nf}] {int(done_n[0]*100/nf)}%: {furl}"
                                          + ("" if p is not None else "  — не скачан"))
@@ -1317,7 +1448,7 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                                 for fi, furl in enumerate(file_list, 1):
                                     fpct = int(fi * 100 / nf) if nf else 100
                                     _log(f"  [файл {fi}/{nf}] {fpct}% скачиваю: {furl}")
-                                    p = _web_download(furl, filesdir, _log)
+                                    p = _web_download(furl, filesdir, _log, client)
                                     if p is not None:
                                         web_paths.append(p)
                                         dl += 1
@@ -1365,13 +1496,17 @@ def ingest_web(urls: list, index: bool = True) -> dict:
                         stats_map[u] = {"url": u, "ok": site_ok, "pages": len(pages),
                                         "files": dl, "errors": site_errors,
                                         "limits": site_limits, "ts": time.time(),
-                                        "items": site_items,
+                                        "items": site_items, "depth_urls": site_depth_urls,
                                         "progress": {"phase": "parsed", "pct": 92}}
                         _web_stats_save(stats_map)
                         fp.flush()
                 finally:
                     if renderer is not None:
                         renderer.close()
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
                     _web_stats_save(stats_map)
                 # активен каталог PostgreSQL — кладём спарсенные страницы и в него,
                 # чтобы индексация из БД их увидела (без папки)
