@@ -94,6 +94,12 @@ RUN pip install --no-cache-dir --upgrade pip wheel \
 COPY windows_variant/docker/requirements-docker.txt /app/requirements-docker.txt
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
+# Клиент Milvus (опциональный векторный бэкенд, по умолчанию активен Qdrant).
+# Ставим best-effort ОТДЕЛЬНЫМ шагом: если зависимости pymilvus конфликтуют — образ
+# всё равно соберётся, а Milvus можно доустановить кнопкой «Установить Milvus» в панели.
+RUN pip install --no-cache-dir "pymilvus>=2.4,<2.6" \
+    || echo "pymilvus: установка пропущена (Milvus-бэкенд доступен после ручной установки в панели)"
+
 # Headless-браузер для парсинга JS-сайтов (Playwright Chromium + системные зависимости).
 # Best-effort: при сбое образ всё равно собирается (парсинг откатится на обычную загрузку).
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
