@@ -5277,6 +5277,8 @@ async function loadWebUrls(){
         <div style="display:flex;gap:8px;align-items:center">
           <span style="flex:1;word-break:break-all">${esc(s.url)} ${s.indexed?'':'<span class="note">(нет файла)</span>'}<span class="note">${meta}</span></span>
           ${badge}
+          <button class="dirbtn" onclick="reparseWeb('${escAttr(s.url)}',true)" title="Спарсить заново и добавить в базу знаний (только этот сайт)">↻ Спарсить</button>
+          <button class="dirbtn" onclick="reparseWeb('${escAttr(s.url)}',false)" title="Спарсить заново без индексации (только этот сайт)">📥</button>
           <button class="dirbtn" onclick="webToggle('${exc}')" title="Исключения по ключевым словам">🚫${exList.length?(' '+exList.length):''}</button>
           ${nIssues?`<button class="dirbtn" onclick="webToggle('${idc}')" title="Ошибки и превышения лимитов">📋 ${nIssues}</button>`:''}
           <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="deleteWeb('${escAttr(s.url)}')">Удалить</button>
@@ -5303,6 +5305,13 @@ async function deleteWeb(url){
   if(!confirm('Удалить сайт из базы знаний?\n'+url))return;
   webMsg('удаление…'); const r=await adminPost('/api/admin/web-delete',{url});
   webMsg(r.msg||(r.ok?'удалено':'ошибка'),r.ok!==false); loadWebUrls(); loadOps();
+}
+async function reparseWeb(url, index){
+  // перепарсить один сайт из списка; save:false — не затираем список остальных сайтов
+  webMsg((index?'парсинг + индексация: ':'парсинг (без индексации): ')+url+' …');
+  const r=await adminPost('/api/admin/ingest-web',{urls:[url], index, save:false});
+  webMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
+  pollJob(); pollWeb();
 }
 async function webSaveExcludes(url, inputId){
   const inp=$('#'+inputId); if(!inp) return;

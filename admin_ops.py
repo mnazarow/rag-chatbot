@@ -1369,18 +1369,23 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
                           "depth_pages": depth_pages}
 
 
-def ingest_web(urls: list, index: bool = True) -> dict:
+def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
     """Скачать до 50 сайтов (с обходом ссылок), извлечь текст в DOCS_DIR/web и
     (при index=True) переиндексировать. При index=False — только парсинг без
     индексации (быстро обновить содержимое; проиндексировать можно позже кнопкой
-    «Переиндексировать»). Глубина/лимит/домен — настройки WEB_CRAWL_DEPTH/MAX_PAGES/SAME_DOMAIN."""
+    «Переиндексировать»). Глубина/лимит/домен — настройки WEB_CRAWL_DEPTH/MAX_PAGES/SAME_DOMAIN.
+
+    save=True — переписать список сохранённых сайтов на переданный (обычный запуск из
+    очереди адресов). save=False — НЕ трогать список (перепарсинг одного уже
+    сохранённого сайта: остальные сайты в списке сохраняются)."""
     import re
     urls = [u.strip() for u in (urls or []) if u.strip().startswith(("http://", "https://"))][:50]
     if not urls:
         return {"ok": False, "msg": "укажите хотя бы один URL (http/https), максимум 50"}
     if _web_job["running"]:
         return {"ok": False, "msg": "парсинг сайтов уже идёт"}
-    _web_sources_save(urls)
+    if save:
+        _web_sources_save(urls)
     excludes_map = _web_excludes_load()
     excludes_all = _web_excludes_all_load()
     webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"

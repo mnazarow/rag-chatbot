@@ -1628,7 +1628,8 @@ def admin_web_urls(x_admin_token: str | None = Header(None)):
 def admin_ingest_web(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     _check_admin(x_admin_token)
     return admin_ops.ingest_web(payload.get("urls", []),
-                                index=payload.get("index", True))
+                                index=payload.get("index", True),
+                                save=payload.get("save", True))
 
 
 @app.post("/api/admin/web-delete")
