@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         antiword \
         p7zip-full unar \
         libgl1 libglib2.0-0 \
+        espeak-ng \
         curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
