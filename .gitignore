@@ -26,6 +26,7 @@ docker_variant/backups/
 # Рантайм-данные (не версионируются)
 runtime_config.json
 ingest_stats.json
+ingest_progress.json
 rag_logs.db
 rag_logs.db-journal
 previews/

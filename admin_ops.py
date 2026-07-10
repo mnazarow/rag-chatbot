@@ -351,7 +351,15 @@ def status() -> dict:
             d["log"] = _tail(d["logfile"])
         return d
 
-    out["index_job"] = _jobview(_job)
+    _ij = _jobview(_job)
+    if _ij.get("running"):
+        try:
+            _pf = ROOT / "ingest_progress.json"
+            if _pf.exists():
+                _ij["progress"] = _json.loads(_pf.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    out["index_job"] = _ij
     out["finetune_job"] = _jobview(_ft_job)
     out["adapter_ready"] = (ROOT / "finetune" / "adapter").exists()
     out["use_finetuned"] = bool(settings.get("USE_FINETUNED"))

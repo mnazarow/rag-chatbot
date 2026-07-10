@@ -58,6 +58,20 @@ DOCS_DIR = Path(settings.get("DOCS_DIR")).expanduser()
 
 # Время обработки по файлам (записывается при индексации, читается админкой/каталогом)
 INGEST_STATS = Path(__file__).resolve().parent / "ingest_stats.json"
+# Прогресс индексации (файлов обработано/всего) — читается админкой для прогресс-бара
+INGEST_PROGRESS = Path(__file__).resolve().parent / "ingest_progress.json"
+
+
+def _write_progress(done: int, total: int, current: str = "", phase: str = "index") -> None:
+    """Записать прогресс индексации в файл (для графического прогресс-бара в панели)."""
+    try:
+        pct = int(done * 100 / total) if total else (100 if phase == "done" else 0)
+        INGEST_PROGRESS.write_text(json.dumps(
+            {"done": int(done), "total": int(total), "pct": max(0, min(100, pct)),
+             "current": (current or "")[:200], "phase": phase, "ts": time.time()},
+            ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
 
 SUPPORTED = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xlsm", ".xls", ".csv",
              ".txt", ".md", ".html", ".htm", ".mhtml", ".mht",
@@ -313,6 +327,7 @@ def main():
     errors = []  # (файл, причина)
     tmpdir = tempfile.mkdtemp(prefix="rag_pg_") if from_pg else None
     total_work = len(work)
+    _write_progress(0, total_work, phase="index")
 
     # число потоков извлечения: 0 = авто (по ядрам, ≤8). Таймаут на файл (SIGALRM)
     # работает только однопоточно — при нём принудительно 1 поток.
@@ -498,6 +513,7 @@ def main():
             source = res["source"]
             print(f"[{idx}/{total_work}] {int(idx * 100 / total_work)}% "
                   f"индексирую: {source}", flush=True)
+            _write_progress(idx, total_work, source)
             delete_old_versions(source)
             _embed_upsert(source, res["fhash"], res["points"], res["ftype"],
                           res["meta_path"], res.get("parse_ms", 0))
@@ -537,6 +553,7 @@ def main():
                 delete_old_versions(source)
                 print(f"[{idx}/{total_work}] {int(idx * 100 / total_work)}% "
                       f"индексирую: {source}", flush=True)
+                _write_progress(idx, total_work, source)
                 if use_alarm:
                     signal.alarm(file_timeout)
                 t_parse = time.time()
@@ -627,6 +644,7 @@ def main():
 
     if tmpdir:
         shutil.rmtree(tmpdir, ignore_errors=True)
+    _write_progress(total_work, total_work, phase="done")
 
     wall = max(1, int((time.time() - run_start) * 1000))
     print(f"Готово. Обновлено файлов: {n_new}, чанков добавлено: {n_chunks}, "

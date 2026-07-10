@@ -5968,6 +5968,14 @@ async function loadOps(){
   const dot=b=>b?'<span style="color:#4ade80">● в сети</span>':'<span style="color:#f87171">● нет</span>';
   const j=s.index_job||{};
   const job=j.running?'идёт…':(j.ok===true?'успешно':(j.ok===false?'ошибка':'—'));
+  // графический прогресс-бар индексации по числу файлов
+  let ijob=job;
+  if(j.running && j.progress){
+    const p=j.progress, pct=Math.max(0,Math.min(100,p.pct||0));
+    const cur=p.current?(' · '+esc((p.current||'').split('/').pop())):'';
+    ijob=`<div style="font-size:13px;color:var(--muted)">${nz(p.done)}/${nz(p.total)} файлов${p.phase==='done'?' · готово':''}</div>`
+      +bar(pct)+`<div style="font-size:13px;margin-top:2px">${pct}%${cur}</div>`;
+  }
   const fj=s.finetune_job||{};
   const ftjob=fj.running?'идёт…':(fj.ok===true?'успешно':(fj.ok===false?'ошибка':'—'));
   const adapter=s.adapter_ready?(s.use_finetuned?'активна':'готова'):'нет';
@@ -5993,7 +6001,7 @@ async function loadOps(){
   const wjob=wj.running?'идёт…':(wj.ok===true?'успешно':(wj.ok===false?'ошибка':'—'));
   $('#opsstatus').innerHTML=[
     ['Qdrant',dot(s.qdrant)],['LLM ('+s.backend+')',dot(s.llm)],
-    ['Чанков в базе',s.chunks],['Индексация',job],
+    ['Чанков в базе',s.chunks],['Индексация',ijob],
     ['Граф',gjob],['Граф знаний',graph],
     ['Дообучение',ftjob],['Дообуч. модель',adapter],
     ['Загрузка модели',pjob],['Установка',djob],['Парсинг сайтов',wjob],
