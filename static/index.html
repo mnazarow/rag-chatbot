@@ -4600,8 +4600,14 @@ async function loadIngestLogs(){
       <td style="color:var(--muted)">${esc((l.summary||'').slice(0,120))}</td>
       <td style="white-space:nowrap">
         <button class="act ghost" style="padding:3px 8px" onclick="viewIngestLog(${l.id})">Показать</button>
+        <button class="act ghost" style="padding:3px 8px" onclick="dlIngestLog(${l.id})">Скачать</button>
         <button class="act ghost" style="padding:3px 8px;border-color:#ef4444;color:#f87171" onclick="delIngestLog(${l.id})">Удалить</button>
       </td></tr>`).join('')+'</tbody></table></div>';
+}
+function dlIngestLog(id){
+  // прямое скачивание файла: токен передаём query-параметром (заголовок в ссылке не задать)
+  const url='/api/admin/ingest-log/download?id='+id+'&token='+encodeURIComponent(tok());
+  window.open(url,'_blank');
 }
 async function viewIngestLog(id){
   ilMsg('загрузка…'); let r; try{ r=await adminGet('/api/admin/ingest-log?id='+id); }catch(e){ ilMsg('ошибка',false); return; }

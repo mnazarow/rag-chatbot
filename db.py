@@ -1281,15 +1281,28 @@ def _backend_detail(dialect: str) -> dict:
     return info
 
 
-def ingest_log_save(label: str, summary: str, log: str) -> int:
-    """Сохранить полный лог индексации в БД. Возвращает id записи."""
+def ingest_log_save(label: str, summary: str, log: str, keep: int = 5) -> int:
+    """Сохранить полный лог индексации в БД. Хранится только последние `keep` записей
+    с ТЕМ ЖЕ label (напр. 5 последних логов индексации, 5 — парсинга сайтов и т.д.).
+    Возвращает id записи."""
     now = datetime.now()
+    label = (label or "")[:64]
     try:
         with _LOCK:
-            return _insert(
+            rid = _insert(
                 "INSERT INTO ingest_logs(ts,day,label,summary,log) VALUES(?,?,?,?,?)",
-                (now.timestamp(), now.strftime("%Y-%m-%d"), (label or "")[:64],
+                (now.timestamp(), now.strftime("%Y-%m-%d"), label,
                  (summary or "")[:8000], (log or "")[:5_000_000])) or 0
+            # прунинг: оставляем только последние `keep` записей этого label
+            try:
+                keep = max(1, int(keep))
+                old = _all("SELECT id FROM ingest_logs WHERE label=? "
+                           "ORDER BY id DESC LIMIT 1000 OFFSET ?", (label, keep))
+                for r in old:
+                    _exec("DELETE FROM ingest_logs WHERE id=?", (int(r["id"]),))
+            except Exception as pe:
+                print(f"[db] ingest_log prune: {pe}")
+            return rid
     except Exception as e:
         print(f"[db] ingest_log_save: {e}")
         return 0

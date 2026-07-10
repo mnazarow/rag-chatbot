@@ -2000,6 +2000,26 @@ def admin_ingest_log(id: int, x_admin_token: str | None = Header(None)):
     return db.ingest_log_get(id) or {"ok": False, "msg": "лог не найден"}
 
 
+@app.get("/api/admin/ingest-log/download")
+def admin_ingest_log_download(id: int, token: str | None = None,
+                              x_admin_token: str | None = Header(None)):
+    """Скачать полный лог как текстовый файл. Токен можно передать заголовком или
+    query-параметром ?token= (для прямой ссылки-скачивания из браузера)."""
+    _check_admin(x_admin_token or token)
+    from fastapi.responses import Response
+    rec = db.ingest_log_get(id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="лог не найден")
+    from datetime import datetime as _dt
+    day = _dt.fromtimestamp(rec.get("ts") or time.time()).strftime("%Y%m%d_%H%M%S")
+    label = "".join(c if c.isalnum() else "_" for c in (rec.get("label") or "log"))[:40]
+    fname = f"ingest_{label}_{day}.txt"
+    body = (f"{rec.get('label','')} — {rec.get('day','')}\n"
+            f"{rec.get('summary','')}\n{'=' * 60}\n{rec.get('log','')}")
+    return Response(content=body, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @app.post("/api/admin/ingest-logs/delete")
 def admin_ingest_logs_delete(payload: dict = Body(default={}),
                              x_admin_token: str | None = Header(None)):
