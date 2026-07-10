@@ -182,6 +182,7 @@
     <button data-t="voip">📞 VoIP</button>
     <button data-t="server">🖥 Загрузка сервера</button>
     <button data-t="components">🔬 Аналитика+</button>
+    <button data-t="quality">🎯 Качество</button>
     <button data-t="bench">⚡ Бенчмарк</button>
     <button data-t="calib">🎛 Автокалибровка</button>
     <button data-t="admin">⚙️ Администратор</button>
@@ -1537,10 +1538,12 @@
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
         <button class="act" onclick="milvusMigrate('to_milvus')">🚚 Мигрировать Qdrant → Milvus</button>
         <button class="act ghost" onclick="milvusMigrate('to_qdrant')">🚚 Мигрировать Milvus → Qdrant</button>
+        <button class="act ghost" onclick="milvusVerify()">🔎 Проверить соответствие</button>
         <button class="act" onclick="milvusSwitch('milvus')">🔀 Сделать активным Milvus</button>
         <button class="act ghost" onclick="milvusSwitch('qdrant')">🔀 Вернуться на Qdrant</button>
         <span id="milvusmsg" class="note"></span>
       </div>
+      <div id="milvus_verify" class="note" style="margin-bottom:8px"></div>
 
       <div id="milvus_prog_wrap" style="display:none;margin:6px 0">
         <div style="height:10px;border-radius:6px;background:rgba(127,127,127,.18);overflow:hidden">
@@ -1562,6 +1565,76 @@
       </div>
 
       <pre id="milvus_log" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:240px;overflow:auto;white-space:pre-wrap;display:none"></pre>
+    </div>
+
+    <!-- интеграции: API-ключи, вебхуки, виджет -->
+    <div class="box">
+      <h3>🔗 Интеграции (API, вебхуки, виджет)</h3>
+      <div class="note" style="margin-bottom:8px">API-ключи для внешних систем (эндпоинт <code>POST /api/v1/ask</code>), вебхуки на события и встраиваемый чат-виджет для сайта.</div>
+
+      <div style="border-top:1px solid var(--line);padding-top:8px">
+        <b style="font-size:13px">API-ключи</b>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0">
+          <input id="apikey_label" placeholder="название ключа (напр. «сайт компании»)" style="flex:1;min-width:200px">
+          <button class="act" onclick="apiKeyCreate()">➕ Создать ключ</button>
+          <span id="apikey_msg" class="note"></span>
+        </div>
+        <div id="apikey_new" style="display:none;margin:6px 0;padding:8px;border:1px solid var(--accent);border-radius:8px"></div>
+        <div id="apikey_list"></div>
+      </div>
+
+      <div style="border-top:1px solid var(--line);padding-top:8px;margin-top:10px">
+        <b style="font-size:13px">Вебхуки</b>
+        <div class="note" style="margin:2px 0 6px">POST JSON на ваш URL при новом вопросе и/или оценке.</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="wh_url" placeholder="https://ваш-сервер/hook" style="flex:1;min-width:220px">
+          <label class="note"><input type="checkbox" id="wh_q" checked> вопрос</label>
+          <label class="note"><input type="checkbox" id="wh_r" checked> оценка</label>
+          <button class="act ghost" onclick="webhookSave()">💾 Добавить</button>
+          <span id="wh_msg" class="note"></span>
+        </div>
+        <div id="wh_list" style="margin-top:6px"></div>
+      </div>
+
+      <div style="border-top:1px solid var(--line);padding-top:8px;margin-top:10px">
+        <b style="font-size:13px">Встраиваемый виджет чата</b>
+        <div class="note" style="margin:2px 0 6px">Вставьте на сайт компании (используйте один из ключей выше). Кнопка чата появится в углу страницы.</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <select id="wg_key" style="min-width:180px"></select>
+          <button class="dirbtn" onclick="widgetCode()">Показать код</button>
+          <a id="wg_demo" href="#" target="_blank" class="dirbtn" style="display:none">Открыть демо</a>
+        </div>
+        <pre id="wg_code" style="display:none;margin-top:6px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;white-space:pre-wrap"></pre>
+      </div>
+    </div>
+
+    <!-- дообучение эмбеддингов на оценках -->
+    <div class="box">
+      <h3>🧠 Дообучение эмбеддингов на оценках 👍</h3>
+      <div class="note" style="margin-bottom:8px">Улучшает релевантность поиска на вашей терминологии: из положительно оценённых ответов берутся пары «вопрос → процитированный фрагмент» и дообучается модель эмбеддингов. Нужен GPU и накопленные оценки 👍.</div>
+      <div id="embft_status" class="note" style="margin-bottom:8px">загрузка…</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <label class="note">Эпох <input id="embft_epochs" type="number" min="1" max="5" value="1" style="width:56px"></label>
+        <button class="act" onclick="embedFtStart()">🚀 Дообучить</button>
+        <button class="act ghost" onclick="embedFtActivate()">✅ Сделать активной</button>
+        <span id="embft_msg" class="note"></span>
+      </div>
+      <pre id="embft_log" style="display:none;margin-top:8px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:220px;overflow:auto;white-space:pre-wrap"></pre>
+      <div class="note" style="margin-top:6px">После обучения нажмите «Сделать активной», затем «Сбросить индекс» + «Переиндексировать» и перезапустите сервис.</div>
+    </div>
+
+    <!-- оценка и авто-подбор параметров поиска -->
+    <div class="box">
+      <h3>📏 Оценка и авто-подбор параметров поиска</h3>
+      <div class="note" style="margin-bottom:8px">Золотой набор строится из ваших 👍-ответов (вопрос → нужные источники). Метрика <b>hit@k</b> — доля вопросов, где поиск вернул правильный источник. Авто-подбор перебирает <code>MIN_SCORE</code>, <code>TOP_K_RETRIEVE</code>, <code>TOP_K_RERANK</code> и выбирает лучшие. Всё опционально.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="act ghost" onclick="retrEval()">📊 Оценить поиск</button>
+        <label class="note"><input type="checkbox" id="retr_apply"> применить лучшие</label>
+        <button class="act" onclick="retrAutotune()">🎛 Подобрать параметры</button>
+        <span id="retr_msg" class="note"></span>
+      </div>
+      <div id="retr_result" class="note" style="margin-top:8px"></div>
+      <pre id="retr_log" style="display:none;margin-top:8px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:12px;max-height:220px;overflow:auto;white-space:pre-wrap"></pre>
     </div>
 
     <!-- переустановка и сброс -->
@@ -1698,6 +1771,14 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- ===== АНАЛИТИКА КАЧЕСТВА ===== -->
+  <section id="quality">
+    <h1>🎯 Аналитика качества</h1>
+    <div class="sub">Слабые места ответов: оценки 👎, пробелы в базе (вопросы без ответа), топ источников, динамика.
+      <button class="act ghost" onclick="loadQuality()">Обновить</button></div>
+    <div id="quality_body"><div class="note">загрузка…</div></div>
   </section>
 
   <!-- ===== ВНЕШНИЕ API (ХУКИ) ===== -->
@@ -1996,7 +2077,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t!=='obsidian') obsStop();                    // граф — гасим анимацию вне вкладки
   if(b.dataset.t!=='telegram') tgWorkflowStop();             // workflow-граф — гасим вне вкладки
   document.body.classList.toggle('obs-full', b.dataset.t==='obsidian');  // граф во всю ширину
-  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,voip:loadVoip,server:loadServer,components:loadComponents,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,apihooks:loadApiHooks,websites:loadWebsites,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
+  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,voip:loadVoip,server:loadServer,components:loadComponents,quality:loadQuality,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,apihooks:loadApiHooks,websites:loadWebsites,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
   if(b.dataset.t==='dash') startActivityPoll();
 });
 
@@ -3831,7 +3912,7 @@ async function loadConfig(){
   if(document.getElementById('vllm_select')) loadVllmModels();
   if(document.getElementById('ftbase_select')) loadFinetuneModels();
   if(document.getElementById('ftbase_fieldsel')) loadFinetuneFieldModels();
-  loadMode(); loadOps(); loadModels(); rhLoad(); loadBackups(); loadDbCache(); loadMilvus(); loadIngestLogs(); loadDns(); loadPrice(); loadSip(); loadSipReg();
+  loadMode(); loadOps(); loadModels(); rhLoad(); loadBackups(); loadDbCache(); loadMilvus(); loadIntegrations(); loadEmbedFt(); loadIngestLogs(); loadDns(); loadPrice(); loadSip(); loadSipReg();
 }
 
 // ---- автокалибровка параметров ----
@@ -4663,7 +4744,8 @@ async function loadMilvus(){
     <div style="display:flex;gap:18px;flex-wrap:wrap">
       <div>🧭 <b>Qdrant</b>: ${q.reachable?('доступен · точек '+nz(q.points)):'<span style="color:#f87171">недоступен</span>'}</div>
       <div>🚀 <b>Milvus</b>: ${d.pkg_present?'':'<span class="note">клиент не установлен · </span>'}${m.reachable?('доступен · точек '+nz(m.points)):'<span class="note">не поднят</span>'} · режим ${esc(d.mode||'lite')}${d.uri?(' · '+esc(d.uri)):''}</div>
-    </div>`;
+    </div>
+    ${d.recommend_reason?`<div class="note" style="margin-top:4px">💡 Рекомендация: <b>${esc(d.recommend||'')}</b> — ${esc(d.recommend_reason)}</div>`:''}`;
   // прогресс миграции
   const job=d.job||{};
   const wrap=$('#milvus_prog_wrap');
@@ -4710,6 +4792,135 @@ async function milvusSwitch(target){
   mvMsg((r&&r.msg)||'', !!(r&&r.ok));
   loadMilvus();
   if(r&&r.ok&&r.restart){ if(confirm((r.msg||'')+'\n\nПерезапустить сервис сейчас?')) adminPost('/api/admin/restart'); }
+}
+// ---- дообучение эмбеддингов ----
+let _embftT=null;
+async function loadEmbedFt(){
+  const el=$('#embft_status'); if(!el) return;
+  let d; try{ d=await adminGet('/api/admin/embed-finetune/info'); }catch(e){ return; }
+  if(!d) return;
+  const job=d.job||{};
+  el.innerHTML=`База: <b>${esc((d.base||'').split('/').pop())}</b> · обучающих пар (👍): <b>${nz(d.pairs)}</b>`
+    +(d.enough?'':' <span style="color:#f59e0b">(нужно ≥20)</span>')
+    +(d.trained?` · <span style="color:#4ade80">дообученная модель готова${d.active?' · активна':''}</span>`:' · дообученной модели ещё нет');
+  const lg=$('#embft_log');
+  if(job.log && job.log.trim()){ if(lg){ lg.style.display='block'; lg.textContent=job.log; } }
+  if(job.running){ if(!_embftT) _embftT=setInterval(loadEmbedFt,3000); }
+  else if(_embftT){ clearInterval(_embftT); _embftT=null; }
+}
+async function embedFtStart(){
+  if(!confirm('Запустить дообучение эмбеддингов? Это нагружает GPU и может занять минуты-часы.')) return;
+  const epochs=parseInt($('#embft_epochs').value||'1',10)||1;
+  const m=$('#embft_msg'); if(m){ m.textContent='запуск…'; m.className='note'; }
+  const r=await adminPost('/api/admin/embed-finetune',{epochs});
+  if(m){ m.textContent=(r&&r.ok!==false)?'запущено — следите за логом':((r&&r.msg)||'ошибка'); m.className=(r&&r.ok!==false)?'saved':'note'; }
+  if(!_embftT) _embftT=setInterval(loadEmbedFt,3000);
+  loadEmbedFt();
+}
+async function embedFtActivate(){
+  if(!confirm('Переключить модель эмбеддингов на дообученную? Потребуется сбросить индекс и переиндексировать.')) return;
+  const r=await adminPost('/api/admin/embed-finetune/activate');
+  const m=$('#embft_msg'); if(m){ m.textContent=(r&&r.msg)||''; m.className=(r&&r.ok!==false)?'saved':'note'; }
+  loadEmbedFt();
+}
+// ---- оценка и авто-подбор параметров поиска ----
+let _retrT=null;
+function _retrMetrics(m){ return `hit@k <b>${Math.round((m.hit_rate||0)*100)}%</b> · MRR ${m.mrr} · пустых ${nz(m.empty)} · сред. выдач ${m.avg_results} (вопросов ${nz(m.n)})`; }
+async function retrEval(){
+  const r=$('#retr_result'); if(r) r.textContent='оценка…';
+  const d=await adminPost('/api/admin/retrieval/eval');
+  if(!r) return;
+  r.innerHTML = (d&&d.ok!==false)? ('Текущее качество: '+_retrMetrics(d)) : ('<span class="note">'+esc((d&&d.msg)||'ошибка')+'</span>');
+}
+async function retrAutotune(){
+  if(!confirm('Запустить авто-подбор? Он выполнит много поисков (может занять минуты).'+($('#retr_apply').checked?'\nЛучшие параметры будут ПРИМЕНЕНЫ.':''))) return;
+  const apply=$('#retr_apply').checked;
+  const m=$('#retr_msg'); if(m){ m.textContent='запуск…'; m.className='note'; }
+  const d=await adminPost('/api/admin/retrieval/autotune',{apply});
+  if(m){ m.textContent=(d&&d.msg)||''; m.className=(d&&d.ok!==false)?'saved':'note'; }
+  if(d&&d.ok!==false){ if(!_retrT) _retrT=setInterval(retrTuneStatus,2000); retrTuneStatus(); }
+}
+async function retrTuneStatus(){
+  let s; try{ s=await adminGet('/api/admin/retrieval/autotune/status'); }catch(e){ return; }
+  if(!s) return;
+  const lg=$('#retr_log'); if(lg && (s.log||[]).length){ lg.style.display='block'; lg.textContent=(s.log||[]).join('\n'); }
+  const r=$('#retr_result');
+  if(r){
+    let h='';
+    if(s.total) h+=`Подбор: ${nz(s.done)}/${nz(s.total)}${s.running?' …':''}`;
+    if(s.baseline) h+='<br>База: '+_retrMetrics(s.baseline);
+    if(s.best) h+=`<br>Лучшее: MIN_SCORE=<b>${s.best.MIN_SCORE}</b>, TOP_K=<b>${s.best.TOP_K_RETRIEVE}</b>, rerank=<b>${s.best.TOP_K_RERANK}</b> → hit@k <b>${Math.round((s.best.hit_rate||0)*100)}%</b>`+(s.applied?' <span style="color:#4ade80">(применено)</span>':' <span class="note">(не применено — включите галочку и запустите снова)</span>');
+    r.innerHTML=h;
+  }
+  if(!s.running && _retrT){ clearInterval(_retrT); _retrT=null; loadConfig&&null; }
+}
+// ---- интеграции: API-ключи, вебхуки, виджет ----
+let _intgKeys=[];
+async function loadIntegrations(){
+  let d; try{ d=await adminGet('/api/admin/integrations'); }catch(e){ return; }
+  if(!d) return;
+  _intgKeys=d.api_keys||[];
+  const kl=$('#apikey_list');
+  if(kl){
+    kl.innerHTML = _intgKeys.length ? _intgKeys.map(k=>`<div style="display:flex;gap:8px;align-items:center;padding:3px 0;border-bottom:1px solid var(--line)">
+      <span style="flex:1">🔑 <b>${esc(k.label||'(без названия)')}</b> <span class="note">${esc(k.masked||'')} · вызовов ${nz(k.calls)}${k.enabled?'':' · выкл'}</span></span>
+      <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="apiKeyRevoke('${escAttr(k.id)}')">Отозвать</button></div>`).join('')
+      : '<span class="note">ключей пока нет</span>';
+  }
+  const wl=$('#wh_list');
+  if(wl){
+    const hooks=d.webhooks||[];
+    wl.innerHTML = hooks.length ? hooks.map(h=>`<div style="display:flex;gap:8px;align-items:center;padding:3px 0;border-bottom:1px solid var(--line)">
+      <span style="flex:1;word-break:break-all">🪝 ${esc(h.url)} <span class="note">[${(h.events||[]).join(', ')}]${h.enabled?'':' · выкл'}</span></span>
+      <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="webhookDelete('${escAttr(h.id)}')">Удалить</button></div>`).join('')
+      : '<span class="note">вебхуков пока нет</span>';
+  }
+  const sel=$('#wg_key');
+  if(sel){ sel.innerHTML = _intgKeys.length ? _intgKeys.map(k=>`<option value="${escAttr(k.id)}">${esc(k.label||k.masked)}</option>`).join('') : '<option value="">— сначала создайте ключ —</option>'; }
+}
+async function apiKeyCreate(){
+  const label=$('#apikey_label').value;
+  const r=await adminPost('/api/admin/api-keys',{label});
+  const nb=$('#apikey_new');
+  if(r&&r.key){ nb.style.display='block'; nb.innerHTML='Новый ключ (скопируйте — больше не покажется):<br><code style="word-break:break-all">'+esc(r.key)+'</code>'; $('#apikey_label').value=''; }
+  const m=$('#apikey_msg'); if(m){ m.textContent=(r&&r.msg)||''; m.className='saved'; }
+  loadIntegrations();
+}
+async function apiKeyRevoke(id){
+  if(!confirm('Отозвать ключ? Внешние системы с ним перестанут работать.')) return;
+  await adminPost('/api/admin/api-keys/revoke',{id}); loadIntegrations();
+}
+async function webhookSave(){
+  const url=$('#wh_url').value.trim();
+  const events=[]; if($('#wh_q').checked)events.push('question'); if($('#wh_r').checked)events.push('rating');
+  const r=await adminPost('/api/admin/webhooks',{url,events,enabled:true});
+  const m=$('#wh_msg'); if(m){ m.textContent=(r&&r.ok!==false)?'✓ добавлен':((r&&r.msg)||'ошибка'); m.className=(r&&r.ok!==false)?'saved':'note'; }
+  if(r&&r.ok!==false) $('#wh_url').value='';
+  loadIntegrations();
+}
+async function webhookDelete(id){
+  await adminPost('/api/admin/webhooks/delete',{id}); loadIntegrations();
+}
+function widgetCode(){
+  const sel=$('#wg_key'); const id=sel?sel.value:'';
+  const k=(_intgKeys.find(x=>x.id===id)||{});
+  // ВНИМАНИЕ: в код виджета нужен САМ ключ; он не хранится в UI после создания.
+  const base=location.origin;
+  const snippet='<script src="'+base+'/widget.js?key=ВАШ_API_КЛЮЧ&title=Помощник"><\/script>';
+  const pre=$('#wg_code'); if(pre){ pre.style.display='block'; pre.textContent=snippet; }
+  const demo=$('#wg_demo'); if(demo){ demo.style.display='inline-block'; demo.href=base+'/embed'; }
+}
+async function milvusVerify(){
+  const el=$('#milvus_verify'); if(el){ el.textContent='сверка…'; }
+  const r=await adminPost('/api/admin/milvus/verify');
+  if(!el) return;
+  if(!r||r.ok===false){ el.innerHTML='<span style="color:#f87171">✗ '+esc((r&&r.msg)||'ошибка')+'</span>'; return; }
+  const c=r.counts||{};
+  let rows=(r.samples||[]).map(s=>s.error
+    ? `<div class="note">• «${esc(s.q)}» — ошибка: ${esc(s.error)}</div>`
+    : `<div class="note">• «${esc(s.q)}» — совпадение топ-5: ${Math.round((s.overlap||0)*100)}%</div>`).join('');
+  el.innerHTML=`<div>${r.count_ok?'✅':'⚠️'} ${esc(r.msg||'')}</div>${rows}`
+    +`<div class="note" style="margin-top:2px">${r.count_ok&&(r.avg_overlap==null||r.avg_overlap>=0.8)?'Миграция выглядит корректной — можно переключаться.':'Есть расхождения — проверьте миграцию перед переключением.'}</div>`;
 }
 
 // ---- калибровка по оценкам ----
@@ -5273,16 +5484,63 @@ async function loadWebUrls(){
         </div>
         <div class="note" style="margin-top:4px;font-size:11px">Применяется при следующем парсинге этого сайта (кнопки «Спарсить»/«Только спарсить» или ежедневный автопарсинг).</div>
       </div>`;
+      const cf=s.cfg||{}, cfid='webcfg_'+i;
+      const cfgBox=`<div id="${cfid}" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px">
+        <div class="note" style="margin-bottom:4px">Пер-сайтовые настройки обхода (пусто = глобальные).</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <label class="note">Глубина <input id="${cfid}_depth" type="number" min="0" style="width:64px" value="${cf.depth??''}"></label>
+          <label class="note">Макс. стр. <input id="${cfid}_maxp" type="number" min="1" style="width:80px" value="${cf.max_pages??''}"></label>
+          <label class="note">Макс. файлов <input id="${cfid}_maxf" type="number" min="0" style="width:80px" value="${cf.max_files??''}"></label>
+          <label class="note">Потоков <input id="${cfid}_conc" type="number" min="1" style="width:64px" value="${cf.concurrency??''}"></label>
+          <label class="note">Домен <select id="${cfid}_dom"><option value="">глоб.</option><option value="1" ${cf.same_domain===true?'selected':''}>только свой</option><option value="0" ${cf.same_domain===false?'selected':''}>любой</option></select></label>
+          <label class="note">Браузер <select id="${cfid}_js"><option value="">глоб.</option><option value="1" ${cf.js_render===true?'selected':''}>вкл</option><option value="0" ${cf.js_render===false?'selected':''}>выкл</option></select></label>
+          <label class="note">Автопарсинг <select id="${cfid}_sch">
+            <option value="" ${!cf.schedule?'selected':''}>глоб. (00:05)</option>
+            <option value="off" ${cf.schedule==='off'?'selected':''}>выкл</option>
+            <option value="hourly" ${cf.schedule==='hourly'?'selected':''}>каждый час</option>
+            <option value="6h" ${cf.schedule==='6h'?'selected':''}>каждые 6 ч</option>
+            <option value="12h" ${cf.schedule==='12h'?'selected':''}>каждые 12 ч</option>
+            <option value="daily" ${cf.schedule==='daily'?'selected':''}>раз в сутки</option>
+            <option value="weekly" ${cf.schedule==='weekly'?'selected':''}>раз в неделю</option>
+          </select></label>
+          <button class="dirbtn" onclick="webSaveCfg('${escAttr(s.url)}','${cfid}')">💾 Сохранить</button>
+          <span id="${cfid}_msg" class="note"></span>
+        </div>
+      </div>`;
+      const atype=s.auth_type||'none', auid='webauth_'+i;
+      const authBox=`<div id="${auid}" style="display:none;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px">
+        <div class="note" style="margin-bottom:4px">Авторизация на сайт (для закрытых порталов). Секреты хранятся в БД и не показываются.${atype!=='none'?(' Сейчас: <b>'+esc(atype)+'</b>'):''}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <label class="note">Тип <select id="${auid}_type" onchange="webAuthType('${auid}')">
+            <option value="none" ${atype==='none'?'selected':''}>нет</option>
+            <option value="basic" ${atype==='basic'?'selected':''}>Basic (логин/пароль)</option>
+            <option value="cookie" ${atype==='cookie'?'selected':''}>Cookie</option>
+            <option value="header" ${atype==='header'?'selected':''}>Заголовок</option>
+          </select></label>
+          <span id="${auid}_basic" style="display:${atype==='basic'?'inline':'none'};gap:6px">
+            <input id="${auid}_user" placeholder="логин" style="width:120px">
+            <input id="${auid}_pass" type="password" placeholder="пароль" style="width:120px"></span>
+          <input id="${auid}_cookie" placeholder="name=value; name2=value2" style="display:${atype==='cookie'?'inline':'none'};min-width:220px">
+          <span id="${auid}_hdr" style="display:${atype==='header'?'inline':'none'};gap:6px">
+            <input id="${auid}_hn" placeholder="Header-Name" style="width:150px">
+            <input id="${auid}_hv" type="password" placeholder="значение" style="width:150px"></span>
+          <button class="dirbtn" onclick="webSaveAuth('${escAttr(s.url)}','${auid}')">💾 Сохранить</button>
+          <span id="${auid}_msg" class="note"></span>
+        </div>
+      </div>`;
+      const cfgOn = Object.keys(cf).length>0;
       return `<div style="border:1px solid var(--line);border-radius:8px;margin-bottom:6px;padding:6px 10px">
-        <div style="display:flex;gap:8px;align-items:center">
-          <span style="flex:1;word-break:break-all">${esc(s.url)} ${s.indexed?'':'<span class="note">(нет файла)</span>'}<span class="note">${meta}</span></span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="flex:1;word-break:break-all;min-width:180px">${esc(s.url)} ${s.indexed?'':'<span class="note">(нет файла)</span>'}<span class="note">${meta}</span>${cfgOn?' <span style="color:#60a5fa">⚙</span>':''}${atype!=='none'?' <span style="color:#4ade80">🔐</span>':''}</span>
           ${badge}
           <button class="dirbtn" onclick="reparseWeb('${escAttr(s.url)}',true)" title="Спарсить заново и добавить в базу знаний (только этот сайт)">↻ Спарсить</button>
           <button class="dirbtn" onclick="reparseWeb('${escAttr(s.url)}',false)" title="Спарсить заново без индексации (только этот сайт)">📥</button>
+          <button class="dirbtn" onclick="webToggle('${cfid}')" title="Настройки обхода этого сайта">⚙</button>
+          <button class="dirbtn" onclick="webToggle('${auid}')" title="Авторизация на сайт">🔐</button>
           <button class="dirbtn" onclick="webToggle('${exc}')" title="Исключения по ключевым словам">🚫${exList.length?(' '+exList.length):''}</button>
           ${nIssues?`<button class="dirbtn" onclick="webToggle('${idc}')" title="Ошибки и превышения лимитов">📋 ${nIssues}</button>`:''}
           <button class="dirbtn" style="border-color:#ef4444;color:#f87171" onclick="deleteWeb('${escAttr(s.url)}')">Удалить</button>
-        </div>${excBox}${detail}
+        </div>${cfgBox}${authBox}${excBox}${detail}
       </div>`;
     }).join('') : '<span class="note">пока нет сайтов</span>';
   }
@@ -5325,6 +5583,34 @@ async function webSaveExcludesAll(){
   const inp=$('#web_exclude_all'); if(!inp) return;
   const msg=$('#web_exclude_all_msg'); if(msg){ msg.textContent='сохранение…'; msg.className='note'; }
   const r=await adminPost('/api/admin/web-excludes-all',{keywords:inp.value});
+  if(msg){ msg.textContent=(r&&r.ok!==false)?('✓ '+(r.msg||'сохранено')):'✗ ошибка';
+    msg.className=(r&&r.ok!==false)?'saved':'note'; }
+  loadWebUrls();
+}
+async function webSaveCfg(url, id){
+  const v=(x)=>{ const e=$('#'+id+'_'+x); return e?e.value.trim():''; };
+  const cfg={ depth:v('depth'), max_pages:v('maxp'), max_files:v('maxf'),
+              concurrency:v('conc'), same_domain:v('dom'), js_render:v('js'),
+              schedule:v('sch') };
+  const msg=$('#'+id+'_msg'); if(msg){ msg.textContent='сохранение…'; msg.className='note'; }
+  const r=await adminPost('/api/admin/web-site-cfg',{url, cfg});
+  if(msg){ msg.textContent=(r&&r.ok!==false)?('✓ '+(r.msg||'сохранено')):'✗ ошибка';
+    msg.className=(r&&r.ok!==false)?'saved':'note'; }
+  loadWebUrls();
+}
+function webAuthType(id){
+  const t=$('#'+id+'_type').value;
+  const show=(el,on)=>{ const e=$('#'+id+'_'+el); if(e) e.style.display=on?'inline':'none'; };
+  show('basic', t==='basic'); show('cookie', t==='cookie'); show('hdr', t==='header');
+}
+async function webSaveAuth(url, id){
+  const t=$('#'+id+'_type').value;
+  const auth={type:t};
+  if(t==='basic'){ auth.user=$('#'+id+'_user').value; auth.password=$('#'+id+'_pass').value; }
+  else if(t==='cookie'){ auth.cookie=$('#'+id+'_cookie').value; }
+  else if(t==='header'){ auth.hname=$('#'+id+'_hn').value; auth.hvalue=$('#'+id+'_hv').value; }
+  const msg=$('#'+id+'_msg'); if(msg){ msg.textContent='сохранение…'; msg.className='note'; }
+  const r=await adminPost('/api/admin/web-auth',{url, auth});
   if(msg){ msg.textContent=(r&&r.ok!==false)?('✓ '+(r.msg||'сохранено')):'✗ ошибка';
     msg.className=(r&&r.ok!==false)?'saved':'note'; }
   loadWebUrls();
@@ -5944,7 +6230,58 @@ function obsProgress(p, msg){
   else { bar.classList.add('indet'); }
   $('#obs_pmsg').textContent=msg||'';
 }
-function obsProgressDone(){ const bar=$('#obs_pbar'); if(bar){ bar.classList.remove('show','indet'); bar.querySelector('i').style.width='0'; } $('#obs_pmsg').textContent=''; }
+// ---- аналитика качества ----
+async function loadQuality(){
+  const el=$('#quality_body'); if(!el) return;
+  let d; try{ d=await adminGet('/api/admin/quality'); }catch(e){ el.innerHTML='<div class="note">ошибка загрузки</div>'; return; }
+  if(!d){ el.innerHTML='<div class="note">нет данных</div>'; return; }
+  const kpi=(t,v,c)=>`<div class="box" style="flex:1;min-width:120px;text-align:center;padding:12px"><div style="font-size:22px;font-weight:700;color:${c||'inherit'}">${v}</div><div class="note">${t}</div></div>`;
+  const sat=(d.satisfaction!=null)?(d.satisfaction+'%'):'—';
+  let html=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+    ${kpi('Удовлетворённость',sat,'#4ade80')}
+    ${kpi('👍 хороших',nz(d.good),'#4ade80')}
+    ${kpi('👎 плохих',nz(d.bad),'#f87171')}
+    ${kpi('Без ответа',nz(d.unanswered_total),'#f59e0b')}
+    ${kpi('Оценено',nz(d.rated))}
+  </div>`;
+  // динамика по дням (мини-бары good/bad)
+  const tr=d.trend||[];
+  if(tr.length){
+    const mx=Math.max(1,...tr.map(x=>x.total||0));
+    html+=`<div class="box"><h3>Динамика по дням</h3><div style="display:flex;gap:4px;align-items:flex-end;height:90px;overflow:auto">`+
+      tr.map(x=>{const h=Math.round((x.total||0)/mx*80);
+        const g=x.total?Math.round((x.good||0)/x.total*h):0, b=x.total?Math.round((x.bad||0)/x.total*h):0;
+        return `<div title="${esc(x.day||'')}: всего ${nz(x.total)}, 👍${nz(x.good)} 👎${nz(x.bad)} без ответа ${nz(x.unans)}" style="display:flex;flex-direction:column;justify-content:flex-end;min-width:16px">
+          <div style="height:${b}px;background:#f87171"></div><div style="height:${g}px;background:#4ade80"></div>
+          <div style="height:${Math.max(0,h-g-b)}px;background:rgba(127,127,127,.3)"></div>
+          <div class="note" style="font-size:9px;transform:rotate(-60deg);transform-origin:left;white-space:nowrap;margin-top:6px">${esc((x.day||'').slice(5))}</div></div>`;
+      }).join('')+`</div><div class="note" style="margin-top:14px"><span style="color:#4ade80">▮</span> 👍 <span style="color:#f87171">▮</span> 👎 <span style="color:#888">▮</span> без оценки</div></div>`;
+  }
+  // пробелы в базе (частые вопросы без ответа)
+  const gaps=d.gaps||[];
+  html+=`<div class="box"><h3>🕳 Пробелы в базе — частые вопросы без ответа (${gaps.length})</h3>`;
+  html+= gaps.length ? '<div>'+gaps.map(g=>`<div style="display:flex;gap:8px;align-items:center;padding:3px 0;border-bottom:1px solid var(--line)">
+      <span style="background:#f59e0b;color:#111;border-radius:10px;padding:1px 8px;font-size:12px;font-weight:600">${nz(g.count)}</span>
+      <span style="flex:1;word-break:break-word">${esc(g.q)}</span></div>`).join('')+'</div>'
+    : '<div class="note">нет неотвеченных вопросов — база покрывает запросы 👍</div>';
+  html+=`<div class="note" style="margin-top:6px">Это темы, по которым стоит добавить документы в базу знаний.</div></div>`;
+  // 👎-ответы
+  const neg=d.negatives||[];
+  html+=`<div class="box"><h3>👎 Ответы с плохой оценкой (${neg.length})</h3>`;
+  html+= neg.length ? neg.map(n=>`<div style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <div><b>${esc(n.question||'')}</b> <span class="note">${n.ts?fmtTime(n.ts):''}${n.top_score!=null?(' · score '+n.top_score):''}</span></div>
+      <div class="note" style="margin:2px 0;white-space:pre-wrap">${esc((n.answer||'').slice(0,300))}${(n.answer||'').length>300?'…':''}</div>
+      ${n.comment?`<div style="color:#f59e0b">💬 ${esc(n.comment)}</div>`:''}</div>`).join('')
+    : '<div class="note">нет ответов с оценкой 👎</div>';
+  html+='</div>';
+  // топ источников
+  const ts=d.top_sources||[];
+  if(ts.length){
+    html+=`<div class="box"><h3>📚 Топ цитируемых источников</h3><div style="display:flex;flex-wrap:wrap;gap:6px">`+
+      ts.map(s=>`<span class="tag" title="цитирований: ${nz(s.count)}">${esc((s.source||'').split('/').pop())} · ${nz(s.count)}</span>`).join('')+`</div></div>`;
+  }
+  el.innerHTML=html;
+}
 async function loadObsidian(force){
   const cv=$('#obs_canvas'); if(!cv) return;
   if(_obsPoll){ clearInterval(_obsPoll); _obsPoll=null; }
@@ -6309,8 +6646,10 @@ function saveChat(){
   setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 }
 
+let _lastQ='';
 async function ask(){
   const q=$('#q').value.trim(); if(!q) return;
+  _lastQ=q;
   const file=$('#chatfile').files[0];
   $('#q').value=''; $('#send').disabled=true;
   add('me', q + (file?(' 📎 '+file.name):'')); const bot=add('bot',''); let ans='';
@@ -6371,6 +6710,19 @@ function add(cls,text){ const d=document.createElement('div'); d.className='msg 
 function mmss(s){ s=Math.max(0,Math.round(s||0)); const m=Math.floor(s/60),x=s%60; return m+':'+(x<10?'0':'')+x; }
 function srcLabel(i){ return esc(i.source)+(i.page?(', с.'+i.page):'')
   +((i.t_start!=null)?(' · '+mmss(i.t_start)+(i.t_end!=null?('–'+mmss(i.t_end)):'')):''); }
+function _hlWords(text, q){
+  // подсветка пересечения фрагмента-цитаты со словами запроса
+  let out=esc(text||'');
+  const words=[...new Set((q||'').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=3))];
+  words.forEach(w=>{ try{
+    out=out.replace(new RegExp('('+w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','giu'),'<mark style="background:#fde68a;color:#111;border-radius:2px">$1</mark>');
+  }catch(e){} });
+  return out;
+}
+function citeSnippet(i){
+  if(!i.snippet) return '';
+  return `<div class="note" style="margin:2px 0 6px 0;padding:5px 8px;border-left:3px solid var(--accent);background:var(--panel2);border-radius:0 6px 6px 0;font-size:12px;line-height:1.4">«…${_hlWords(i.snippet,_lastQ)}…»</div>`;
+}
 function renderSources(items){
   let html='<div style="margin-bottom:4px">Источники:</div>';
   const media=items.filter(i=>i.kind&&['image','raw','cad','video','audio'].includes(i.kind)&&i.exists);
@@ -6398,11 +6750,21 @@ function renderSources(items){
     }
     html+='</div>';
   }
-  // остальные — текстовыми ссылками (PDF/DOCX/таблицы и т.п.)
+  // остальные — построчно: ссылка + фрагмент-цитата с подсветкой слов запроса
   if(rest.length){
-    html+='<div>'+rest.map(i=>i.exists&&i.file_url
-      ? `<a href="${i.file_url}" target="_blank" style="color:var(--accent)">${srcLabel(i)}</a>`
-      : srcLabel(i)).join(' · ')+'</div>';
+    const anySnip=rest.some(i=>i.snippet);
+    if(anySnip){
+      html+='<div style="margin-top:2px">'+rest.map(i=>{
+        const lbl=i.exists&&i.file_url
+          ? `<a href="${i.file_url}" target="_blank" style="color:var(--accent)">${srcLabel(i)}</a>`
+          : srcLabel(i);
+        return `<div style="margin:3px 0">${lbl}${citeSnippet(i)}</div>`;
+      }).join('')+'</div>';
+    } else {
+      html+='<div>'+rest.map(i=>i.exists&&i.file_url
+        ? `<a href="${i.file_url}" target="_blank" style="color:var(--accent)">${srcLabel(i)}</a>`
+        : srcLabel(i)).join(' · ')+'</div>';
+    }
   }
   return html;
 }

@@ -164,6 +164,61 @@ def set_json(name: str, ttl: int, value, ns: str = "index") -> None:
         pass
 
 
+# ---- семантический кэш ответов (похожие вопросы) ----
+# Список последних ответов: {k: ключ payload в обычном кэше, e: эмбеддинг вопроса}.
+# Живёт в пространстве index (сбрасывается при переиндексации). Эмбеддинги bge
+# нормализованы, поэтому косинус = скалярное произведение.
+_ANS_SEM_MAX = 400
+
+
+def _anssem_key() -> str:
+    return f"rag:anssem:{_ver('index')}"
+
+
+def answer_sem_add(payload_key: str, emb) -> None:
+    """Запомнить, что на вопрос с эмбеддингом emb есть ответ под ключом payload_key."""
+    c = client()
+    if not c or not emb or not payload_key:
+        return
+    try:
+        emb = [round(float(x), 6) for x in emb]
+        k = _anssem_key()
+        c.lpush(k, json.dumps({"k": payload_key, "e": emb}, ensure_ascii=False))
+        c.ltrim(k, 0, _ANS_SEM_MAX - 1)
+        c.expire(k, 7 * 86400)
+    except Exception:
+        pass
+
+
+def answer_sem_find(emb, threshold: float):
+    """Найти ключ похожего вопроса (косинус ≥ threshold) или None. → {key, sim}."""
+    c = client()
+    if not c or not emb:
+        return None
+    try:
+        rows = c.lrange(_anssem_key(), 0, _ANS_SEM_MAX - 1)
+    except Exception:
+        return None
+    n = len(emb)
+    best, bkey = 0.0, None
+    for r in rows:
+        try:
+            d = json.loads(r)
+            e = d.get("e")
+        except Exception:
+            continue
+        if not e or len(e) != n:
+            continue
+        dot = 0.0
+        for i in range(n):
+            dot += emb[i] * e[i]
+        if dot > best:
+            best, bkey = dot, d.get("k")
+    if bkey and best >= float(threshold):
+        return {"key": bkey, "sim": round(best, 3)}
+    return None
+
+
 def clear() -> int:
     """Удалить все кэш-ключи приложения. Возвращает число удалённых ключей."""
     c = client()

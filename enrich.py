@@ -17,7 +17,8 @@ _PROMPT = (
     '  "product"  — название продукта/услуги, о котором документ, или "" если неясно;\n'
     '  "topic"    — тема в 2-4 словах;\n'
     '  "category" — одно из: price, presentation, training, document;\n'
-    '  "doc_type" — короткий тип (прайс-лист, презентация, инструкция, договор и т.п.).\n'
+    '  "doc_type" — короткий тип (прайс-лист, презентация, инструкция, договор и т.п.);\n'
+    '  "tags"     — массив из 2-5 коротких тегов-ключевых слов (одно-два слова каждый).\n'
     "Только JSON, без пояснений.\n\nФРАГМЕНТ:\n"
 )
 
@@ -52,4 +53,12 @@ def extract_structured(text_sample: str) -> dict:
     cat = d.get("category")
     if isinstance(cat, str) and cat in _VALID_CAT:
         res["category"] = cat
+    tags = d.get("tags")
+    if isinstance(tags, list):
+        clean = []
+        for t in tags:
+            if isinstance(t, str) and t.strip():
+                clean.append(t.strip().lower()[:40])
+        if clean:
+            res["tags"] = clean[:5]
     return res

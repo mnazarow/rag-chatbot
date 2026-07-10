@@ -780,6 +780,273 @@ def _web_site_excludes(url: str, per_site_map: dict | None = None,
     return merged
 
 
+# ---------- пер-сайтовые настройки обхода ----------
+# kv "web_site_cfg": {url: {depth,max_pages,max_files,concurrency,same_domain,js_render}}
+# Пустые/None-поля означают «брать глобальную настройку».
+_WEB_CFG_KEYS = ("depth", "max_pages", "max_files", "concurrency", "same_domain", "js_render")
+
+
+def _web_cfg_load() -> dict:
+    raw = db.kv_get("web_site_cfg")
+    try:
+        d = _json.loads(raw) if raw else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _web_cfg_save(m: dict) -> None:
+    try:
+        db.kv_set("web_site_cfg", _json.dumps(m, ensure_ascii=False))
+    except Exception as e:
+        print(f"[web] не удалось сохранить настройки сайта: {e}")
+
+
+def web_set_site_cfg(url: str, cfg: dict) -> dict:
+    """Задать пер-сайтовые настройки обхода (пустые поля = глобальные). Применяются при
+    следующем парсинге этого сайта."""
+    url = (url or "").strip()
+    if not url:
+        return {"ok": False, "msg": "не указан URL сайта"}
+    cfg = cfg or {}
+    clean = {}
+    for k in ("depth", "max_pages", "max_files", "concurrency"):
+        v = cfg.get(k)
+        if v not in (None, "", "auto"):
+            try:
+                clean[k] = max(0, int(v))
+            except (TypeError, ValueError):
+                pass
+    for k in ("same_domain", "js_render"):
+        v = cfg.get(k)
+        if v in ("", None, "global", "auto"):
+            continue
+        if isinstance(v, str):
+            clean[k] = v.lower() in ("1", "true", "on", "yes", "да")
+        else:
+            clean[k] = bool(v)
+    # расписание автопарсинга сайта (пусто/global = следовать глобальному)
+    sch = (cfg.get("schedule") or "").strip().lower()
+    if sch == "off" or (sch not in ("", "global", "auto") and _web_sched_interval(sch) is not None):
+        clean["schedule"] = sch
+    m = _web_cfg_load()
+    if clean:
+        m[url] = clean
+    else:
+        m.pop(url, None)
+    _web_cfg_save(m)
+    return {"ok": True, "url": url, "cfg": clean,
+            "msg": "настройки сайта сохранены" if clean else "настройки сайта сброшены (глобальные)"}
+
+
+def _web_sched_interval(sch) -> int | None:
+    """Интервал автопарсинга сайта в секундах по значению schedule, или None
+    (не по пер-сайтовому расписанию: пусто/global/off)."""
+    s = (sch or "").strip().lower()
+    if s in ("", "global", "auto", "off", "none"):
+        return None
+    if s == "hourly":
+        return 3600
+    if s == "daily":
+        return 86400
+    if s == "weekly":
+        return 604800
+    import re as _re
+    mm = _re.match(r"^(\d+)h$", s)
+    if mm:
+        return max(1, int(mm.group(1))) * 3600
+    return None
+
+
+def _web_sched_last_load() -> dict:
+    raw = db.kv_get("web_sched_last")
+    try:
+        d = _json.loads(raw) if raw else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _web_sched_last_save(m: dict) -> None:
+    try:
+        db.kv_set("web_sched_last", _json.dumps(m, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def web_sched_due() -> list:
+    """Сайты, которым пора перепарситься по их пер-сайтовому расписанию (интервал истёк)."""
+    cfg = _web_cfg_load()
+    last = _web_sched_last_load()
+    now = time.time()
+    due = []
+    for u in _web_sources_load():
+        iv = _web_sched_interval((cfg.get(u) or {}).get("schedule"))
+        if iv is None:
+            continue
+        if now - float(last.get(u, 0) or 0) >= iv:
+            due.append(u)
+    return due
+
+
+def web_sched_mark(urls) -> None:
+    last = _web_sched_last_load()
+    now = time.time()
+    for u in (urls or []):
+        last[u] = now
+    _web_sched_last_save(last)
+
+
+def _web_eff(url: str, cfg_map: dict | None = None) -> dict:
+    """Эффективные настройки обхода сайта: пер-сайтовые поверх глобальных."""
+    cfg_map = _web_cfg_load() if cfg_map is None else cfg_map
+    c = cfg_map.get(url) or {}
+
+    def _pick(key, gkey, default_int=None):
+        v = c.get(key)
+        return v if v is not None else settings.get(gkey)
+
+    eff = {
+        "depth": max(0, int(c.get("depth") if c.get("depth") is not None
+                             else (settings.get("WEB_CRAWL_DEPTH") or 0))),
+        "max_pages": max(1, int(c.get("max_pages") if c.get("max_pages") is not None
+                                else (settings.get("WEB_MAX_PAGES") or 1))),
+        "max_files": max(0, int(c.get("max_files") if c.get("max_files") is not None
+                                else (settings.get("WEB_MAX_FILES") or 0))),
+        "concurrency": max(1, int(c.get("concurrency") if c.get("concurrency") is not None
+                                  else (settings.get("WEB_CONCURRENCY") or 1))),
+        "same_domain": bool(c.get("same_domain")) if "same_domain" in c
+                       else bool(settings.get("WEB_SAME_DOMAIN")),
+        "js_render": bool(c.get("js_render")) if "js_render" in c
+                     else bool(settings.get("WEB_JS_RENDER")),
+    }
+    return eff
+
+
+# ---------- авторизация на сайт (секреты) ----------
+# kv "web_auth": {url: {type: basic|cookie|header, user, password, cookie, hname, hvalue}}
+def _web_auth_load() -> dict:
+    raw = db.kv_get("web_auth")
+    try:
+        d = _json.loads(raw) if raw else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _web_auth_save(m: dict) -> None:
+    try:
+        db.kv_set("web_auth", _json.dumps(m, ensure_ascii=False))
+    except Exception as e:
+        print(f"[web] не удалось сохранить авторизацию сайта: {e}")
+
+
+def web_set_auth(url: str, auth: dict) -> dict:
+    """Задать авторизацию для сайта (Basic-логин, Cookie или произвольный заголовок).
+    Секреты хранятся в БД и в API наружу не отдаются открытым текстом."""
+    url = (url or "").strip()
+    if not url:
+        return {"ok": False, "msg": "не указан URL сайта"}
+    auth = auth or {}
+    typ = (auth.get("type") or "none").strip().lower()
+    m = _web_auth_load()
+    if typ in ("", "none"):
+        m.pop(url, None)
+        _web_auth_save(m)
+        return {"ok": True, "url": url, "msg": "авторизация отключена"}
+    entry = {"type": typ}
+    if typ == "basic":
+        entry["user"] = (auth.get("user") or "").strip()
+        entry["password"] = auth.get("password") or ""
+    elif typ == "cookie":
+        entry["cookie"] = (auth.get("cookie") or "").strip()
+    elif typ == "header":
+        entry["hname"] = (auth.get("hname") or "").strip()
+        entry["hvalue"] = auth.get("hvalue") or ""
+    else:
+        return {"ok": False, "msg": "тип авторизации: none|basic|cookie|header"}
+    m[url] = entry
+    _web_auth_save(m)
+    return {"ok": True, "url": url, "type": typ, "msg": f"авторизация ({typ}) сохранена"}
+
+
+def _web_auth_for(url: str, auth_map: dict | None = None) -> tuple[dict, dict]:
+    """Заголовки и cookies для запросов к сайту по его авторизации. → (headers, cookies)."""
+    import base64
+    auth_map = _web_auth_load() if auth_map is None else auth_map
+    a = auth_map.get(url) or {}
+    headers, cookies = {}, {}
+    typ = a.get("type")
+    if typ == "basic" and a.get("user"):
+        token = base64.b64encode(f"{a['user']}:{a.get('password','')}".encode()).decode()
+        headers["Authorization"] = "Basic " + token
+    elif typ == "cookie" and a.get("cookie"):
+        for part in a["cookie"].split(";"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                cookies[k.strip()] = v.strip()
+    elif typ == "header" and a.get("hname"):
+        headers[a["hname"]] = a.get("hvalue", "")
+    return headers, cookies
+
+
+# ---------- отпечатки для инкрементального парсинга ----------
+# kv "web_fp": {url: {etag, lastmod, size, kind, path, text}} — обновляется при парсинге.
+def _web_fp_load() -> dict:
+    raw = db.kv_get("web_fp")
+    try:
+        d = _json.loads(raw) if raw else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _web_fp_save(m: dict) -> None:
+    try:
+        db.kv_set("web_fp", _json.dumps(m, ensure_ascii=False))
+    except Exception as e:
+        print(f"[web] не удалось сохранить отпечатки: {e}")
+
+
+def _web_filehash_load() -> dict:
+    """Дедуп файлов между сайтами: {sha256: rel_path}."""
+    raw = db.kv_get("web_filehash")
+    try:
+        d = _json.loads(raw) if raw else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _web_filehash_save(m: dict) -> None:
+    try:
+        db.kv_set("web_filehash", _json.dumps(m, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _sha256_file(path) -> str | None:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _web_cond_headers(fp: dict | None) -> dict:
+    """Условные заголовки If-None-Match/If-Modified-Since из отпечатка."""
+    h = {}
+    if fp:
+        if fp.get("etag"):
+            h["If-None-Match"] = fp["etag"]
+        if fp.get("lastmod"):
+            h["If-Modified-Since"] = fp["lastmod"]
+    return h
+
+
 def _web_slug(url: str) -> str:
     import re
     return re.sub(r"[^a-zA-Z0-9._-]", "_", url)[:120] or "page"
@@ -791,6 +1058,8 @@ def _web_list() -> list:
     webdir = Path(settings.get("DOCS_DIR")).expanduser() / "web"
     stats = _web_stats_load()
     excl = _web_excludes_load()
+    cfg = _web_cfg_load()
+    auth = _web_auth_load()
     out = []
     for u in urls:
         rel = f"web/{_web_slug(u)}.html"
@@ -801,6 +1070,8 @@ def _web_list() -> list:
                     "errors": st.get("errors", []), "limits": st.get("limits", {}),
                     "ts": st.get("ts"),
                     "exclude": excl.get(u, []),
+                    "cfg": cfg.get(u, {}),
+                    "auth_type": (auth.get(u, {}) or {}).get("type", "none"),
                     "depth_urls": st.get("depth_urls", []),
                     "progress": st.get("progress"),
                     "n_items": len(st.get("items") or [])})
@@ -908,6 +1179,27 @@ def delete_web(url: str) -> dict:
     if url in _ex:
         _ex.pop(url, None)
         _web_excludes_save(_ex)
+    # убрать пер-сайтовые настройки и авторизацию
+    _cfg = _web_cfg_load()
+    if url in _cfg:
+        _cfg.pop(url, None)
+        _web_cfg_save(_cfg)
+    _au = _web_auth_load()
+    if url in _au:
+        _au.pop(url, None)
+        _web_auth_save(_au)
+    # убрать отпечатки инкремента для страниц/файлов этого домена
+    try:
+        from urllib.parse import urlparse as _up
+        _net = _up(url).netloc
+        _fp = _web_fp_load()
+        _rm = [k for k in _fp if _up(k).netloc == _net]
+        if _rm:
+            for k in _rm:
+                _fp.pop(k, None)
+            _web_fp_save(_fp)
+    except Exception:
+        pass
     # 2) удалить файл
     slug = _web_slug(url)
     f = Path(settings.get("DOCS_DIR")).expanduser() / "web" / f"{slug}.html"
@@ -959,11 +1251,36 @@ class _Renderer:
             self._settle = max(0, int(settings.get("WEB_JS_WAIT_MS") or 0))
         except Exception:
             self._settle = 0
+        self._warmed = set()
         if settings.get("WEB_JS_BLOCK_ASSETS"):
             try:
                 self._ctx.route("**/*", self._route)
             except Exception:
                 pass
+
+    def fetch_bytes(self, url):
+        """Скачать файл через браузерный контекст (несёт cookies, в т.ч. cf_clearance
+        после прохождения Cloudflare-челленджа). Один раз «прогреваем» домен переходом
+        на корень. Возвращает bytes или None."""
+        from urllib.parse import urlparse
+        pr = urlparse(url)
+        try:
+            if pr.netloc not in self._warmed:
+                try:
+                    pg = self._ctx.new_page()
+                    pg.goto(f"{pr.scheme}://{pr.netloc}/", wait_until="domcontentloaded",
+                            timeout=self._to)
+                    pg.wait_for_timeout(2500)
+                    pg.close()
+                except Exception:
+                    pass
+                self._warmed.add(pr.netloc)
+            r = self._ctx.request.get(url, timeout=120000)
+            if r.status == 200:
+                return r.body()
+        except Exception as e:
+            print(f"[web] browser fetch {url}: {e}")
+        return None
 
     @staticmethod
     def _route(route):
@@ -977,6 +1294,36 @@ class _Renderer:
                 route.continue_()
             except Exception:
                 pass
+
+    def set_auth(self, headers=None, cookies=None, base_url=None):
+        """Применить авторизацию сайта к контексту браузера (заголовки + cookies)."""
+        try:
+            self._ctx.set_extra_http_headers(headers or {})
+        except Exception:
+            pass
+        try:
+            self._ctx.clear_cookies()
+        except Exception:
+            pass
+        if cookies and base_url:
+            from urllib.parse import urlparse
+            dom = urlparse(base_url).netloc.split(":")[0]
+            arr = [{"name": k, "value": v, "domain": dom, "path": "/"}
+                   for k, v in cookies.items()]
+            try:
+                self._ctx.add_cookies(arr)
+            except Exception:
+                pass
+
+    def clear_auth(self):
+        try:
+            self._ctx.set_extra_http_headers({})
+        except Exception:
+            pass
+        try:
+            self._ctx.clear_cookies()
+        except Exception:
+            pass
 
     def render(self, url: str, patient: bool = False):
         """patient=True — «терпеливый» рендер для тяжёлых SPA: дожидаемся простоя сети
@@ -1118,12 +1465,35 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f} ГБ"
 
 
-def _web_download(url: str, dest_dir, log, client=None):
-    """Скачать файл по ссылке (любого типа) в dest_dir потоково, с процентом загрузки.
-    Возвращает (path, reason): path — Path при успехе или None; reason — короткая причина
-    отказа (HTTP-код/ошибка) для показа в сводке. При общем клиенте переиспользует
-    keep-alive соединения. Заголовки — «браузерные» (UA + Referer на корень сайта),
-    чтобы сайты на Bitrix/за WAF не отдавали 403 на скачивании из /upload/."""
+def _web_save_bytes(dest_dir, name, data, log):
+    """Сохранить байты в dest_dir с уникальным именем (потокобезопасно). → Path/None."""
+    try:
+        with _web_dl_lock:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            out = dest_dir / name
+            i = 1
+            while out.exists() or out.with_name(out.name + ".part").exists():
+                out = dest_dir / f"{i}_{name}"
+                i += 1
+            tmp = out.with_name(out.name + ".part")
+            tmp.touch()
+        with open(tmp, "wb") as f:
+            f.write(data)
+        tmp.rename(out)
+        log(f"    ФАЙЛ сохранён (браузер): {out.name} ({_fmt_bytes(len(data))})")
+        return out
+    except Exception as e:
+        log(f"    ERR сохранение (браузер) {name}: {e}")
+        return None
+
+
+def _web_download(url: str, dest_dir, log, client=None,
+                  extra_headers=None, cookies=None, cond=None, browser=None):
+    """Скачать файл по ссылке потоково, с процентом загрузки. Возвращает
+    (path, reason, fp, not_modified): path — Path при успехе или None; reason — причина
+    отказа; fp — отпечаток {etag,lastmod,size} для инкремента; not_modified — сервер
+    ответил 304 (условный запрос). Заголовки — «браузерные» (UA + Referer) + авторизация
+    и условные заголовки (If-None-Match/If-Modified-Since), если переданы."""
     import re
     from urllib.parse import urlparse, unquote
     tmp = None
@@ -1132,36 +1502,45 @@ def _web_download(url: str, dest_dir, log, client=None):
         referer = f"{pr.scheme}://{pr.netloc}/"
         name = unquote(os.path.basename(pr.path)) or _web_slug(url)
         name = re.sub(r"[^\w.\-]+", "_", name)[:150] or "file"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        # выбор уникального имени + резервирование .part — под локом (безопасно при
-        # параллельном скачивании: два потока не займут одно имя)
-        with _web_dl_lock:
-            out = dest_dir / name
-            i = 1
-            while out.exists() or out.with_name(out.name + ".part").exists():
-                out = dest_dir / f"{i}_{name}"
-                i += 1
-            tmp = out.with_name(out.name + ".part")
-            tmp.touch()
         _streamer = (client.stream if client is not None else httpx.stream)
         _hdrs = {"Referer": referer, "Accept": "*/*"}
         if client is None:
             _hdrs["User-Agent"] = _WEB_UA
-        _skw = {"headers": _hdrs} if client is not None else \
-               {"follow_redirects": True, "headers": _hdrs}
-        # обрыв соединения (Server disconnected) повторяем несколько раз, каждый раз
-        # заново открывая файл
+        if extra_headers:
+            _hdrs.update(extra_headers)
+        if cond:
+            _hdrs.update(cond)
+        _skw = {"headers": _hdrs, "cookies": cookies or None} if client is not None else \
+               {"follow_redirects": True, "headers": _hdrs, "cookies": cookies or None}
         retries, last_err = 2, None
         for attempt in range(retries + 1):
             try:
                 with _streamer("GET", url, timeout=120, **_skw) as r:
+                    fp = {"etag": r.headers.get("ETag"), "lastmod": r.headers.get("Last-Modified")}
+                    if r.status_code == 304:
+                        log(f"    = файл не изменился: {name}")
+                        return None, "не изменился", fp, True
                     if r.status_code != 200:
+                        # 403/429/503 — вероятно WAF/Cloudflare: пробуем через браузер
+                        if r.status_code in (403, 429, 503) and browser is not None:
+                            log(f"    HTTP {r.status_code} — пробую скачать через браузер: {url}")
+                            data = browser.fetch_bytes(url)
+                            if data:
+                                p2 = _web_save_bytes(dest_dir, name, data, log)
+                                if p2 is not None:
+                                    return p2, None, {"size": len(data)}, False
                         log(f"    ERR файл {url}: HTTP {r.status_code}")
-                        try:
-                            tmp.unlink()
-                        except Exception:
-                            pass
-                        return None, f"HTTP {r.status_code}"
+                        return None, f"HTTP {r.status_code}", None, False
+                    # уникальное имя резервируем только теперь (когда точно качаем)
+                    with _web_dl_lock:
+                        out = dest_dir; dest_dir.mkdir(parents=True, exist_ok=True)
+                        out = dest_dir / name
+                        i = 1
+                        while out.exists() or out.with_name(out.name + ".part").exists():
+                            out = dest_dir / f"{i}_{name}"
+                            i += 1
+                        tmp = out.with_name(out.name + ".part")
+                        tmp.touch()
                     total = int(r.headers.get("content-length") or 0)
                     got, last = 0, -20
                     with open(tmp, "wb") as f:
@@ -1170,26 +1549,34 @@ def _web_download(url: str, dest_dir, log, client=None):
                             got += len(chunk)
                             if total:
                                 pct = int(got * 100 / total)
-                                if pct >= last + 20:      # отметки 0/20/40/60/80/100%
+                                if pct >= last + 20:
                                     last = pct
                                     log(f"        {name}: {pct}% "
                                         f"({_fmt_bytes(got)} из {_fmt_bytes(total)})")
                 tmp.rename(out)
                 log(f"    ФАЙЛ сохранён: {out.name} ({_fmt_bytes(got)})")
-                return out, None
+                fp["size"] = got
+                return out, None, fp, False
             except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError,
                     httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout) as e:
                 last_err = e
+                try:
+                    if tmp is not None:
+                        tmp.unlink()
+                    tmp = None
+                except Exception:
+                    pass
                 if attempt < retries:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 break
         try:
-            tmp.unlink()
+            if tmp is not None:
+                tmp.unlink()
         except Exception:
             pass
         log(f"    ERR файл {url}: {last_err}")
-        return None, (str(last_err)[:120] or "обрыв соединения")
+        return None, (str(last_err)[:120] or "обрыв соединения"), None, False
     except Exception as e:
         try:
             if tmp is not None:
@@ -1197,7 +1584,7 @@ def _web_download(url: str, dest_dir, log, client=None):
         except Exception:
             pass
         log(f"    ERR файл {url}: {e}")
-        return None, (str(e)[:120] or "ошибка сети")
+        return None, (str(e)[:120] or "ошибка сети"), None, False
 
 
 def _web_extract(html: str) -> str:
@@ -1259,37 +1646,179 @@ def _web_links(html: str, base: str, seed_netloc: str, same_domain: bool) -> lis
     return out
 
 
-def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, renderer, log,
-               workers: int = 1, excludes=None, client=None):
-    """Обойти сайт из стартовой страницы (BFS по уровням) до depth/max_pages. Возвращает
-    (pages, files, stat): pages — список (url, title, text); files — множество URL
-    файлов для скачивания; stat — {errors, pages_limit_hit, depth_limit_hit, excluded}.
-    excludes — список ключевых слов: URL, содержащие любое из них, пропускаются.
+def _web_robots(base_url: str, client, headers=None, cookies=None) -> dict:
+    """Прочитать robots.txt: правила Disallow для «*», Crawl-delay и ссылки Sitemap.
+    Возвращает {disallow:[...], crawl_delay:float, sitemaps:[...]}."""
+    from urllib.parse import urlparse
+    out = {"disallow": [], "crawl_delay": 0.0, "sitemaps": []}
+    pr = urlparse(base_url)
+    robots_url = f"{pr.scheme}://{pr.netloc}/robots.txt"
+    try:
+        r = (client.get(robots_url, headers=headers or None, cookies=cookies or None)
+             if client is not None else
+             httpx.get(robots_url, timeout=15, follow_redirects=True, headers=dict(_WEB_HEADERS)))
+        if r.status_code != 200:
+            return out
+        agents, reading_rules = [], False
+        for raw in r.text.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line or ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            k, v = k.strip().lower(), v.strip()
+            if k == "user-agent":
+                if reading_rules:
+                    agents, reading_rules = [], False
+                agents.append(v.lower())
+            elif k == "sitemap" and v:
+                out["sitemaps"].append(v)
+            else:
+                reading_rules = True
+                star = "*" in agents
+                if k == "disallow" and star and v:
+                    out["disallow"].append(v)
+                elif k == "crawl-delay" and star:
+                    try:
+                        out["crawl_delay"] = max(out["crawl_delay"], float(v))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return out
 
-    Ускорение: обычная загрузка страниц уровня идёт ПАРАЛЛЕЛЬНО (httpx, общий клиент),
-    а тяжёлый headless-браузер (Playwright не потокобезопасен) запускается ПОСЛЕ, в
-    основном потоке и только для страниц, где обычной загрузкой мало текста (умный
-    режим WEB_JS_AUTO) — большинство страниц браузер не трогает."""
+
+def _web_path_disallowed(url: str, disallow) -> bool:
+    if not disallow:
+        return False
+    from urllib.parse import urlparse
+    path = urlparse(url).path or "/"
+    for d in disallow:
+        if d == "/":
+            return True
+        if path.startswith(d.rstrip("*")):
+            return True
+    return False
+
+
+def _web_sitemap_urls(sitemap_seeds, client, limit, headers=None, cookies=None) -> list:
+    """Собрать URL страниц из sitemap(ов), рекурсивно раскрывая sitemapindex. Поддержка
+    .gz. Ограничение по числу URL и по числу обойденных карт (защита от гигантских карт)."""
+    import re as _re
+    urls, seen_sm, queue = [], set(), list(sitemap_seeds or [])
+    while queue and len(urls) < limit and len(seen_sm) < 300:
+        sm = queue.pop(0)
+        if sm in seen_sm:
+            continue
+        seen_sm.add(sm)
+        try:
+            r = (client.get(sm, headers=headers or None, cookies=cookies or None, timeout=30)
+                 if client is not None else
+                 httpx.get(sm, timeout=30, follow_redirects=True, headers=dict(_WEB_HEADERS)))
+            if r.status_code != 200:
+                continue
+            data = r.content
+            if sm.lower().endswith(".gz") or data[:2] == b"\x1f\x8b":
+                import gzip
+                data = gzip.decompress(data)
+            text = data.decode("utf-8", "ignore")
+        except Exception:
+            continue
+        locs = _re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text, _re.I)
+        if "<sitemapindex" in text.lower():
+            for loc in locs:
+                if loc not in seen_sm:
+                    queue.append(loc)
+        else:
+            for loc in locs:
+                urls.append(loc)
+                if len(urls) >= limit:
+                    break
+    return urls
+
+
+def _web_get_page(url, client, log, extra_headers=None, cookies=None, cond=None, retries=2):
+    """Загрузить страницу с авторизацией и условными заголовками. Возвращает dict:
+    {status, html, etag, lastmod, not_modified}. Разрыв соединения повторяется."""
+    hdrs = {}
+    if extra_headers:
+        hdrs.update(extra_headers)
+    if cond:
+        hdrs.update(cond)
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            if client is not None:
+                r = client.get(url, headers=hdrs or None, cookies=cookies or None)
+            else:
+                r = httpx.get(url, timeout=25, follow_redirects=True,
+                              headers={**_WEB_HEADERS, **hdrs}, cookies=cookies or None)
+            meta = {"etag": r.headers.get("ETag"), "lastmod": r.headers.get("Last-Modified")}
+            if r.status_code == 304:
+                return {"status": 304, "html": None, "not_modified": True, **meta}
+            if r.status_code != 200:
+                return {"status": r.status_code, "html": None, "not_modified": False, **meta}
+            ct = r.headers.get("content-type", "")
+            if ct and "html" not in ct.lower():
+                return {"status": 200, "html": None, "not_modified": False, **meta}
+            return {"status": 200, "html": r.text, "not_modified": False, **meta}
+        except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError,
+                httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout) as e:
+            last = e
+            if attempt < retries:
+                time.sleep(0.4 * (attempt + 1))
+                continue
+        except Exception as e:
+            last = e
+            break
+    log(f"ERR {url}: {last}")
+    return {"status": 0, "html": None, "not_modified": False, "etag": None, "lastmod": None}
+
+
+def _web_crawl(seed: str, renderer, log, ctx: dict):
+    """Обойти сайт (BFS по уровням) с учётом ctx: глубина/лимиты/домен/параллелизм,
+    исключения, robots (disallow+crawl-delay), sitemap-сидирование, авторизация
+    (headers/cookies), инкремент (условные GET, переиспользование неизменённых страниц),
+    пер-сайтовое включение браузера. Возвращает (pages, files, stat).
+
+    Ускорение: обычная загрузка идёт параллельно (httpx), браузер (не потокобезопасен) —
+    последовательно и только где реально нужен."""
     from urllib.parse import urlparse
     from concurrent.futures import ThreadPoolExecutor
+    depth = ctx["depth"]; max_pages = ctx["max_pages"]; same_domain = ctx["same_domain"]
+    excludes = ctx.get("excludes"); client = ctx.get("client")
+    headers = ctx.get("headers") or {}; cookies = ctx.get("cookies") or {}
+    disallow = ctx.get("disallow") or []; crawl_delay = float(ctx.get("crawl_delay") or 0.0)
+    use_render = ctx.get("use_render", True)
+    incremental = bool(ctx.get("incremental")); fp_map = ctx.get("fp_map") or {}
+    fp_out = ctx.get("fp_out"); reused = ctx.get("reused")
     seed_netloc = urlparse(seed).netloc
-    seen, level, pages, files = set(), [(seed, 0)], [], set()
-    errors = []
-    depth_limit_hit = False
-    excluded_n = 0
-    depth_pages, depth_seen = [], set()   # страницы, на которых обрезаны более глубокие ссылки
-    par = max(1, int(workers or 1))       # обычная загрузка — всегда параллельно
+    # sitemap-сидирование: все URL карты — на уровень 0 (плюс сама стартовая)
+    level = [(seed, 0)] + [(u, 0) for u in (ctx.get("sitemap_urls") or [])]
+    seen, pages, files = set(), [], set()
+    errors, depth_limit_hit, excluded_n, robots_skipped = [], False, 0, 0
+    depth_pages, depth_seen = [], set()
+    # crawl-delay несовместим с параллелизмом — соблюдаем вежливую паузу последовательно
+    par = 1 if crawl_delay > 0 else max(1, int(ctx.get("workers") or 1))
     js_auto = bool(settings.get("WEB_JS_AUTO"))
+    base_wait = (settings.get("WEB_JS_WAIT") or "domcontentloaded").strip().lower()
+
+    def _skip(u):
+        nonlocal excluded_n, robots_skipped
+        if _web_excluded(u, excludes):
+            excluded_n += 1
+            return True
+        if disallow and _web_path_disallowed(u, disallow):
+            robots_skipped += 1
+            return True
+        return False
 
     while level and len(pages) < max_pages:
-        # отобрать новые URL уровня; прямые ссылки на файлы отложить в files
         batch = []
         for url, d in level:
             if url in seen:
                 continue
             seen.add(url)
-            if _web_excluded(url, excludes):
-                excluded_n += 1
+            if _skip(url):
                 continue
             if _web_is_file(url):
                 files.add(url)
@@ -1298,75 +1827,88 @@ def _web_crawl(seed: str, depth: int, max_pages: int, same_domain: bool, rendere
         if not batch:
             break
 
-        # фаза 1: быстрая обычная загрузка (httpx) — параллельно
-        http_html = {}
+        # фаза 1: обычная загрузка (httpx) с авторизацией и условными заголовками
+        def _get(u):
+            cond = _web_cond_headers(fp_map.get(u)) if incremental else None
+            return u, _web_get_page(u, client, log, headers, cookies, cond)
+        results = {}
         if par > 1 and len(batch) > 1:
             with ThreadPoolExecutor(max_workers=min(par, len(batch))) as ex:
-                futs = {ex.submit(_web_fetch_http, u, client, log): u for (u, dd) in batch}
-                for fu in futs:
-                    u = futs[fu]
-                    try:
-                        http_html[u] = fu.result()
-                    except Exception as e:
-                        log(f"ERR {u}: {e}")
-                        http_html[u] = None
+                for u, res in ex.map(lambda ud: _get(ud[0]), batch):
+                    results[u] = res
         else:
             for (u, dd) in batch:
-                http_html[u] = _web_fetch_http(u, client, log)
+                _, res = _get(u)
+                results[u] = res
+                if crawl_delay > 0:
+                    time.sleep(crawl_delay)
 
-        # фаза 2: браузер (последовательно, только где реально нужен)
-        fetched = []   # (url, d, html)
-        base_wait = (settings.get("WEB_JS_WAIT") or "domcontentloaded").strip().lower()
+        # фаза 2: разбор + браузер (только где нужен)
+        fetched = []
         for (u, dd) in batch:
-            html = http_html.get(u)
-            if renderer is not None:
+            res = results.get(u) or {}
+            # инкремент: сервер сказал «не изменилось» — берём текст из кэша, без рендера
+            if incremental and res.get("not_modified"):
+                cached = (fp_map.get(u) or {}).get("text")
+                if cached:
+                    pages.append((u, (fp_map[u].get("title") or u), cached))
+                    if reused is not None:
+                        reused.append(u)
+                    log(f"  = не изменилось (из кэша): {u}")
+                    # ссылки со страницы при 304 не переобходим (структура та же)
+                    continue
+            html = res.get("html")
+            if renderer is not None and use_render:
                 need = (html is None) or (not js_auto) or (_visible_text_len(html) < _WEB_JS_MIN_WORDS)
                 if need:
                     rhtml = renderer.render(u)
-                    # тяжёлая SPA не успела отрисоваться на быстром ожидании — терпеливый повтор
                     if base_wait != "networkidle" and _visible_text_len(rhtml or "") < _WEB_JS_MIN_WORDS:
                         rhtml2 = renderer.render(u, patient=True)
                         if _visible_text_len(rhtml2 or "") > _visible_text_len(rhtml or ""):
                             rhtml = rhtml2
                     if rhtml:
                         html = rhtml
-            fetched.append((u, dd, html))
+            fetched.append((u, dd, html, res))
 
         next_level = []
-        for url, d, html in fetched:
+        for url, d, html, res in fetched:
             if len(pages) >= max_pages:
                 break
             if html is None:
-                errors.append(f"страница не загружена: {url}")
+                errors.append(f"страница не загружена: {url}"
+                              + (f" (HTTP {res.get('status')})" if res.get("status") else ""))
                 continue
             text = _web_extract(html)
+            title = _web_title(html, url)
             if text:
-                pages.append((url, _web_title(html, url), text))
+                pages.append((url, title, text))
                 log(f"  стр. {len(pages)}/{max_pages}: {url}  ({len(text)} симв.)")
+                # обновляем отпечаток страницы для инкремента
+                if fp_out is not None:
+                    fp_out[url] = {"etag": res.get("etag"), "lastmod": res.get("lastmod"),
+                                   "kind": "page", "title": title,
+                                   "text": text[:200000]}
             else:
                 log(f"  стр. (без текста): {url}")
                 errors.append(f"страница без извлечённого текста (возможно, JS-сайт): {url}")
             for link in _web_links(html, url, seed_netloc, same_domain):
-                if link in seen:
-                    continue
-                if _web_excluded(link, excludes):
-                    excluded_n += 1
+                if link in seen or _skip(link):
                     continue
                 if _web_is_file(link):
                     files.add(link)
                 elif d < depth:
                     next_level.append((link, d + 1))
                 else:
-                    depth_limit_hit = True   # были более глубокие ссылки, но глубина не позволяет
+                    depth_limit_hit = True
                     if url not in depth_seen and len(depth_pages) < 200:
                         depth_seen.add(url)
-                        depth_pages.append(url)   # страница, на которой обрезаны ссылки
+                        depth_pages.append(url)
         level = next_level
 
     pages_limit_hit = bool(level) and len(pages) >= max_pages
     return pages, files, {"errors": errors, "pages_limit_hit": pages_limit_hit,
                           "depth_limit_hit": depth_limit_hit, "excluded": excluded_n,
-                          "depth_pages": depth_pages}
+                          "robots_skipped": robots_skipped, "depth_pages": depth_pages}
 
 
 def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
@@ -1401,10 +1943,20 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
             import html as _html
             webdir.mkdir(parents=True, exist_ok=True)
             web_paths = []
+            # пер-сайтовые настройки, авторизация и отпечатки инкремента
+            cfg_map = _web_cfg_load()
+            auth_map = _web_auth_load()
+            fp_map = _web_fp_load()
+            fp_out = {}
+            hash_map = _web_filehash_load()   # дедуп файлов между сайтами {sha: rel}
+            hash_out = {}
+            use_sitemap = bool(settings.get("WEB_USE_SITEMAP"))
+            respect_robots = bool(settings.get("WEB_RESPECT_ROBOTS"))
+            incremental = bool(settings.get("WEB_INCREMENTAL"))
+            # глобальные значения — только для баннера; фактические считаются на сайт
             depth = max(0, int(settings.get("WEB_CRAWL_DEPTH") or 0))
             max_pages = max(1, int(settings.get("WEB_MAX_PAGES") or 1))
             max_files = max(0, int(settings.get("WEB_MAX_FILES") or 0))
-            same_domain = bool(settings.get("WEB_SAME_DOMAIN"))
             workers = max(1, int(settings.get("WEB_CONCURRENCY") or 1))
             filesdir = webdir / "files"
             with open(logfile, "w", buffering=1, errors="ignore") as fp:
@@ -1427,8 +1979,10 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                              "Установка: pip install playwright && playwright install chromium")
                         renderer = None
                 fp.write(f"Парсинг: глубина {depth}, до {max_pages} стр. и {max_files} "
-                         f"файлов/сайт, параллельно ×{workers}, "
-                         f"{'тот же домен' if same_domain else 'любой домен'}\n")
+                         f"файлов/сайт, параллельно ×{workers}"
+                         f"{', sitemap' if use_sitemap else ''}"
+                         f"{', robots' if respect_robots else ''}"
+                         f"{', инкремент' if incremental else ''}\n")
                 stats_map = {}
                 try:
                     for u in urls:
@@ -1440,24 +1994,66 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                         _web_stats_save(stats_map)
                         try:
                             _log(f"САЙТ: {u}")
+                            # эффективные настройки: пер-сайтовые поверх глобальных
+                            eff = _web_eff(u, cfg_map)
+                            s_depth = eff["depth"]; s_maxp = eff["max_pages"]
+                            s_maxf = eff["max_files"]; s_workers = eff["concurrency"]
+                            s_same = eff["same_domain"]; s_render = eff["js_render"]
+                            if cfg_map.get(u):
+                                _log(f"  настройки сайта: глубина {s_depth}, до {s_maxp} стр./"
+                                     f"{s_maxf} файлов, ×{s_workers}, "
+                                     f"{'тот же домен' if s_same else 'любой домен'}, "
+                                     f"браузер {'вкл' if s_render else 'выкл'}")
                             site_excludes = _web_site_excludes(u, excludes_map, excludes_all)
                             if site_excludes:
                                 _log(f"  исключения по словам: {', '.join(site_excludes)}"
                                      + (f" (глобальных: {len(excludes_all)})" if excludes_all else ""))
-                            pages, file_urls, cstat = _web_crawl(u, depth, max_pages,
-                                                                 same_domain, renderer, _log,
-                                                                 workers, excludes=site_excludes,
-                                                                 client=client)
+                            # авторизация на сайт
+                            a_headers, a_cookies = _web_auth_for(u, auth_map)
+                            if a_headers or a_cookies:
+                                _log(f"  авторизация: {(auth_map.get(u) or {}).get('type')}")
+                            if renderer is not None:
+                                renderer.set_auth(a_headers, a_cookies, u)
+                            # robots.txt + sitemap
+                            disallow, crawl_delay, sm_seeds = [], 0.0, []
+                            if respect_robots:
+                                rob = _web_robots(u, client, a_headers, a_cookies)
+                                disallow = rob["disallow"]; crawl_delay = rob["crawl_delay"]
+                                sm_seeds = rob["sitemaps"]
+                                if disallow or crawl_delay:
+                                    _log(f"  robots.txt: запрещённых путей {len(disallow)}"
+                                         + (f", crawl-delay {crawl_delay}c" if crawl_delay else ""))
+                            sitemap_urls = []
+                            if use_sitemap:
+                                from urllib.parse import urlparse as _up
+                                _pr = _up(u)
+                                seeds = sm_seeds or [f"{_pr.scheme}://{_pr.netloc}/sitemap.xml"]
+                                sitemap_urls = _web_sitemap_urls(seeds, client, s_maxp * 2,
+                                                                 a_headers, a_cookies)
+                                if sitemap_urls:
+                                    _log(f"  sitemap: найдено URL {len(sitemap_urls)}")
+                            _ctx = {"depth": s_depth, "max_pages": s_maxp, "same_domain": s_same,
+                                    "workers": s_workers, "excludes": site_excludes, "client": client,
+                                    "headers": a_headers, "cookies": a_cookies,
+                                    "disallow": disallow, "crawl_delay": crawl_delay,
+                                    "sitemap_urls": sitemap_urls, "use_render": s_render,
+                                    "incremental": incremental, "fp_map": fp_map, "fp_out": fp_out,
+                                    "reused": []}
+                            pages, file_urls, cstat = _web_crawl(u, renderer, _log, _ctx)
                             site_errors.extend(cstat.get("errors", []))
                             if cstat.get("excluded"):
                                 _log(f"  исключено URL по ключевым словам: {cstat['excluded']}")
+                            if cstat.get("robots_skipped"):
+                                _log(f"  пропущено по robots.txt: {cstat['robots_skipped']}")
+                            if _ctx["reused"]:
+                                _log(f"  не изменилось (инкремент, из кэша): {len(_ctx['reused'])} стр.")
                             if cstat.get("pages_limit_hit"):
-                                site_limits["pages"] = (f"достигнут лимит страниц ({max_pages}); "
+                                site_limits["pages"] = (f"достигнут лимит страниц ({s_maxp}); "
                                                         "часть страниц не обойдена — увеличьте «Макс. страниц»")
                             if cstat.get("depth_limit_hit"):
                                 site_depth_urls = cstat.get("depth_pages", [])
                                 _nd = len(site_depth_urls)
-                                site_limits["depth"] = (f"достигнута глубина обхода ({depth}); "
+                                site_limits["depth"] = (f"достигнута глубина обхода ({s_depth}); "
                                                         f"более глубокие ссылки пропущены на {_nd} "
                                                         "страниц(ах) — увеличьте «Глубину обхода» "
                                                         "(список URL — ниже)")
@@ -1466,19 +2062,20 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                     _log(f"    • {_du}")
                             # скачиваем найденные файлы (любого типа), лимит на сайт
                             all_files = [f for f in file_urls
-                                         if not _web_excluded(f, site_excludes)]
-                            if len(all_files) > max_files:
-                                site_limits["files"] = (f"найдено файлов {len(all_files)}, скачано {max_files} "
-                                                        f"(лимит); {len(all_files) - max_files} пропущено — "
+                                         if not _web_excluded(f, site_excludes)
+                                         and not (disallow and _web_path_disallowed(f, disallow))]
+                            if s_maxf and len(all_files) > s_maxf:
+                                site_limits["files"] = (f"найдено файлов {len(all_files)}, скачано {s_maxf} "
+                                                        f"(лимит); {len(all_files) - s_maxf} пропущено — "
                                                         "увеличьте «Макс. файлов»")
-                            file_list = all_files[:max_files]
+                            file_list = all_files[:s_maxf] if s_maxf else all_files
                             nf = len(file_list)
                             _docroot = Path(settings.get("DOCS_DIR")).expanduser()
                             stats_map[u]["progress"] = {"phase": "download", "done": 0, "total": nf, "pct": 40}
                             _web_stats_save(stats_map)
                             if nf:
                                 _log(f"  файлов к скачиванию: {nf}"
-                                     + (f" (параллельно ×{workers})" if workers > 1 and nf > 1 else ""))
+                                     + (f" (параллельно ×{s_workers})" if s_workers > 1 and nf > 1 else ""))
 
                             def _rec_file(furl, p):
                                 okf = p is not None
@@ -1498,17 +2095,60 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                 if done % 5 == 0:
                                     _web_stats_save(stats_map)
 
-                            if workers > 1 and nf > 1:
-                                # параллельное скачивание файлов (потокобезопасно: httpx.stream + уникальные имена)
+                            # скачивание одного файла: авторизация + инкремент (304 →
+                            # переиспользуем файл с диска) + запись отпечатка
+                            def _dl_file(furl):
+                                prev = fp_map.get(furl) or {}
+                                cond = _web_cond_headers(prev) if incremental else None
+                                p, reason, fpx, nm = _web_download(furl, filesdir, _log, client,
+                                                                   a_headers, a_cookies, cond,
+                                                                   browser=renderer)
+                                if nm:
+                                    relp = prev.get("path")
+                                    cachedp = (_docroot / relp) if relp else None
+                                    if cachedp and cachedp.exists():
+                                        fp_out[furl] = prev
+                                        return cachedp, "не изменился (кэш)"
+                                    p, reason, fpx, nm = _web_download(furl, filesdir, _log,
+                                                                       client, a_headers, a_cookies,
+                                                                       None, browser=renderer)
+                                if p is not None:
+                                    # дедуп по содержимому: одинаковый файл (с любого сайта)
+                                    # не дублируем — переиспользуем уже сохранённый
+                                    sha = _sha256_file(p)
+                                    if sha:
+                                        seen = hash_out.get(sha) or hash_map.get(sha)
+                                        if seen and (_docroot / seen).exists() and str(p.relative_to(_docroot)) != seen:
+                                            try:
+                                                p.unlink()
+                                            except Exception:
+                                                pass
+                                            _log(f"    ↺ дубликат (тот же файл): переиспользую {seen}")
+                                            reused_p = _docroot / seen
+                                            if fpx is not None:
+                                                fp_out[furl] = {**fpx, "kind": "file", "path": seen}
+                                            return reused_p, "дубликат (переиспользован)"
+                                        rel0 = str(p.relative_to(_docroot))
+                                        hash_out[sha] = rel0
+                                    if fpx is not None:
+                                        try:
+                                            rel = str(p.relative_to(_docroot))
+                                        except Exception:
+                                            rel = str(p)
+                                        fp_out[furl] = {**fpx, "kind": "file", "path": rel}
+                                return p, reason
+
+                            if s_workers > 1 and nf > 1:
+                                # параллельное скачивание файлов (потокобезопасно: уникальные имена)
                                 from concurrent.futures import ThreadPoolExecutor
                                 done_n = [0]
                                 def _dl_one(furl):
-                                    p, reason = _web_download(furl, filesdir, _log, client)
+                                    p, reason = _dl_file(furl)
                                     done_n[0] += 1
                                     _log(f"  [файл {done_n[0]}/{nf}] {int(done_n[0]*100/nf)}%: {furl}"
                                          + ("" if p is not None else f"  — не скачан ({reason})"))
                                     return furl, p, reason
-                                with ThreadPoolExecutor(max_workers=min(workers, nf)) as ex:
+                                with ThreadPoolExecutor(max_workers=min(s_workers, nf)) as ex:
                                     for furl, p, reason in ex.map(_dl_one, file_list):
                                         if p is not None:
                                             web_paths.append(p)
@@ -1520,7 +2160,7 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                 for fi, furl in enumerate(file_list, 1):
                                     fpct = int(fi * 100 / nf) if nf else 100
                                     _log(f"  [файл {fi}/{nf}] {fpct}% скачиваю: {furl}")
-                                    p, reason = _web_download(furl, filesdir, _log, client)
+                                    p, reason = _dl_file(furl)
                                     if p is not None:
                                         web_paths.append(p)
                                         dl += 1
@@ -1565,6 +2205,8 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                             err += 1
                             site_errors.append(str(e))
                             fp.write(f"ERR {u}: {e}\n")
+                        if renderer is not None:
+                            renderer.clear_auth()
                         stats_map[u] = {"url": u, "ok": site_ok, "pages": len(pages),
                                         "files": dl, "errors": site_errors,
                                         "limits": site_limits, "ts": time.time(),
@@ -1580,6 +2222,20 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                     except Exception:
                         pass
                     _web_stats_save(stats_map)
+                    # отпечатки для инкрементального парсинга (следующий запуск быстрее)
+                    try:
+                        if fp_out:
+                            fp_map.update(fp_out)
+                            _web_fp_save(fp_map)
+                    except Exception as _e:
+                        print(f"[web] отпечатки не сохранены: {_e}")
+                    # карта хэшей файлов для дедупа между сайтами
+                    try:
+                        if hash_out:
+                            hash_map.update(hash_out)
+                            _web_filehash_save(hash_map)
+                    except Exception as _e:
+                        print(f"[web] хэши файлов не сохранены: {_e}")
                 # активен каталог PostgreSQL — кладём спарсенные страницы и в него,
                 # чтобы индексация из БД их увидела (без папки)
                 added = catalog_add_paths(web_paths)
@@ -1626,6 +2282,190 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
 def _run_dep_job(label: str, cmd: list, timeout: int = 3600) -> dict:
     """Установочная команда в фоне (живой лог в «Состояние и операции»)."""
     return _bg(_dep_job, label, [cmd], "/tmp/rag_dep.log", timeout=timeout)
+
+
+# --- дообучение модели эмбеддингов на оценках 👍 ---
+_embft_job = {"running": False, "started": None, "finished": None, "ok": None,
+              "log": "", "logfile": "/tmp/rag_embft.log", "summary": "", "label": ""}
+_EMBFT_OUT = ROOT / "models" / "embed-finetuned"
+
+
+def embed_finetune_info() -> dict:
+    """Данные для UI: базовая модель, число обучающих пар (👍 + источники), путь модели."""
+    n = 0
+    try:
+        for r in db._all("SELECT sources FROM requests WHERE rating=1 AND answered=1"):
+            try:
+                for s in _json.loads(r.get("sources") or "[]"):
+                    if (s.get("snippet") or "").strip():
+                        n += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    trained = (_EMBFT_OUT / "modules.json").exists() or (_EMBFT_OUT / "config.json").exists()
+    j = dict(_embft_job)
+    j["log"] = _tail(_embft_job["logfile"]) if Path(_embft_job["logfile"]).exists() else j.get("log", "")
+    return {"base": settings.get("EMBED_MODEL"), "pairs": n, "out": str(_EMBFT_OUT),
+            "trained": trained, "enough": n >= 20, "active": settings.get("EMBED_MODEL") == str(_EMBFT_OUT),
+            "job": j}
+
+
+def embed_finetune(epochs: int = 1, batch: int = 16) -> dict:
+    """Запустить дообучение эмбеддингов в фоне (живой лог). После — указать EMBED_MODEL
+    на полученную папку, сбросить индекс и переиндексировать."""
+    cmd = [sys.executable, str(ROOT / "finetune" / "train_embed.py"),
+           "--epochs", str(max(1, int(epochs))), "--batch", str(max(2, int(batch)))]
+    return _bg(_embft_job, "Дообучение эмбеддингов", [cmd], _embft_job["logfile"],
+               timeout=24 * 3600, save_label="Дообучение эмбеддингов")
+
+
+def embed_finetune_activate() -> dict:
+    """Переключить EMBED_MODEL на дообученную модель (нужны сброс индекса + переиндексация)."""
+    if not ((_EMBFT_OUT / "modules.json").exists() or (_EMBFT_OUT / "config.json").exists()):
+        return {"ok": False, "msg": "дообученная модель не найдена — сначала обучите"}
+    settings.update({"EMBED_MODEL": str(_EMBFT_OUT)})
+    return {"ok": True, "restart": True,
+            "msg": "EMBED_MODEL переключён на дообученную модель. Теперь «Сбросить индекс», "
+                   "«Переиндексировать» и перезапустить сервис."}
+
+
+# --- оценочный набор (hit@k) и авто-подбор параметров поиска ---
+_tune_job = {"running": False, "done": 0, "total": 0, "log": [], "best": None,
+             "baseline": None, "result": None, "applied": False, "ts": 0.0}
+
+
+def retrieval_gold(limit: int = 40) -> list:
+    """«Золотой» набор: вопрос → множество релевантных источников (из 👍-ответов)."""
+    gold, seen = [], set()
+    try:
+        rows = db._all("SELECT question, sources FROM requests "
+                       "WHERE rating=1 AND answered=1 ORDER BY id DESC")
+    except Exception:
+        rows = []
+    for r in rows:
+        q = (r.get("question") or "").strip()
+        if len(q) < 5 or q.lower() in seen:
+            continue
+        try:
+            srcs = {s.get("source") for s in _json.loads(r.get("sources") or "[]") if s.get("source")}
+        except Exception:
+            srcs = set()
+        if not srcs:
+            continue
+        seen.add(q.lower())
+        gold.append({"q": q, "sources": srcs})
+        if len(gold) >= limit:
+            break
+    return gold
+
+
+def _eval_gold(gold: list) -> dict:
+    """Метрики по золотому набору при ТЕКУЩИХ настройках: hit-rate и средн. число выдач."""
+    from retriever import search
+    hits_ok, mrr_sum, empty, tot_res = 0, 0.0, 0, 0
+    for g in gold:
+        try:
+            res = search(g["q"]) or []
+        except Exception:
+            res = []
+        tot_res += len(res)
+        if not res:
+            empty += 1
+        rank = 0
+        for i, h in enumerate(res, 1):
+            if h.get("source") in g["sources"]:
+                rank = i
+                break
+        if rank:
+            hits_ok += 1
+            mrr_sum += 1.0 / rank
+    n = max(1, len(gold))
+    return {"n": len(gold), "hit_rate": round(hits_ok / n, 3),
+            "mrr": round(mrr_sum / n, 3), "empty": empty,
+            "avg_results": round(tot_res / n, 1)}
+
+
+def retrieval_eval() -> dict:
+    """Быстрая оценка текущего качества поиска по золотому набору."""
+    gold = retrieval_gold()
+    if len(gold) < 5:
+        return {"ok": False, "msg": "мало данных для оценки: нужно хотя бы 5 вопросов с "
+                                    "оценкой 👍 и источниками (накопите оценки в чате)."}
+    return {"ok": True, "gold": len(gold), **_eval_gold(gold)}
+
+
+def retrieval_tune_status() -> dict:
+    j = dict(_tune_job)
+    j["log"] = _tune_job["log"][-40:]
+    return j
+
+
+def retrieval_autotune(apply: bool = False) -> dict:
+    """Перебор MIN_SCORE / TOP_K_RETRIEVE / TOP_K_RERANK по золотому набору; выбор лучшего
+    по hit-rate (тай-брейк — меньше «пустых» и меньше шума). Фоном. apply=True — применить."""
+    if _tune_job.get("running"):
+        return {"ok": False, "msg": "подбор уже идёт"}
+    gold = retrieval_gold()
+    if len(gold) < 5:
+        return {"ok": False, "msg": "мало данных: нужно ≥5 вопросов с 👍 и источниками"}
+
+    grid_ms = [0.25, 0.35, 0.45]
+    grid_kr = [20, 30]
+    grid_rr = [6, 8]
+    combos = [(a, b, c) for a in grid_ms for b in grid_kr for c in grid_rr]
+
+    def run():
+        keys = ("MIN_SCORE", "TOP_K_RETRIEVE", "TOP_K_RERANK")
+        orig = {k: settings.get(k) for k in keys}
+        _tune_job.update(running=True, done=0, total=len(combos), log=[], best=None,
+                         baseline=None, result=None, applied=False, ts=time.time())
+        try:
+            base = _eval_gold(gold)
+            _tune_job["baseline"] = base
+            _tune_job["log"].append(f"База: hit {base['hit_rate']}, MRR {base['mrr']}, "
+                                    f"пустых {base['empty']}")
+            best, best_key = None, None
+            for i, (ms, kr, rr) in enumerate(combos, 1):
+                # меняем настройки только в памяти (без записи в файл)
+                settings._state["MIN_SCORE"] = ms
+                settings._state["TOP_K_RETRIEVE"] = kr
+                settings._state["TOP_K_RERANK"] = rr
+                m = _eval_gold(gold)
+                score = (m["hit_rate"], -m["empty"], -m["avg_results"])
+                cand = {"MIN_SCORE": ms, "TOP_K_RETRIEVE": kr, "TOP_K_RERANK": rr, **m}
+                if best is None or score > best_key:
+                    best, best_key = cand, score
+                _tune_job["done"] = i
+                _tune_job["log"].append(
+                    f"[{i}/{len(combos)}] MIN_SCORE={ms} K={kr} rerank={rr} → "
+                    f"hit {m['hit_rate']}, пустых {m['empty']}")
+            _tune_job["best"] = best
+            # применяем/восстанавливаем
+            if apply and best:
+                for k in keys:
+                    settings._state[k] = orig[k]      # вернём, чтобы update записал чисто
+                settings.update({"MIN_SCORE": best["MIN_SCORE"],
+                                 "TOP_K_RETRIEVE": best["TOP_K_RETRIEVE"],
+                                 "TOP_K_RERANK": best["TOP_K_RERANK"]})
+                _tune_job["applied"] = True
+                _tune_job["log"].append(f"Применены лучшие параметры: MIN_SCORE="
+                                        f"{best['MIN_SCORE']}, K={best['TOP_K_RETRIEVE']}, "
+                                        f"rerank={best['TOP_K_RERANK']}")
+            else:
+                for k in keys:
+                    settings._state[k] = orig[k]      # восстановить исходные (без записи)
+            _tune_job["result"] = "ok"
+        except Exception as e:
+            for k in ("MIN_SCORE", "TOP_K_RETRIEVE", "TOP_K_RERANK"):
+                settings._state[k] = orig.get(k)
+            _tune_job["result"] = f"error: {e}"
+            _tune_job["log"].append(f"ОШИБКА: {e}")
+        finally:
+            _tune_job["running"] = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "msg": f"подбор запущен ({len(combos)} комбинаций × {len(gold)} вопросов)"}
 
 
 def install_lightrag() -> dict:
@@ -3969,7 +4809,70 @@ def milvus_status() -> dict:
         pass
     if pkg:
         out["milvus"] = _milvus_stats()
+    # рекомендация бэкенда по объёму: крупная база → Milvus масштабируется лучше
+    try:
+        pts = int(out["qdrant"].get("points") or 0)
+    except Exception:
+        pts = 0
+    if pts >= 3_000_000:
+        out["recommend"] = "milvus"
+        out["recommend_reason"] = (f"{pts:,} точек — крупная база; Milvus масштабируется лучше "
+                                   "(кластеризация, GPU-индексы)".replace(",", " "))
+    else:
+        out["recommend"] = "qdrant"
+        out["recommend_reason"] = (f"{pts:,} точек — Qdrant отлично справляется; Milvus нужен на "
+                                   "миллионах векторов или для GPU-индексов".replace(",", " "))
     return out
+
+
+def milvus_verify(n: int = 4) -> dict:
+    """Сверка Qdrant ↔ Milvus: число точек и совпадение результатов поиска на нескольких
+    запросах (доля общих источников в топ-5). Помогает убедиться, что миграция корректна
+    перед переключением. Требует установленного pymilvus и доступного Milvus."""
+    if not _milvus_pkg_present():
+        return {"ok": False, "msg": "Milvus не установлен"}
+    if not vectorstore.ping("milvus"):
+        return {"ok": False, "msg": "Milvus недоступен"}
+    if not vectorstore.ping("qdrant"):
+        return {"ok": False, "msg": "Qdrant недоступен"}
+    try:
+        cq = int(vectorstore.collection_info(backend_name="qdrant").get("points_count") or 0)
+        cm = int(vectorstore.collection_info(backend_name="milvus").get("points_count") or 0)
+    except Exception as e:
+        return {"ok": False, "msg": f"счётчики недоступны: {e}"}
+    # запросы для сверки — из имён реальных источников (относимо к содержимому базы)
+    try:
+        srcs = [s for s in vectorstore.list_values("source", 60) if s]
+    except Exception:
+        srcs = []
+    queries = [Path(s).stem.replace("_", " ")[:40] for s in srcs[:n]] or \
+              ["услуга", "цена", "договор", "инструкция"][:n]
+    samples = []
+    try:
+        import retriever
+    except Exception as e:
+        return {"ok": False, "msg": f"эмбеддер недоступен: {e}",
+                "counts": {"qdrant": cq, "milvus": cm}}
+    for q in queries:
+        try:
+            v = retriever._embed_query(q)
+            rq = vectorstore.search_on("qdrant", v, 5)
+            rm = vectorstore.search_on("milvus", v, 5)
+            sq = {(x.get("payload") or {}).get("source") for x in rq if x.get("payload")}
+            sm = {(x.get("payload") or {}).get("source") for x in rm if x.get("payload")}
+            uni = len(sq | sm) or 1
+            samples.append({"q": q, "overlap": round(len(sq & sm) / uni, 2),
+                            "qdrant": len(rq), "milvus": len(rm)})
+        except Exception as e:
+            samples.append({"q": q, "error": str(e)[:80]})
+    ov = [s["overlap"] for s in samples if "overlap" in s]
+    avg = round(sum(ov) / len(ov), 2) if ov else None
+    count_ok = (cq == cm) or (cm >= cq * 0.99)
+    msg = f"точек: Qdrant {cq}, Milvus {cm}" + (" ✓" if count_ok else " ⚠ расхождение")
+    if avg is not None:
+        msg += f"; совпадение поиска (топ-5): {int(avg * 100)}%"
+    return {"ok": True, "counts": {"qdrant": cq, "milvus": cm},
+            "count_ok": count_ok, "avg_overlap": avg, "samples": samples, "msg": msg}
 
 
 def milvus_install(mode: str | None = None, index_type: str | None = None) -> dict:

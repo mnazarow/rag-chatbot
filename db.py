@@ -665,6 +665,49 @@ def recent(limit: int = 100) -> list[dict]:
     return rows
 
 
+def quality_report(limit: int = 30) -> dict:
+    """Сводка качества ответов: 👎-ответы, «пробелы» (частые вопросы без ответа),
+    топ цитируемых источников и динамика оценок по дням. По журналу веб-чата."""
+    import re as _re
+    from collections import Counter
+    # 👎-ответы (с комментарием, если есть)
+    neg = _all("SELECT id, ts, question, answer, top_score, comment, channel "
+               "FROM requests WHERE rating=-1 ORDER BY id DESC LIMIT ?", (int(limit),))
+    for d in neg:
+        d["answer"] = (d.get("answer") or "")[:500]
+    # пробелы: неотвеченные вопросы, сгруппированные по нормализованному тексту
+    gc, examples = Counter(), {}
+    for r in _all("SELECT question FROM requests WHERE answered=0"):
+        q = (r.get("question") or "").strip()
+        k = _re.sub(r"\s+", " ", q.lower())[:120]
+        if not k:
+            continue
+        gc[k] += 1
+        examples.setdefault(k, q)
+    gaps = [{"q": examples[k], "count": c} for k, c in gc.most_common(int(limit))]
+    unanswered_total = _one("SELECT COUNT(*) n FROM requests WHERE answered=0")["n"]
+    # топ источников (из отвеченных)
+    src = Counter()
+    for r in _all("SELECT sources FROM requests WHERE answered=1"):
+        try:
+            for s in json.loads(r.get("sources") or "[]"):
+                if s.get("source"):
+                    src[s["source"]] += 1
+        except Exception:
+            pass
+    top_sources = [{"source": s, "count": c} for s, c in src.most_common(20)]
+    # динамика оценок по дням
+    trend = _all("SELECT day, "
+                 "SUM(CASE WHEN rating=1 THEN 1 ELSE 0 END) good, "
+                 "SUM(CASE WHEN rating=-1 THEN 1 ELSE 0 END) bad, "
+                 "SUM(CASE WHEN answered=0 THEN 1 ELSE 0 END) unans, "
+                 "COUNT(*) total FROM requests GROUP BY day ORDER BY day DESC LIMIT 21")
+    out = {"negatives": neg, "gaps": gaps, "unanswered_total": unanswered_total,
+           "top_sources": top_sources, "trend": list(reversed(trend))}
+    out.update(rating_stats())
+    return out
+
+
 def stats() -> dict:
     import cache
     return cache.get_or_set("stats", 60, _stats_raw)

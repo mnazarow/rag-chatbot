@@ -289,12 +289,15 @@ def clip(source: str, start: float, end: float) -> Path | None:
 
 
 def cite(source: str, page=None, t_start=None, t_end=None,
-         score=None, category=None) -> dict:
-    """Обогатить ссылку-источник типом артефакта и URL для выдачи в чате."""
+         score=None, category=None, snippet=None) -> dict:
+    """Обогатить ссылку-источник типом артефакта и URL для выдачи в чате.
+    snippet — фрагмент текста чанка (для показа цитаты с подсветкой в чате)."""
     k = kind_of(source)
     exists = available(source)
     item = {"source": source, "page": page, "kind": k, "exists": exists,
             "score": score, "category": category}
+    if snippet:
+        item["snippet"] = " ".join(str(snippet).split())[:400]
     if not exists:
         return item
     from urllib.parse import quote

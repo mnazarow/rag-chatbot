@@ -82,7 +82,7 @@ def _q_ensure(dim: int, reset: bool) -> None:
         httpx.put(f"{base}/collections/{coll}", timeout=30,
                   json={"vectors": {"size": int(dim), "distance": "Cosine"}})
         for field in ("source", "fhash", "doc_category", "date", "ftype",
-                      "product", "topic", "doc_type", "vision_desc"):
+                      "product", "topic", "doc_type", "tags", "vision_desc"):
             try:
                 httpx.put(f"{base}/collections/{coll}/index", timeout=15,
                           json={"field_name": field, "field_schema": "keyword"})
@@ -514,6 +514,13 @@ def ensure_collection(dim: int, reset: bool = False, backend_name: str | None = 
 
 def search(vector, limit: int, flt: dict | None = None, with_payload: bool = True) -> list[dict]:
     return _m_search(vector, limit, flt, with_payload) if is_milvus() \
+        else _q_search(vector, limit, flt, with_payload)
+
+
+def search_on(backend_name: str, vector, limit: int, flt: dict | None = None,
+              with_payload: bool = True) -> list[dict]:
+    """Поиск в КОНКРЕТНОМ бэкенде (для сверки Qdrant↔Milvus), независимо от активного."""
+    return _m_search(vector, limit, flt, with_payload) if backend_name == "milvus" \
         else _q_search(vector, limit, flt, with_payload)
 
 

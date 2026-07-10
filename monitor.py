@@ -105,6 +105,50 @@ def _web_tick():
         print(f"[web] tick: {e}")
 
 
+def _web_sched_tick():
+    """Пер-сайтовое расписание автопарсинга: перепарсить сайты, у которых истёк
+    их индивидуальный интервал (hourly/daily/weekly/Nh)."""
+    try:
+        import admin_ops
+        due = admin_ops.web_sched_due()
+        if not due:
+            return
+        r = admin_ops.ingest_web(due, save=False)
+        if r.get("ok"):
+            admin_ops.web_sched_mark(due)
+            print(f"[web] пер-сайтовое расписание: запущено {len(due)} сайт(ов)")
+        else:
+            print(f"[web] пер-сайтовое расписание отложено: {r.get('msg')}")
+    except Exception as e:
+        print(f"[web] sched tick: {e}")
+
+
+def _reindex_interval(sch) -> int | None:
+    s = (sch or "off").strip().lower()
+    m = {"hourly": 3600, "6h": 21600, "12h": 43200, "daily": 86400, "weekly": 604800}
+    return m.get(s)
+
+
+def _reindex_tick():
+    """Инкрементальная переиндексация папки по расписанию REINDEX_SCHEDULE."""
+    try:
+        import settings
+        iv = _reindex_interval(settings.get("REINDEX_SCHEDULE"))
+        if iv is None:
+            return
+        import db
+        last = float(db.kv_get("reindex_last") or 0)
+        if time.time() - last < iv:
+            return
+        import admin_ops
+        r = admin_ops.reindex(reset=False)
+        # помечаем время независимо от исхода запуска, чтобы не долбить каждую минуту
+        db.kv_set("reindex_last", str(time.time()))
+        print(f"[reindex] авто-переиндексация по расписанию: {r.get('msg', r)}")
+    except Exception as e:
+        print(f"[reindex] tick: {e}")
+
+
 def _loop(interval: int):
     import db
     last_prune = 0.0
@@ -119,6 +163,8 @@ def _loop(interval: int):
             print(f"[monitor] выборка не удалась: {e}")
         _org_tick()                              # ежечасная синхронизация справочника
         _web_tick()                              # ежедневный переспарсинг сайтов (00:05)
+        _web_sched_tick()                        # пер-сайтовые расписания автопарсинга
+        _reindex_tick()                          # авто-переиндексация папки по расписанию
         _stop.wait(interval)
 
 

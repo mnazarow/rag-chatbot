@@ -38,11 +38,14 @@ def is_no_answer(text: str) -> bool:
 
 
 def build_context(hits: list[dict]) -> str:
-    """hits: [{text, source, page, score}] -> текст для модели."""
+    """hits: [{text, source, page, score, parent?}] -> текст для модели.
+    Если у фрагмента есть «родительский» контекст (small-to-big) — в LLM подаётся он
+    (шире и связнее); поиск/реранк при этом работали по точному чанку."""
     blocks = []
     for i, h in enumerate(hits, 1):
         loc = f"{h['source']}" + (f", стр. {h['page']}" if h.get("page") else "")
-        blocks.append(f"[Фрагмент {i} — {loc}]\n{h['text']}")
+        body = h.get("parent") or h.get("text") or ""
+        blocks.append(f"[Фрагмент {i} — {loc}]\n{body}")
     return "\n\n".join(blocks)
 
 
@@ -57,9 +60,20 @@ def _synonyms_block(question: str) -> str:
 
 
 def build_user_message(question: str, context: str) -> str:
+    cite = ""
+    try:
+        import settings
+        if settings.get("INLINE_CITATIONS"):
+            cite = ("После КАЖДОГО утверждения указывай в квадратных скобках номер "
+                    "фрагмента-источника, например [Фрагмент 2]. Если факт подтверждается "
+                    "несколькими — перечисли их [Фрагмент 1, 3]. Не выдумывай то, что нельзя "
+                    "привязать к фрагменту.\n\n")
+    except Exception:
+        cite = ""
     return (
         f"КОНТЕКСТ:\n{context}\n\n"
         f"{_synonyms_block(question)}"
+        f"{cite}"
         f"ВОПРОС СОТРУДНИКА:\n{question}\n\n"
         f"Дай ответ по правилам выше."
     )

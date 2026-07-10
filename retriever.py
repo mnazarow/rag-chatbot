@@ -49,6 +49,80 @@ def _expand(question: str) -> str:
         return question
 
 
+def _rewrite_query(question: str) -> str | None:
+    """Улучшить запрос перед ВЕКТОРНЫМ поиском (QUERY_REWRITE):
+      rewrite — LLM переформулирует вопрос в чистый поисковый запрос;
+      hyde    — LLM пишет гипотетический абзац-ответ (ищем по его эмбеддингу).
+    Результат кэшируется (Redis, ns=index). Безопасно при сбое — вернёт None."""
+    mode = (settings.get("QUERY_REWRITE") or "off").strip().lower()
+    if mode not in ("rewrite", "hyde"):
+        return None
+
+    def _gen():
+        import llm_backend
+        if mode == "hyde":
+            sys = ("Напиши краткий (2-3 предложения) правдоподобный ответ на вопрос так, "
+                   "как если бы он был в корпоративной базе знаний. Только текст ответа, "
+                   "без пояснений и оговорок.")
+        else:
+            sys = ("Переформулируй вопрос в короткий поисковый запрос: оставь ключевые "
+                   "термины, раскрой сокращения, убери лишние слова. Ответь ТОЛЬКО запросом.")
+        out = llm_backend.chat(
+            [{"role": "system", "content": sys},
+             {"role": "user", "content": question}],
+            temperature=0, model=settings.active_model())
+        return (out or "").strip()[:1000]
+
+    try:
+        import cache
+        key = "qr:" + mode + ":" + hashlib.sha1(cache.norm_q(question).encode("utf-8")).hexdigest()
+        val = cache.get_or_set(key, 86400, _gen, ns="index")
+    except Exception:
+        try:
+            val = _gen()
+        except Exception:
+            val = None
+    return (val or "").strip() or None
+
+
+def standalone_question(question: str, history: list | None) -> str:
+    """Разрешение контекста диалога (DIALOG_REWRITE): переписать уточняющий вопрос в
+    самостоятельный с учётом истории — для ПОИСКА. Ответ генерируется по оригиналу."""
+    if not history or not settings.get("DIALOG_REWRITE"):
+        return question
+    turns = []
+    for h in history[-6:]:
+        role = h.get("role") if isinstance(h, dict) else None
+        content = (h.get("content") if isinstance(h, dict) else "") or ""
+        if role and content.strip():
+            turns.append(f"{role}: {content.strip()[:500]}")
+    if not turns:
+        return question
+    dialog = "\n".join(turns)
+
+    def _gen():
+        import llm_backend
+        sys = ("Переформулируй ПОСЛЕДНИЙ вопрос пользователя в самостоятельный, понятный без "
+               "истории: раскрой отсылки («это», «он», «а гарантия?»), подставь недостающие "
+               "сущности из диалога. Верни ТОЛЬКО переформулированный вопрос, без пояснений.")
+        out = llm_backend.chat(
+            [{"role": "system", "content": sys},
+             {"role": "user", "content": f"ДИАЛОГ:\n{dialog}\n\nПОСЛЕДНИЙ ВОПРОС: {question}"}],
+            temperature=0, model=settings.active_model())
+        return (out or "").strip()[:500]
+
+    try:
+        import cache
+        key = "dlg:" + hashlib.sha1((dialog + "|" + cache.norm_q(question)).encode("utf-8")).hexdigest()
+        val = cache.get_or_set(key, 3600, _gen, ns="index")
+    except Exception:
+        try:
+            val = _gen()
+        except Exception:
+            val = None
+    return (val or "").strip() or question
+
+
 # слова в вопросе -> категория документа (мягкий интент-роутер)
 _INTENT = {
     "price": ["цена", "цены", "стоит", "стоимость", "прайс", "тариф", "сколько стоит",
@@ -108,7 +182,8 @@ def _dense_search(qvec, qfilter):
         out.append({"text": pl.get("text"), "source": pl.get("source"),
                     "page": pl.get("page"), "doc_category": pl.get("doc_category"),
                     "date": pl.get("date"), "t_start": pl.get("t_start"),
-                    "t_end": pl.get("t_end"), "dense": p.get("score")})
+                    "t_end": pl.get("t_end"), "parent": pl.get("parent"),
+                    "dense": p.get("score")})
     return out
 
 
@@ -130,7 +205,8 @@ def search(question: str, filters: dict | None = None,
         cache.norm_q(question), filters, auto_filter,
         settings.get("EMBED_MODEL"), settings.get("RERANK_MODEL"),
         settings.get("TOP_K_RETRIEVE"), settings.get("TOP_K_RERANK"),
-        settings.get("MIN_SCORE"), settings.get("SMART_FILTER"), syn_sig])
+        settings.get("MIN_SCORE"), settings.get("SMART_FILTER"),
+        settings.get("QUERY_REWRITE"), syn_sig])
     ckey = "search:" + hashlib.sha1(keyparts.encode("utf-8")).hexdigest()
     try:
         hit = cache.get_json(ckey, ns="index")
@@ -155,12 +231,16 @@ def _search_raw(question: str, filters: dict | None = None,
     if auto_filter is None:
         auto_filter = settings.get("AUTO_FILTER")
 
-    qx = _expand(question)        # запрос с синонимами (для embed/BM25); ответ — по оригиналу
+    qx = _expand(question)        # запрос с синонимами (для BM25); ответ — по оригиналу
+    # улучшение запроса для ВЕКТОРНОГО поиска (rewrite/hyde); BM25/реранк — по оригиналу
+    q_rewrite = _rewrite_query(question)
+    q_for_embed = q_rewrite or qx
 
     t = time.time()
-    qvec = _embed_query(qx)
+    qvec = _embed_query(q_for_embed)
     rec("embed", t, {"model": settings.get("EMBED_MODEL"), "device": settings.device(),
-                     "synonyms": qx != question})
+                     "synonyms": qx != question,
+                     "query_rewrite": (settings.get("QUERY_REWRITE") if q_rewrite else "off")})
 
     # 1) определяем фильтр: явный > умный (LLM) > авто-угаданная категория (правила)
     t = time.time()
@@ -236,7 +316,7 @@ def _hit_from_payload(p: dict) -> dict:
     return {"text": p.get("text", ""), "source": p.get("source"),
             "page": p.get("page"), "doc_category": p.get("doc_category"),
             "date": p.get("date"), "t_start": p.get("t_start"),
-            "t_end": p.get("t_end")}
+            "t_end": p.get("t_end"), "parent": p.get("parent")}
 
 
 def _all_sources() -> list:

@@ -69,7 +69,7 @@ SUPPORTED = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xlsm", ".xls", ".csv",
              ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
 
 
-def chunk_text(text: str, size: int, overlap: int) -> list[str]:
+def _chunk_fixed(text: str, size: int, overlap: int) -> list[str]:
     text = text.strip()
     if len(text) <= size:
         return [text] if text else []
@@ -85,6 +85,95 @@ def chunk_text(text: str, size: int, overlap: int) -> list[str]:
         chunks.append(text[start:cut].strip())
         start = max(cut - overlap, start + 1)
     return [c for c in chunks if c]
+
+
+_HEAD_RE = None
+
+
+def _is_heading(line: str) -> bool:
+    """Похоже ли на заголовок раздела (граница чанка)."""
+    global _HEAD_RE
+    import re
+    if _HEAD_RE is None:
+        _HEAD_RE = re.compile(r"^\s*\d+(\.\d+)*[.)]\s+\S")
+    l = line.strip()
+    if not l:
+        return False
+    if l.startswith("#"):                       # markdown-заголовок
+        return True
+    if _HEAD_RE.match(l) and len(l) < 100:       # нумерованный раздел «1.2 …»
+        return True
+    if len(l) <= 80 and l == l.upper() and re.search(r"[A-ZА-Я]", l):  # ЗАГОЛОВОК КАПСОМ
+        return True
+    if len(l) <= 60 and l.endswith(":"):         # короткая строка-заголовок с двоеточием
+        return True
+    return False
+
+
+def _looks_tabular(b: str) -> bool:
+    lines = [x for x in b.split("\n") if x.strip()]
+    if not lines:
+        return False
+    piped = sum(1 for x in lines if x.count("|") >= 2 or x.count("\t") >= 2)
+    return piped >= max(2, len(lines) // 2)
+
+
+def _chunk_structured(text: str, size: int, overlap: int) -> list[str]:
+    """Резать по структуре: заголовки и абзацы — границы; таблицы/списки держим целиком;
+    крупные блоки дробим по предложениям (фолбэк на размерное)."""
+    text = text.strip()
+    if len(text) <= size:
+        return [text] if text else []
+    lines = text.split("\n")
+    blocks, cur = [], []
+
+    def _flush():
+        if cur:
+            b = "\n".join(cur).strip()
+            if b:
+                blocks.append(b)
+
+    for ln in lines:
+        if _is_heading(ln) and cur:
+            _flush()
+            cur = [ln]
+        elif ln.strip() == "":
+            _flush()
+            cur = []
+        else:
+            cur.append(ln)
+    _flush()
+
+    chunks, buf = [], ""
+    for b in blocks:
+        if len(b) > size:
+            if buf.strip():
+                chunks.append(buf.strip())
+                buf = ""
+            if _looks_tabular(b):
+                chunks.append(b[:size * 3])       # таблицу не рвём (с разумным потолком)
+            else:
+                chunks.extend(_chunk_fixed(b, size, overlap))
+            continue
+        if buf and len(buf) + len(b) + 2 > size:
+            chunks.append(buf.strip())
+            buf = b
+        else:
+            buf = (buf + "\n\n" + b) if buf else b
+    if buf.strip():
+        chunks.append(buf.strip())
+    return [c for c in chunks if c]
+
+
+def chunk_text(text: str, size: int, overlap: int) -> list[str]:
+    """Разбиение на чанки: структурное (по заголовкам/абзацам) при STRUCTURE_CHUNK,
+    иначе — размерное с перекрытием."""
+    try:
+        if settings.get("STRUCTURE_CHUNK"):
+            return _chunk_structured(text, size, overlap)
+    except Exception:
+        pass
+    return _chunk_fixed(text, size, overlap)
 
 
 def _append_llm_desc(points, source, file_text, chunk_size, chunk_overlap, capped):
@@ -218,6 +307,9 @@ def main():
     run_proc_ms = 0
     run_parse_ms = run_embed_ms = 0   # для диагностики узкого места
     n_new = n_chunks = n_skip = n_timeout = 0
+    n_dup = 0
+    _dedup_on = bool(settings.get("INDEX_DEDUP"))
+    _seen_hashes: dict = {}          # content-hash -> первый source (для дедупа)
     errors = []  # (файл, причина)
     tmpdir = tempfile.mkdtemp(prefix="rag_pg_") if from_pg else None
     total_work = len(work)
@@ -233,7 +325,17 @@ def main():
 
     # --- эмбеддинг + запись в Qdrant (всегда в основном потоке) ---
     def _embed_upsert(source, fhash, points, ftype, meta_path, parse_ms=0):
-        nonlocal n_new, n_chunks, run_proc_ms, run_parse_ms, run_embed_ms
+        nonlocal n_new, n_chunks, run_proc_ms, run_parse_ms, run_embed_ms, n_dup
+        # дедуп по содержимому: пропускаем файл, чей извлечённый текст уже проиндексирован
+        if _dedup_on and points:
+            chash = hashlib.sha256(
+                "\n".join((p.get("chunk") or "") for p in points).encode("utf-8")).hexdigest()
+            if chash in _seen_hashes:
+                n_dup += 1
+                print(f"  = дубликат содержимого: {source} (совпадает с {_seen_hashes[chash]}) — пропущен",
+                      flush=True)
+                return
+            _seen_hashes[chash] = source
         t_embed = time.time()
         md = meta.extract(meta_path)
         if settings.get("LLM_METADATA"):
@@ -242,6 +344,8 @@ def main():
                 for k in ("product", "topic", "doc_type"):
                     if e.get(k):
                         md[k] = e[k]
+                if e.get("tags"):
+                    md["tags"] = e["tags"]         # авто-теги документа (для поиска/фильтра)
                 if md.get("doc_category") == "document" and e.get("category"):
                     md["doc_category"] = e["category"]
             except Exception as me:
@@ -252,10 +356,34 @@ def main():
             enc_batch = 32
         enc_batch = max(1, enc_batch)
         BATCH = max(256, enc_batch)   # размер группы upsert не меньше batch эмбеддера
+
+        # контекстные чанки: префикс заголовка документа + темы для ЭМБЕДДИНГА
+        _ctx_on = bool(settings.get("INDEX_CONTEXTUAL"))
+        _ctx_prefix = ""
+        if _ctx_on:
+            import os as _os
+            _title = _os.path.splitext(_os.path.basename(source))[0].replace("_", " ")
+            _bits = [_title]
+            for _k in ("product", "topic"):
+                if md.get(_k):
+                    _bits.append(str(md[_k]))
+            _ctx_prefix = " · ".join(b for b in _bits if b).strip()
+
+        def _embed_text(chunk):
+            return (_ctx_prefix + "\n" + chunk) if (_ctx_on and _ctx_prefix) else chunk
+
+        # small-to-big: «родительский» фрагмент = окно соседних чанков
+        _parent_on = bool(settings.get("INDEX_PARENT_CONTEXT"))
+        _pw = max(0, int(settings.get("PARENT_WINDOW") or 1)) if _parent_on else 0
+
+        def _parent_text(idx):
+            lo, hi = max(0, idx - _pw), min(len(points), idx + _pw + 1)
+            return "\n\n".join((points[j].get("chunk") or "") for j in range(lo, hi))[:6000]
+
         for i in range(0, len(points), BATCH):
             batch = points[i:i + BATCH]
             vectors = embedder.encode(
-                [p["chunk"] for p in batch],
+                [_embed_text(p["chunk"]) for p in batch],
                 normalize_embeddings=True, batch_size=enc_batch, show_progress_bar=False,
             )
             if len(points) > BATCH:
@@ -268,12 +396,13 @@ def main():
                      "text": p["chunk"], "source": source, "page": p["page"],
                      "ftype": ftype, "fhash": fhash,
                      "indexed_at": time.strftime("%Y-%m-%d"),
+                     **({"parent": _parent_text(i + j)} if _parent_on else {}),
                      **({"t_start": p["t_start"], "t_end": p["t_end"]}
                         if p.get("t_start") is not None else {}),
                      **({"vision_desc": True} if p.get("vision_desc") else {}),
                      **md,
                  }}
-                for p, vec in zip(batch, vectors)
+                for j, (p, vec) in enumerate(zip(batch, vectors))
             ], wait=False)
         embed_ms = int((time.time() - t_embed) * 1000)
         n_new += 1
@@ -501,7 +630,8 @@ def main():
 
     wall = max(1, int((time.time() - run_start) * 1000))
     print(f"Готово. Обновлено файлов: {n_new}, чанков добавлено: {n_chunks}, "
-          f"пропущено пустых: {n_skip}, по таймауту: {n_timeout}, ошибок: {len(errors)}")
+          f"пропущено пустых: {n_skip}, дубликатов: {n_dup}, по таймауту: {n_timeout}, "
+          f"ошибок: {len(errors)}")
     print(f"Тайминги (сумма по файлам): извлечение {run_parse_ms} мс, эмбеддинг+Qdrant "
           f"{run_embed_ms} мс; общее время {wall} мс, потоков {workers}. "
           f"Если 'извлечение' >> общего времени — параллельность работает; если "

@@ -59,11 +59,57 @@ import media
 import telegram_bot
 import calibrate
 import kag
+import integrations
 from ingest import chunk_text, SUPPORTED
 from retriever import search, infer_category
 
 app = FastAPI(title="Корпоративный RAG-чатбот")
 _qdrant = QdrantClient(url=settings.get("QDRANT_URL"))
+
+# CORS — чтобы встраиваемый веб-виджет чата работал с других доменов (сайт компании).
+try:
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                       allow_methods=["*"], allow_headers=["*"])
+except Exception as _e:
+    print(f"[cors] не подключён: {_e}")
+
+
+def _answer_sync(question: str, filters: dict | None = None) -> dict:
+    """Синхронный ответ по базе знаний (без стриминга) — для внешнего API и виджета.
+    Возвращает {answer, sources, answered, category, top_score}."""
+    hits = search(question, filters=filters)
+    if not hits and settings.get("NO_ANSWER_FALLBACK"):
+        try:
+            hits = retriever.no_answer_fallback(question) or []
+        except Exception:
+            hits = []
+    if not hits:
+        return {"answer": prompts.NO_ANSWER_TEXT if hasattr(prompts, "NO_ANSWER_TEXT")
+                else "В доступных документах нет точного ответа на этот вопрос.",
+                "sources": [], "answered": False, "category": None, "top_score": 0.0}
+    context = prompts.build_context(hits)
+    messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")},
+                {"role": "user", "content": prompts.build_user_message(question, context)}]
+    try:
+        answer = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
+                                  model=settings.active_model())
+    except Exception as e:
+        answer = f"Ошибка генерации: {e}"
+    # проверка обоснованности (антигаллюцинации)
+    if settings.get("ANSWER_VERIFY") in ("warn", "strict"):
+        try:
+            import verify
+            answer = verify.apply(question, answer, context).get("answer", answer)
+        except Exception:
+            pass
+    answered = not prompts.is_no_answer(answer)
+    sources = [media.cite(h["source"], page=h.get("page"), score=round(h["score"], 3),
+                          category=h.get("doc_category"), snippet=h.get("text"))
+               for h in hits]
+    return {"answer": answer, "sources": sources, "answered": answered,
+            "category": (filters or {}).get("doc_category") or infer_category(question),
+            "top_score": round(hits[0]["score"], 3)}
 
 
 @app.on_event("startup")
@@ -320,6 +366,7 @@ async def chat(req: ChatRequest):
     # истории диалога; ключ учитывает фильтры, промпт, модель и температуру; кэш
     # сбрасывается при переиндексации (пространство index).
     acache_key = None
+    q_emb = None                      # эмбеддинг вопроса для семантического кэша
     if settings.get("ANSWER_CACHE") and not req.history:
         import cache as _cache
         acache_key = "ans:" + hashlib.sha1("|".join(str(x) for x in [
@@ -330,6 +377,16 @@ async def chat(req: ChatRequest):
             cached = cache.get_json(acache_key, ns="index")
         except Exception:
             cached = None
+        # семантический кэш: на похожий по смыслу вопрос — тот же ответ
+        if not cached and settings.get("ANSWER_CACHE_SEMANTIC"):
+            try:
+                import cache
+                q_emb = retriever._embed_query(req.question)
+                hit = cache.answer_sem_find(q_emb, settings.get("ANSWER_CACHE_SIM"))
+                if hit:
+                    cached = cache.get_json(hit["key"], ns="index")
+            except Exception:
+                cached = cached
         if cached:
             async def cached_stream():
                 yield _stg("answer_cache", "done", {"hit": True})
@@ -361,11 +418,21 @@ async def chat(req: ChatRequest):
 
     t_ret = time.time()
     trace = []
-    hits = search(req.question, filters=req.filters, trace=trace)
+    # разрешение контекста диалога: уточняющий вопрос → самостоятельный для ПОИСКА
+    search_q = req.question
+    if req.history:
+        try:
+            search_q = retriever.standalone_question(req.question, req.history)
+            if search_q != req.question:
+                trace.append({"key": "dialog_rewrite", "ms": 0,
+                              "info": {"standalone": search_q[:120]}})
+        except Exception:
+            search_q = req.question
+    hits = search(search_q, filters=req.filters, trace=trace)
     # расширенный поиск, если ничего не нашлось (опционально): лексический → глубокий
     if not hits and settings.get("NO_ANSWER_FALLBACK"):
         try:
-            hits = retriever.no_answer_fallback(req.question, trace=trace) or []
+            hits = retriever.no_answer_fallback(search_q, trace=trace) or []
         except Exception as e:
             print(f"  ! фолбэк-поиск не удался: {e}")
     # прайс-папка: на «ценовых» вопросах подмешиваем контекст из папки прайсов
@@ -400,7 +467,8 @@ async def chat(req: ChatRequest):
 
     sources = [media.cite(h["source"], page=h.get("page"),
                           t_start=h.get("t_start"), t_end=h.get("t_end"),
-                          score=round(h["score"], 3), category=h.get("doc_category"))
+                          score=round(h["score"], 3), category=h.get("doc_category"),
+                          snippet=h.get("text"))
                for h in hits]
     activity.update(aid, stage="генерация ответа")
 
@@ -422,6 +490,18 @@ async def chat(req: ChatRequest):
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         gen_ms = max(0, int((time.time() - t0) * 1000) - retrieve_ms)
         yield _stg("generate", "done", {"chars": len("".join(acc)), "ms": gen_ms}, gen_ms)
+        # проверка обоснованности: в веб-чате ответ уже стримится, поэтому при
+        # необеспеченности дописываем пометку отдельным фрагментом
+        if settings.get("ANSWER_VERIFY") in ("warn", "strict") and acc:
+            try:
+                import verify
+                _ans = "".join(acc)
+                if not prompts.is_no_answer(_ans) and not verify.is_grounded(req.question, _ans, context):
+                    acc.append(verify.CAVEAT)
+                    yield json.dumps({"type": "answer", "text": verify.CAVEAT},
+                                     ensure_ascii=False) + "\n"
+            except Exception:
+                pass
         out_sources = sources
         if settings.get("HIDE_SOURCES_IF_NO_ANSWER") and prompts.is_no_answer("".join(acc)):
             out_sources = []
@@ -446,6 +526,10 @@ async def chat(req: ChatRequest):
                 cache.set_json(acache_key, 86400, {
                     "answer": "".join(acc), "sources": sources, "category": category,
                     "n_hits": len(hits), "top_score": hits[0]["score"]}, ns="index")
+                # семантический кэш: связываем эмбеддинг вопроса с ключом ответа
+                if settings.get("ANSWER_CACHE_SEMANTIC"):
+                    _qe = q_emb or retriever._embed_query(req.question)
+                    cache.answer_sem_add(acache_key, _qe)
             except Exception:
                 pass
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
@@ -461,6 +545,10 @@ def api_rate(payload: dict = Body(...)):
     if rid is None or rating not in (1, -1, 0):
         return {"ok": False}
     db.set_rating(int(rid), rating)
+    try:
+        integrations.fire("rating", {"id": int(rid), "rating": rating})
+    except Exception:
+        pass
     note = None
     # авто-калибровка по накоплению оценок
     if rating != 0 and settings.get("AUTO_CALIBRATE"):
@@ -638,6 +726,148 @@ def api_logs(limit: int = 100):
 @app.get("/api/analytics")
 def api_analytics():
     return db.analytics()
+
+
+@app.get("/api/admin/quality")
+def api_quality(x_admin_token: str | None = Header(None)):
+    """Аналитика качества: 👎-ответы, пробелы (вопросы без ответа), топ источников,
+    динамика оценок."""
+    _check_admin(x_admin_token)
+    return db.quality_report()
+
+
+# ----- Внешний API для интеграций (по API-ключу) -----
+
+@app.post("/api/v1/ask")
+def api_v1_ask(payload: dict = Body(...), x_api_key: str | None = Header(None)):
+    """Публичный эндпоинт для внешних систем и встраиваемого виджета: задать вопрос
+    базе знаний и получить ответ JSON. Требует заголовок X-API-Key."""
+    if not integrations.api_key_valid(x_api_key or (payload or {}).get("api_key") or ""):
+        raise HTTPException(status_code=401, detail="invalid or missing API key")
+    question = ((payload or {}).get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    t0 = time.time()
+    res = _answer_sync(question, filters=(payload or {}).get("filters"))
+    lat = int((time.time() - t0) * 1000)
+    try:
+        rid = db.log_request(question, res.get("category"), len(res.get("sources", [])),
+                             res.get("top_score", 0.0), lat, len(res.get("answer", "")),
+                             res.get("answered", True), res.get("sources", []),
+                             channel="api", answer=res.get("answer", ""))
+    except Exception:
+        rid = None
+    integrations.fire("question", {"channel": "api", "id": rid, "question": question,
+                                   "answer": res.get("answer", ""),
+                                   "answered": res.get("answered"),
+                                   "sources": [s.get("source") for s in res.get("sources", [])]})
+    return {"id": rid, "answer": res.get("answer"), "answered": res.get("answered"),
+            "sources": res.get("sources", []), "latency_ms": lat}
+
+
+@app.get("/api/admin/integrations")
+def api_integrations(x_admin_token: str | None = Header(None)):
+    """Список API-ключей (маскированных) и веб-хуков."""
+    _check_admin(x_admin_token)
+    return {"api_keys": integrations.api_keys_list(),
+            "webhooks": integrations.webhooks_list()}
+
+
+@app.post("/api/admin/api-keys")
+def api_keys_create(payload: dict = Body(default={}),
+                    x_admin_token: str | None = Header(None)):
+    """Создать API-ключ (показывается один раз). payload: {label}."""
+    _check_admin(x_admin_token)
+    return integrations.api_key_create(payload.get("label", ""))
+
+
+@app.post("/api/admin/api-keys/revoke")
+def api_keys_revoke(payload: dict = Body(...),
+                    x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return integrations.api_key_revoke(payload.get("id", ""))
+
+
+@app.post("/api/admin/webhooks")
+def api_webhooks_save(payload: dict = Body(...),
+                      x_admin_token: str | None = Header(None)):
+    """Создать/обновить веб-хук. payload: {id?, url, events:[question,rating], enabled}."""
+    _check_admin(x_admin_token)
+    return integrations.webhook_save(payload)
+
+
+@app.post("/api/admin/webhooks/delete")
+def api_webhooks_delete(payload: dict = Body(...),
+                        x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return integrations.webhook_delete(payload.get("id", ""))
+
+
+_WIDGET_JS = r"""
+(function(){
+  var s=document.currentScript||(function(){var a=document.getElementsByTagName('script');return a[a.length-1];})();
+  var u=new URL(s.src); var KEY=u.searchParams.get('key')||''; var BASE=u.origin;
+  var TITLE=u.searchParams.get('title')||'Помощник';
+  var st=document.createElement('style'); st.textContent=
+    '.ragw-btn{position:fixed;right:20px;bottom:20px;width:56px;height:56px;border-radius:50%;background:#2563eb;color:#fff;font-size:26px;border:none;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.3);z-index:2147483000}'
+   +'.ragw-panel{position:fixed;right:20px;bottom:88px;width:360px;max-width:92vw;height:520px;max-height:76vh;background:#fff;color:#111;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,.35);display:none;flex-direction:column;overflow:hidden;z-index:2147483000;font:14px system-ui,Arial}'
+   +'.ragw-head{background:#2563eb;color:#fff;padding:12px 14px;font-weight:600;display:flex;justify-content:space-between;align-items:center}'
+   +'.ragw-body{flex:1;overflow:auto;padding:12px;background:#f7f7f9}'
+   +'.ragw-msg{margin:6px 0;padding:8px 11px;border-radius:12px;max-width:85%;white-space:pre-wrap;line-height:1.4}'
+   +'.ragw-me{background:#2563eb;color:#fff;margin-left:auto}.ragw-bot{background:#fff;border:1px solid #e5e7eb}'
+   +'.ragw-src{font-size:11px;color:#666;margin-top:4px}'
+   +'.ragw-foot{display:flex;gap:6px;padding:10px;border-top:1px solid #eee;background:#fff}'
+   +'.ragw-foot input{flex:1;border:1px solid #ddd;border-radius:9px;padding:9px 10px;font:inherit}'
+   +'.ragw-foot button{border:none;background:#2563eb;color:#fff;border-radius:9px;padding:0 14px;cursor:pointer}';
+  document.head.appendChild(st);
+  var btn=document.createElement('button'); btn.className='ragw-btn'; btn.innerHTML='💬';
+  var p=document.createElement('div'); p.className='ragw-panel';
+  p.innerHTML='<div class="ragw-head"><span>'+TITLE+'</span><span style="cursor:pointer" id="ragw-x">✕</span></div>'
+   +'<div class="ragw-body" id="ragw-body"><div class="ragw-msg ragw-bot">Здравствуйте! Задайте вопрос по нашей базе знаний.</div></div>'
+   +'<div class="ragw-foot"><input id="ragw-in" placeholder="Ваш вопрос…"><button id="ragw-send">→</button></div>';
+  document.body.appendChild(btn); document.body.appendChild(p);
+  function esc(t){var d=document.createElement('div');d.textContent=t||'';return d.innerHTML;}
+  function add(cls,html){var b=document.getElementById('ragw-body');var m=document.createElement('div');m.className='ragw-msg '+cls;m.innerHTML=html;b.appendChild(m);b.scrollTop=b.scrollHeight;return m;}
+  btn.onclick=function(){p.style.display=p.style.display==='flex'?'none':'flex';};
+  p.querySelector('#ragw-x').onclick=function(){p.style.display='none';};
+  function send(){
+    var inp=document.getElementById('ragw-in');var q=(inp.value||'').trim();if(!q)return;inp.value='';
+    add('ragw-me',esc(q));var wait=add('ragw-bot','…');
+    fetch(BASE+'/api/v1/ask',{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':KEY},body:JSON.stringify({question:q})})
+      .then(function(r){return r.json();}).then(function(d){
+        wait.innerHTML=esc(d.answer||'Нет ответа');
+        var s=(d.sources||[]).map(function(x){return esc((x.source||'').split('/').pop());}).filter(Boolean);
+        if(s.length){var e=document.createElement('div');e.className='ragw-src';e.textContent='Источники: '+s.slice(0,5).join(', ');wait.appendChild(e);}
+      }).catch(function(){wait.innerHTML='Ошибка соединения';});
+  }
+  document.getElementById('ragw-send').onclick=send;
+  document.getElementById('ragw-in').addEventListener('keydown',function(e){if(e.key==='Enter')send();});
+})();
+"""
+
+
+@app.get("/widget.js")
+def widget_js():
+    """Встраиваемый скрипт чата: <script src="…/widget.js?key=API_KEY&title=…"></script>."""
+    from fastapi.responses import Response
+    return Response(content=_WIDGET_JS, media_type="application/javascript")
+
+
+@app.get("/embed")
+def widget_demo(key: str = ""):
+    """Демо-страница встраиваемого виджета."""
+    from fastapi.responses import HTMLResponse
+    html = ("<!doctype html><meta charset=utf-8><title>Виджет — демо</title>"
+            "<body style='font:16px system-ui;padding:40px'>"
+            "<h1>Демо встраиваемого чата</h1>"
+            "<p>Кнопка чата — в правом нижнем углу.</p>"
+            f"<script src='/widget.js?key={_html_escape(key)}&title=Помощник'></script></body>")
+    return HTMLResponse(html)
+
+
+def _html_escape(s: str) -> str:
+    import html as _h
+    return _h.escape(s or "", quote=True)
 
 
 @app.get("/api/system")
@@ -1551,6 +1781,57 @@ def admin_milvus_switch(payload: dict = Body(...),
     return admin_ops.milvus_switch(payload.get("target", ""))
 
 
+@app.post("/api/admin/milvus/verify")
+def admin_milvus_verify(x_admin_token: str | None = Header(None)):
+    """Сверка Qdrant ↔ Milvus: число точек и совпадение результатов поиска."""
+    _check_admin(x_admin_token)
+    return admin_ops.milvus_verify()
+
+
+@app.get("/api/admin/embed-finetune/info")
+def admin_embed_ft_info(x_admin_token: str | None = Header(None)):
+    """Данные о дообучении эмбеддингов: база, число пар из оценок, статус."""
+    _check_admin(x_admin_token)
+    return admin_ops.embed_finetune_info()
+
+
+@app.post("/api/admin/embed-finetune")
+def admin_embed_ft(payload: dict = Body(default={}),
+                   x_admin_token: str | None = Header(None)):
+    """Запустить дообучение эмбеддингов на оценках 👍 (фон). payload: {epochs, batch}."""
+    _check_admin(x_admin_token)
+    return admin_ops.embed_finetune(epochs=payload.get("epochs", 1),
+                                    batch=payload.get("batch", 16))
+
+
+@app.post("/api/admin/embed-finetune/activate")
+def admin_embed_ft_activate(x_admin_token: str | None = Header(None)):
+    """Переключить EMBED_MODEL на дообученную модель."""
+    _check_admin(x_admin_token)
+    return admin_ops.embed_finetune_activate()
+
+
+@app.post("/api/admin/retrieval/eval")
+def admin_retrieval_eval(x_admin_token: str | None = Header(None)):
+    """Оценка качества поиска по золотому набору (hit@k, MRR)."""
+    _check_admin(x_admin_token)
+    return admin_ops.retrieval_eval()
+
+
+@app.post("/api/admin/retrieval/autotune")
+def admin_retrieval_autotune(payload: dict = Body(default={}),
+                             x_admin_token: str | None = Header(None)):
+    """Авто-подбор MIN_SCORE/TOP_K по золотому набору (фон). payload: {apply}."""
+    _check_admin(x_admin_token)
+    return admin_ops.retrieval_autotune(apply=bool(payload.get("apply")))
+
+
+@app.get("/api/admin/retrieval/autotune/status")
+def admin_retrieval_autotune_status(x_admin_token: str | None = Header(None)):
+    _check_admin(x_admin_token)
+    return admin_ops.retrieval_tune_status()
+
+
 @app.post("/api/admin/oda/install")
 def admin_oda_install(x_admin_token: str | None = Header(None)):
     """Установить/проверить ODA File Converter (запасной конвертер DWG→DXF)."""
@@ -1653,6 +1934,22 @@ def admin_web_excludes_all(payload: dict = Body(...), x_admin_token: str | None 
     исключениями конкретного сайта. payload: {keywords: строка или список}."""
     _check_admin(x_admin_token)
     return admin_ops.web_set_excludes_all(payload.get("keywords", ""))
+
+
+@app.post("/api/admin/web-site-cfg")
+def admin_web_site_cfg(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    """Пер-сайтовые настройки обхода (пустые поля = глобальные).
+    payload: {url, cfg:{depth,max_pages,max_files,concurrency,same_domain,js_render}}."""
+    _check_admin(x_admin_token)
+    return admin_ops.web_set_site_cfg(payload.get("url", ""), payload.get("cfg", {}))
+
+
+@app.post("/api/admin/web-auth")
+def admin_web_auth(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    """Авторизация на сайт для парсинга (секреты). payload: {url, auth:{type, ...}}.
+    type: none|basic(user,password)|cookie(cookie)|header(hname,hvalue)."""
+    _check_admin(x_admin_token)
+    return admin_ops.web_set_auth(payload.get("url", ""), payload.get("auth", {}))
 
 
 @app.get("/api/admin/web-structure")
