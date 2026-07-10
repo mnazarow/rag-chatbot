@@ -5932,6 +5932,9 @@ async function checkToken(){
     else if(r.status===401){ m.textContent='✗ неверный токен'; m.className='note'; m.style.color='#f87171'; }
     else{ m.textContent='✗ ошибка ('+r.status+')'; m.className='note'; }
   }
+  // токен принят — перезагрузить панели администратора (они грузились до ввода токена
+  // и могли показать «неверный токен»)
+  if(r.ok){ try{ loadConfig(); }catch(e){} }
 }
 async function saveConfig(){
   const body={};
