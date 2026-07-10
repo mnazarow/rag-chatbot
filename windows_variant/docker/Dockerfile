@@ -11,22 +11,30 @@
 # который копируется в финальный образ — при проблеме его видно в чеклисте.
 FROM ubuntu:24.04 AS dwgbuild
 ENV DEBIAN_FRONTEND=noninteractive
-# python3 нужен configure для кодогенерации (даже с --disable-bindings)
+# Поддержку DWG (libredwg) можно полностью пропустить: docker build --build-arg SKIP_DWG=1
+# (например если сеть до github.com блокируется/медленная — чтобы сборка не «зависала»).
+ARG SKIP_DWG=0
+# python3 нужен configure для кодогенерации (даже с --disable-bindings). coreutils даёт timeout.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential git ca-certificates pkg-config perl python3 \
+        build-essential git ca-certificates pkg-config perl python3 coreutils \
         autoconf automake libtool gperf texinfo \
     && rm -rf /var/lib/apt/lists/*
-# Шаги связаны через && — любая ошибка останавливает сборку (без ложного «OK»).
-# Весь вывод пишется в лог, который копируется в финальный образ для диагностики.
+# Best-effort сборка libredwg. Клонирование ограничено таймаутом (180 c) + мелкая глубина,
+# чтобы медленная/заблокированная сеть до github не подвешивала весь билд. При SKIP_DWG=1
+# или любой ошибке образ всё равно собирается (DWG просто не поддерживается).
 RUN mkdir -p /dwgout/usr/local && \
-    ( git clone --depth 1 https://github.com/LibreDWG/libredwg /tmp/libredwg \
-      && cd /tmp/libredwg \
-      && sh autogen.sh \
-      && ./configure --disable-bindings --disable-werror --prefix=/usr/local \
-      && make -j"$(nproc)" \
-      && make install DESTDIR=/dwgout \
-      && echo "RESULT: OK — dwg2dxf собран" ) > /dwgout/libredwg-build.log 2>&1 \
-    || echo "RESULT: FAILED — сборка libredwg не удалась (подробности в логе выше)" >> /dwgout/libredwg-build.log
+    if [ "$SKIP_DWG" = "1" ]; then \
+        echo "RESULT: SKIPPED — сборка libredwg отключена (SKIP_DWG=1)" > /dwgout/libredwg-build.log; \
+    else \
+      ( timeout 180 git clone --depth 1 https://github.com/LibreDWG/libredwg /tmp/libredwg \
+        && cd /tmp/libredwg \
+        && sh autogen.sh \
+        && ./configure --disable-bindings --disable-werror --prefix=/usr/local \
+        && make -j"$(nproc)" \
+        && make install DESTDIR=/dwgout \
+        && echo "RESULT: OK — dwg2dxf собран" ) > /dwgout/libredwg-build.log 2>&1 \
+      || echo "RESULT: FAILED/TIMEOUT — сборка libredwg не удалась (см. лог выше)" >> /dwgout/libredwg-build.log; \
+    fi
 
 # ---------- стадия 2: приложение ----------
 FROM ubuntu:24.04
