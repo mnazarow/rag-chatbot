@@ -17,10 +17,14 @@ import os
 import threading
 import time
 
-FINISHED_TTL = 30.0     # сек показывать завершённые
+FINISHED_TTL = 30.0     # сек показывать завершённые в «живом» списке
 RUNNING_TTL = 1800      # сек авто-уборки «зависших» выполняющихся (Redis safety)
 KEEP_RECENT = 25        # минимум последних завершённых в снимке (память)
 MAX_ITEMS = 400
+# Полный текст запроса (для раскрытия строки) храним ДОЛЬШЕ, чем строка живёт в списке:
+# при индексации идёт много LLM-вызовов, и к моменту клика запись из «живого» списка
+# уже ушла (TTL 30 c), но развернуть её всё равно можно ещё несколько минут.
+PROMPT_TTL = 900        # сек доступности полной записи по id (get)
 
 _PREFIX = "rag:llmact:"   # ключи Redis: rag:llmact:i:<id>, rag:llmact:calls/errors
 
@@ -60,8 +64,9 @@ def begin(kind: str, model: str = "", backend: str = "", label: str = "",
     if c is not None:
         try:
             import json
-            c.setex(_PREFIX + "i:" + cid, RUNNING_TTL,
-                    json.dumps(rec, ensure_ascii=False))
+            _rj = json.dumps(rec, ensure_ascii=False)
+            c.setex(_PREFIX + "i:" + cid, RUNNING_TTL, _rj)
+            c.setex(_PREFIX + "full:" + cid, PROMPT_TTL, _rj)   # долгоживущая копия для get()
             c.incr(_PREFIX + "calls")
             return cid
         except Exception:
@@ -119,7 +124,9 @@ def end(cid, ok: bool = True, chars: int | None = None,
             rec["ptok"], rec["ctok"], rec["gen_ms"] = ptok, ctok, gen_ms
             if error:
                 rec["error"] = str(error)[:200]
-            c.setex(k, int(FINISHED_TTL), json.dumps(rec, ensure_ascii=False))
+            _rj = json.dumps(rec, ensure_ascii=False)
+            c.setex(k, int(FINISHED_TTL), _rj)
+            c.setex(_PREFIX + "full:" + str(cid), PROMPT_TTL, _rj)  # финальная копия для get()
             if not ok:
                 c.incr(_PREFIX + "errors")
             if ptok:
@@ -230,7 +237,8 @@ def get(cid) -> dict:
     if c is not None:
         try:
             import json
-            raw = c.get(_PREFIX + "i:" + cid)
+            # сперва «живая» запись, иначе — долгоживущая копия (её TTL больше)
+            raw = c.get(_PREFIX + "i:" + cid) or c.get(_PREFIX + "full:" + cid)
             if raw:
                 r = json.loads(raw)
                 v = _view(r)
