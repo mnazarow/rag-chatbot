@@ -483,11 +483,24 @@ async def chat(req: ChatRequest):
                                          "model": settings.active_model(),
                                          "temperature": settings.get("TEMPERATURE")})
         acc = []
-        async for tok in llm_backend.chat_stream(
-                messages, temperature=settings.get("TEMPERATURE"),
-                model=settings.active_model(), kind="chat", label=req.question):
-            acc.append(tok)
-            yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
+        try:
+            async for tok in llm_backend.chat_stream(
+                    messages, temperature=settings.get("TEMPERATURE"),
+                    model=settings.active_model(), kind="chat", label=req.question):
+                acc.append(tok)
+                yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[chat] ошибка генерации LLM: {e}\n{tb}")
+            yield json.dumps({"type": "error", "stage": "generate",
+                              "error": f"{type(e).__name__}: {e}",
+                              "hint": ("Сбой на этапе генерации (LLM). Проверьте, что движок "
+                                       f"{settings.get('LLM_BACKEND')} доступен и модель загружена; "
+                                       "при нехватке памяти возможен OOM.")},
+                             ensure_ascii=False) + "\n"
+            yield _stg("generate", "error", {"error": f"{type(e).__name__}: {e}"})
+            return
         gen_ms = max(0, int((time.time() - t0) * 1000) - retrieve_ms)
         yield _stg("generate", "done", {"chars": len("".join(acc)), "ms": gen_ms}, gen_ms)
         # проверка обоснованности: в веб-чате ответ уже стримится, поэтому при

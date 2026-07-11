@@ -6750,6 +6750,11 @@ async function ask(){
       res=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({question:q,history,debug:dbg,session_id:chatSession})});
     }
+    if(!res.ok){
+      let body=''; try{ body=(await res.text()).slice(0,800); }catch(_){}
+      throw new Error('HTTP '+res.status+' '+(res.statusText||'')+(body?(' — '+body):''));
+    }
+    if(!res.body){ throw new Error('пустой ответ сервера (нет тела потока)'); }
     const rd=res.body.getReader(),dec=new TextDecoder(); let buf='';
     while(true){ const {value,done}=await rd.read(); if(done)break;
       buf+=dec.decode(value,{stream:true}); let nl;
@@ -6764,6 +6769,14 @@ async function ask(){
           s.innerHTML=renderSources(ev.items);
           bot.appendChild(s);}
         else if(ev.type==='debug'&&ev.info){ addDebug(bot,ev.info); }
+        else if(ev.type==='error'){
+          const em=document.createElement('div'); em.className='note';
+          em.style.cssText='margin-top:6px;padding:8px 10px;border-left:3px solid #f87171;background:var(--panel2);border-radius:0 6px 6px 0;white-space:pre-wrap;font-size:12px;color:#f87171';
+          em.textContent='⚠️ Ошибка сервера'+(ev.stage?(' ('+ev.stage+')'):'')+': '+(ev.error||'неизвестно')
+            +(ev.hint?('\n'+ev.hint):'');
+          bot.appendChild(em);
+          if(!ans) bot._ansEl.textContent='Ошибка обработки запроса на сервере.';
+        }
         else if(ev.type==='meta'&&ev.id){ addRating(bot,ev.id); }
       }
       $('#msgs').scrollTop=$('#msgs').scrollHeight;
@@ -6773,9 +6786,62 @@ async function ask(){
     addSpeak(bot);                       // кнопка «озвучить» под ответом
     addRepeat(bot,q);                    // кнопка «повторить запрос»
     if(ttsOn() && ans.trim()) speak(ans); // авто-озвучка, если включена
-  }catch(e){ bot._ansEl.textContent='Ошибка: '+e.message;
-    chatLog.push({role:'assistant',content:'Ошибка: '+e.message}); addRepeat(bot,q); }
+  }catch(e){
+    bot._ansEl.textContent='Ошибка: '+(e&&e.message?e.message:e);
+    chatLog.push({role:'assistant',content:'Ошибка: '+(e&&e.message?e.message:e)});
+    await showChatError(bot, e);         // расширенная диагностика (проверка сервера + подсказки)
+    addRepeat(bot,q);
+  }
   $('#send').disabled=false; $('#q').focus();
+}
+// Лёгкая проверка живости бэкенда: жив ли процесс и отвечает ли он вообще.
+async function probeServer(){
+  const t0=performance.now();
+  try{
+    const r=await fetch('/api/system?t='+Date.now(),{cache:'no-store'});
+    return {ok:r.ok, status:r.status, ms:Math.round(performance.now()-t0)};
+  }catch(err){
+    return {ok:false, status:0, ms:Math.round(performance.now()-t0), error:(err&&err.message)||String(err)};
+  }
+}
+// Показать под ответом развёрнутую диагностику ошибки чата и вероятную причину.
+async function showChatError(bot, e){
+  const name=(e&&e.name)||'Error', msg=(e&&e.message)||String(e);
+  const isNet=(name==='TypeError') || /Failed to fetch|NetworkError|Load failed/i.test(msg);
+  const box=document.createElement('div');
+  box.className='note';
+  box.style.cssText='margin-top:6px;padding:8px 10px;border-left:3px solid #f87171;background:var(--panel2);border-radius:0 6px 6px 0;white-space:pre-wrap;font-size:12px';
+  box.textContent='🔎 Диагностика: проверяю сервер…';
+  bot.appendChild(box);
+  let lines=['🔎 Диагностика ошибки чата',
+             '• тип: '+name,
+             '• сообщение: '+msg];
+  if(isNet){
+    const p=await probeServer();
+    if(p.ok){
+      lines.push('• сервер отвечает (HTTP '+p.status+', '+p.ms+' мс)');
+      lines.push('• вывод: соединение с сервером есть, но поток ответа оборвался.');
+      lines.push('  Вероятная причина — рабочий процесс перезапустился или упал во время');
+      lines.push('  генерации (частая причина — нехватка памяти / OOM при загрузке моделей');
+      lines.push('  эмбеддера + реранкера + LLM, особенно параллельно с индексацией).');
+      lines.push('  Что проверить: вкладка «🖥 Загрузка сервера», логи контейнера');
+      lines.push('  (docker logs rag_app), а также флаг OOM: docker inspect rag_app');
+      lines.push('  --format "{{.State.OOMKilled}}". При OOM — увеличьте память в .wslconfig.');
+    } else if(p.status){
+      lines.push('• сервер ответил ошибкой на проверку (HTTP '+p.status+', '+p.ms+' мс)');
+      lines.push('• вывод: процесс жив, но отдаёт ошибку — смотрите логи контейнера.');
+    } else {
+      lines.push('• сервер НЕ отвечает даже на лёгкую проверку ('+(p.error||'нет ответа')+', '+p.ms+' мс)');
+      lines.push('• вывод: бэкенд недоступен — процесс упал или перезапускается.');
+      lines.push('  Это объясняет и молчание Телеграм-бота (бот работает в том же процессе).');
+      lines.push('  Частая причина — OOM. Перезапустите сервис (update.cmd / docker compose');
+      lines.push('  restart), проверьте docker logs rag_app и память (.wslconfig).');
+    }
+  } else {
+    lines.push('• вывод: сервер вернул ошибку обработки (см. текст выше) — смотрите логи.');
+  }
+  lines.push('• время: '+new Date().toLocaleString('ru-RU'));
+  box.textContent=lines.join('\n');
 }
 // кнопка «повторить запрос» под ответом — задаёт тот же вопрос заново
 function addRepeat(bot,q){
@@ -6977,13 +7043,13 @@ function handleStage(bot,ev){
     pipe.appendChild(step); bot._steps[ev.key]=step;
     requestAnimationFrame(()=>step.classList.add('in'));
   }
-  const active = ev.status==='start';
-  step.querySelector('.pi').textContent = active ? '⏳' : meta.icon;
+  const active = ev.status==='start', errored = ev.status==='error';
+  step.querySelector('.pi').textContent = active ? '⏳' : (errored ? '⚠️' : meta.icon);
   step.querySelector('.pl').textContent = meta.label;
-  step.querySelector('.pp').textContent = stageParams(ev.key,ev.info);
-  step.querySelector('.pms').textContent = active ? '…' : ((ev.ms!=null&&ev.ms>0)?ev.ms+' мс':'✓');
+  step.querySelector('.pp').textContent = errored ? ((ev.info&&ev.info.error)||'ошибка') : stageParams(ev.key,ev.info);
+  step.querySelector('.pms').textContent = active ? '…' : (errored ? '✗' : ((ev.ms!=null&&ev.ms>0)?ev.ms+' мс':'✓'));
   step.classList.toggle('active', active);
-  step.classList.toggle('done', !active);
+  step.classList.toggle('done', !active && !errored);
   if(ev.key==='generate') bot._genStep = active ? step : null;
   $('#msgs').scrollTop=$('#msgs').scrollHeight;
 }
