@@ -1221,6 +1221,18 @@
       <pre id="joblog" style="margin-top:8px;background:var(--panel2);border:1px solid var(--line);
         border-radius:9px;padding:10px;font-size:12px;max-height:160px;overflow:auto;display:none;white-space:pre-wrap"></pre>
 
+      <!-- живой лог индексации (обновляется чаще, отдельно от общего лога задач) -->
+      <div id="idxlogbox" style="display:none;margin-top:10px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+          <b style="font-size:13px">📜 Лог индексации в реальном времени</b>
+          <span id="idxlogstate" class="note"></span>
+          <label class="note" style="margin-left:auto"><input type="checkbox" id="idxlogfollow" checked> автопрокрутка</label>
+        </div>
+        <div id="idxlogprog"></div>
+        <pre id="idxlog" style="background:#0b0f16;color:#d5e2f0;border:1px solid var(--line);
+          border-radius:9px;padding:10px;font-size:12px;line-height:1.45;max-height:320px;overflow:auto;white-space:pre-wrap"></pre>
+      </div>
+
       <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <b style="font-size:13px">Сохранённые логи индексации и калибровки</b>
@@ -6007,6 +6019,8 @@ async function loadOps(){
   const dot=b=>b?'<span style="color:#4ade80">● в сети</span>':'<span style="color:#f87171">● нет</span>';
   const j=s.index_job||{};
   const job=j.running?'идёт…':(j.ok===true?'успешно':(j.ok===false?'ошибка':'—'));
+  // индексация идёт (в т.ч. запущена из Телеграма/расписания) — включаем живой лог
+  if(j.running && !_idxT) pollIndexLog();
   // графический прогресс-бар индексации по числу файлов
   let ijob=job;
   if(j.running && j.progress){
@@ -6696,8 +6710,47 @@ function opsMsg(t,ok=true){ $('#opsmsg').textContent=t; $('#opsmsg').className=o
 let pollT=null;
 function pollJob(){ clearInterval(pollT); pollT=setInterval(loadOps,4000);
   setTimeout(()=>clearInterval(pollT),300000); }
+// ---- живой лог индексации (частый опрос лёгкого эндпоинта) ----
+let _idxT=null, _idxStop=0;
+async function idxLogTick(){
+  let d; try{ d=await adminGet('/api/admin/index-log'); }catch(e){ return; }
+  if(!d) return;
+  const box=$('#idxlogbox'); if(!box) return;
+  const hasLog=!!(d.log&&d.log.trim());
+  if(!d.running && !hasLog){ box.style.display='none'; return; }
+  box.style.display='block';
+  const st=$('#idxlogstate');
+  if(st) st.textContent=d.running?'● идёт':(d.ok===true?'✓ завершено':(d.ok===false?'✗ ошибка':'— остановлено'));
+  if(st) st.style.color=d.running?'#60a5fa':(d.ok===false?'#f87171':'#4ade80');
+  // прогресс-бар по файлам
+  const pr=$('#idxlogprog');
+  if(pr){
+    if(d.running && d.progress){
+      const p=d.progress, pct=Math.max(0,Math.min(100,p.pct||(p.total?Math.round(p.done*100/p.total):0)));
+      const cur=p.current?(' · '+esc((p.current||'').split('/').pop())):'';
+      pr.innerHTML=`<div style="font-size:12px;color:var(--muted)">${nz(p.done)}/${nz(p.total)} файлов${cur}</div>`+bar(pct)+`<div style="font-size:12px;margin-top:2px">${pct}%</div>`;
+    } else pr.innerHTML='';
+  }
+  const pre=$('#idxlog');
+  if(pre){
+    const follow=$('#idxlogfollow')&&$('#idxlogfollow').checked;
+    const nearBottom=pre.scrollHeight-pre.scrollTop-pre.clientHeight<40;
+    pre.textContent=d.log||'';
+    if(follow||nearBottom) pre.scrollTop=pre.scrollHeight;
+  }
+  // пока идёт — опрашиваем часто; после завершения — ещё пара тиков и стоп
+  if(d.running){ _idxStop=0; }
+  else { _idxStop++; if(_idxStop>2){ clearInterval(_idxT); _idxT=null; } }
+}
+function pollIndexLog(){
+  if(_idxT) clearInterval(_idxT);
+  _idxStop=0; idxLogTick();
+  _idxT=setInterval(idxLogTick,1500);
+  // страховка: не крутить вечно
+  setTimeout(()=>{ if(_idxT){ clearInterval(_idxT); _idxT=null; } }, 3*3600*1000);
+}
 async function reindex(reset){ if(reset&&!confirm('Пересоздать индекс с нуля?'))return;
-  opsMsg('запуск индексации…'); const r=await adminPost('/api/admin/reindex',{reset}); opsMsg(r.msg||'ок',r.ok!==false); pollJob(); }
+  opsMsg('запуск индексации…'); const r=await adminPost('/api/admin/reindex',{reset}); opsMsg(r.msg||'ок',r.ok!==false); pollJob(); pollIndexLog(); }
 async function stopReindex(){ if(!confirm('Остановить текущую индексацию? Уже проиндексированные файлы останутся; можно продолжить позже.'))return;
   opsMsg('остановка индексации…'); const r=await adminPost('/api/admin/reindex/stop'); opsMsg(r.msg||'ок',r.ok!==false); pollJob(); }
 async function applyLLM(){ opsMsg('перезапуск vLLM…'); const r=await adminPost('/api/admin/apply-llm'); opsMsg(r.msg||'готово',r.ok!==false); }

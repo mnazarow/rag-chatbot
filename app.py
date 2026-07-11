@@ -2294,6 +2294,13 @@ def admin_reindex(payload: dict = Body(default={}),
     return admin_ops.reindex(bool(payload.get("reset")))
 
 
+@app.get("/api/admin/index-log")
+def admin_index_log(x_admin_token: str | None = Header(None)):
+    """Живой лог индексации: статус, прогресс и хвост лог-файла (лёгкий, для частого опроса)."""
+    _check_admin(x_admin_token)
+    return admin_ops.index_log()
+
+
 @app.post("/api/admin/reindex/stop")
 def admin_reindex_stop(x_admin_token: str | None = Header(None)):
     """Остановить текущую индексацию (прибить процесс ingest и его воркеры)."""

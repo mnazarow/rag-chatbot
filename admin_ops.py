@@ -2982,6 +2982,30 @@ def reindex(reset: bool = False) -> dict:
     return r
 
 
+def index_log(tail: int = 20000) -> dict:
+    """Лёгкая сводка задачи индексации для «живого» лога: статус, прогресс и хвост
+    лог-файла. Отдельный лёгкий эндпоинт — можно опрашивать чаще, чем полный status()."""
+    jb = _job
+    lf = jb.get("logfile")
+    out = {
+        "running": bool(jb.get("running")),
+        "ok": jb.get("ok"),
+        "started": jb.get("started"),
+        "finished": jb.get("finished"),
+        "summary": jb.get("summary", ""),
+        "log": _tail(lf, tail) if lf else (jb.get("log") or ""),
+    }
+    # графический прогресс из ingest_progress.json (пока задача идёт)
+    if out["running"]:
+        try:
+            pf = ROOT / "ingest_progress.json"
+            if pf.exists():
+                out["progress"] = _json.loads(pf.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return out
+
+
 def _stop_job(job: dict) -> dict:
     """Остановить фоновую задачу: прибить процесс и всю его группу."""
     import os as _os
