@@ -362,6 +362,24 @@ KAG_MUTUAL_INDEX = _bool("KAG_MUTUAL_INDEX", True)  # взаимное инде�
 KAG_REQUIRE_CITATIONS = _bool("KAG_REQUIRE_CITATIONS", True)  # требовать ссылки на источники
 KAG_TEMPERATURE = _float("KAG_TEMPERATURE", 0.1)    # температура финальной генерации
 
+# --- Надёжность: алерты о сбоях ---
+# Уведомления в Телеграм и/или на e-mail при падении критичных компонентов
+# (векторная база, LLM и т.п.) и при падении фоновых задач (индексация, парсинг).
+# Есть троттлинг: повторный алерт по той же проблеме — не чаще ALERT_COOLDOWN секунд;
+# при восстановлении приходит отдельное сообщение «снова доступен».
+ALERTS_ENABLED = _bool("ALERTS_ENABLED", False)
+ALERT_TG_CHAT = os.getenv("ALERT_TG_CHAT", "")        # chat_id для алертов (пусто = не слать в ТГ)
+ALERT_EMAIL = os.getenv("ALERT_EMAIL", "")            # получатель(и) e-mail через запятую
+ALERT_COOLDOWN = _int("ALERT_COOLDOWN", 900)          # пауза между повторами по одной проблеме, с
+ALERT_ON_JOB_FAIL = _bool("ALERT_ON_JOB_FAIL", True)  # слать при падении фоновых задач
+# SMTP для e-mail-алертов (если ALERT_EMAIL задан)
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = _int("SMTP_PORT", 587)
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "")                # адрес отправителя (пусто = SMTP_USER)
+SMTP_TLS = os.getenv("SMTP_TLS", "starttls")          # starttls | ssl | none
+
 # Доступ
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = _int("API_PORT", 8000)

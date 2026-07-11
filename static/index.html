@@ -183,6 +183,7 @@
     <button data-t="server">🖥 Загрузка сервера</button>
     <button data-t="components">🔬 Аналитика+</button>
     <button data-t="quality">🎯 Качество</button>
+    <button data-t="alerts">🔔 Алерты</button>
     <button data-t="bench">⚡ Бенчмарк</button>
     <button data-t="calib">🎛 Автокалибровка</button>
     <button data-t="admin">⚙️ Администратор</button>
@@ -1781,6 +1782,32 @@
     <div id="quality_body"><div class="note">загрузка…</div></div>
   </section>
 
+  <!-- ===== НАДЁЖНОСТЬ: АЛЕРТЫ ===== -->
+  <section id="alerts">
+    <h1>🔔 Надёжность и алерты</h1>
+    <div class="sub">Уведомления о сбоях компонентов и падении фоновых задач — в Телеграм и на e-mail.
+      <button class="act ghost" onclick="loadAlerts()">Обновить</button></div>
+    <div class="box">
+      <h3>Как это работает</h3>
+      <div class="note" style="line-height:1.6">
+        Фоновый монитор раз в ~5 минут проверяет ключевые компоненты (векторная база, LLM-движок,
+        журнал). При падении приходит алерт <b>🔴 …недоступен</b>, при восстановлении — <b>🟢 …восстановлен</b>.
+        Повторные уведомления по одной проблеме дросселируются (см. «Пауза между повторами»).
+        Отдельно шлётся алерт при <b>падении фоновой задачи</b> (индексация, парсинг и т.п.).
+        <br><br>
+        Настройки — в разделе <b>⚙️ Администратор → группа «Надёжность и алерты»</b>:
+        включение, Telegram chat_id (использует токен основного бота), e-mail + SMTP, пауза, cooldown.
+      </div>
+    </div>
+    <div class="box">
+      <h3>Проверка каналов</h3>
+      <div class="note">Отправит тестовое сообщение по всем настроенным каналам.</div>
+      <button class="act" style="margin-top:8px" onclick="alertTest()">Отправить тест</button>
+      <div id="alert_test_res" class="note" style="margin-top:8px"></div>
+    </div>
+    <div id="alerts_body"><div class="note">загрузка…</div></div>
+  </section>
+
   <!-- ===== ВНЕШНИЕ API (ХУКИ) ===== -->
   <section id="apihooks">
     <h1>Внешние API (хуки)</h1>
@@ -2077,7 +2104,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t!=='obsidian') obsStop();                    // граф — гасим анимацию вне вкладки
   if(b.dataset.t!=='telegram') tgWorkflowStop();             // workflow-граф — гасим вне вкладки
   document.body.classList.toggle('obs-full', b.dataset.t==='obsidian');  // граф во всю ширину
-  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,voip:loadVoip,server:loadServer,components:loadComponents,quality:loadQuality,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,apihooks:loadApiHooks,websites:loadWebsites,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
+  ({dash:loadStats,schema:loadSchema,logs:loadLogs,analytics:loadAnalytics,system:loadSystem,telegram:loadTelegram,voip:loadVoip,server:loadServer,components:loadComponents,quality:loadQuality,alerts:loadAlerts,bench:loadBench,calib:loadCalib,admin:loadConfig,org:loadOrg,syn:loadSyn,apihooks:loadApiHooks,websites:loadWebsites,obsidian:loadObsidian}[b.dataset.t]||(()=>{}))();
   if(b.dataset.t==='dash') startActivityPoll();
 });
 
@@ -6002,8 +6029,9 @@ async function loadOps(){
   const djob=dj.running?('идёт… '+(dj.label||'')):(dj.ok===true?('ок'+(dj.label?' '+dj.label:'')):(dj.ok===false?'ошибка':'—'));
   const wj=s.web_job||{};
   const wjob=wj.running?'идёт…':(wj.ok===true?'успешно':(wj.ok===false?'ошибка':'—'));
+  const vbk=(s.vector_backend==='milvus')?'Milvus':'Qdrant';
   $('#opsstatus').innerHTML=[
-    ['Qdrant',dot(s.qdrant)],['LLM ('+s.backend+')',dot(s.llm)],
+    [vbk,dot(s.qdrant)],['LLM ('+s.backend+')',dot(s.llm)],
     ['Чанков в базе',s.chunks],['Индексация',ijob],
     ['Граф',gjob],['Граф знаний',graph],
     ['Дообучение',ftjob],['Дообуч. модель',adapter],
@@ -6298,6 +6326,42 @@ async function loadQuality(){
       ts.map(s=>`<span class="tag" title="цитирований: ${nz(s.count)}">${esc((s.source||'').split('/').pop())} · ${nz(s.count)}</span>`).join('')+`</div></div>`;
   }
   el.innerHTML=html;
+}
+async function loadAlerts(){
+  const el=$('#alerts_body'); if(!el) return;
+  let d; try{ d=await adminGet('/api/admin/alerts'); }catch(e){ el.innerHTML='<div class="note">ошибка загрузки</div>'; return; }
+  if(!d){ el.innerHTML='<div class="note">нет данных</div>'; return; }
+  const badge=(on,txt)=>`<span class="tag" style="background:${on?'#4ade80':'#555'};color:#111">${txt}: ${on?'вкл':'выкл'}</span>`;
+  let html=`<div class="box"><h3>Статус</h3><div style="display:flex;gap:6px;flex-wrap:wrap">
+    ${badge(d.enabled,'Алерты')} ${badge(d.telegram,'Telegram')} ${badge(d.email,'E-mail')}
+    <span class="tag">Пауза: ${nz(d.cooldown)} с</span></div>`;
+  if(!d.enabled) html+='<div class="note" style="margin-top:8px">Включите в разделе ⚙️ Администратор → «Надёжность и алерты».</div>';
+  html+='</div>';
+  const ad=d.active_down||[];
+  html+=`<div class="box"><h3>${ad.length?'🔴':'🟢'} Активные падения (${ad.length})</h3>`;
+  html+= ad.length ? ad.map(a=>`<div style="padding:3px 0;border-bottom:1px solid var(--line)">
+      <b style="color:#f87171">${esc(a.name)}</b> <span class="note">${a.since?('с '+fmtTime(a.since)):''}</span></div>`).join('')
+    : '<div class="note">все проверяемые компоненты в норме</div>';
+  html+='</div>';
+  const rec=d.recent||[];
+  html+=`<div class="box"><h3>Журнал алертов (${rec.length})</h3>`;
+  html+= rec.length ? rec.map(r=>{
+    const ch=Object.entries(r.channels||{}).map(([k,v])=>`${k}:${v.ok?'✅':'❌'+(v.error?(' '+esc(v.error)):'')}`).join(' · ');
+    return `<div style="padding:4px 0;border-bottom:1px solid var(--line)">
+      <div><b>${esc(r.subject||r.key||'')}</b> <span class="note">${r.ts?fmtTime(r.ts):''}</span></div>
+      ${ch?`<div class="note">${ch}</div>`:''}</div>`;
+  }).join('') : '<div class="note">пока пусто</div>';
+  html+='</div>';
+  el.innerHTML=html;
+}
+async function alertTest(){
+  const r=$('#alert_test_res'); if(r) r.textContent='отправка…';
+  let d; try{ d=await adminPost('/api/admin/alerts/test'); }catch(e){ if(r) r.textContent='ошибка запроса'; return; }
+  if(!d){ if(r) r.textContent='нет ответа'; return; }
+  if(d.msg){ if(r) r.textContent=d.msg; return; }
+  const ch=Object.entries(d.channels||{}).map(([k,v])=>`${k}: ${v.ok?'✅ отправлено':'❌ '+esc(v.error||'ошибка')}`).join(' · ');
+  if(r) r.innerHTML=(d.ok?'✅ ':'❌ ')+(ch||'нет настроенных каналов');
+  loadAlerts();
 }
 async function loadObsidian(force){
   const cv=$('#obs_canvas'); if(!cv) return;

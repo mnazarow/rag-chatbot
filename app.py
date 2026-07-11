@@ -736,6 +736,22 @@ def api_quality(x_admin_token: str | None = Header(None)):
     return db.quality_report()
 
 
+@app.get("/api/admin/alerts")
+def api_alerts(x_admin_token: str | None = Header(None)):
+    """Сводка по алертам: включено ли, настроенные каналы, активные падения, лог."""
+    _check_admin(x_admin_token)
+    import alerts
+    return alerts.status()
+
+
+@app.post("/api/admin/alerts/test")
+def api_alerts_test(x_admin_token: str | None = Header(None)):
+    """Отправить тестовый алерт по всем настроенным каналам."""
+    _check_admin(x_admin_token)
+    import alerts
+    return alerts.send_test()
+
+
 # ----- Внешний API для интеграций (по API-ключу) -----
 
 @app.post("/api/v1/ask")

@@ -149,6 +149,26 @@ def _reindex_tick():
         print(f"[reindex] tick: {e}")
 
 
+def _alerts_tick():
+    """Проверка здоровья компонентов и алерты о переходах (раз в ~5 минут)."""
+    try:
+        import settings
+        if not settings.get("ALERTS_ENABLED"):
+            return
+        import db
+        iv = 300  # проверяем не чаще раза в 5 минут
+        last = float(db.kv_get("alerts_last") or 0)
+        if time.time() - last < iv:
+            return
+        import alerts
+        r = alerts.health_tick()
+        db.kv_set("alerts_last", str(time.time()))
+        if r.get("down"):
+            print(f"[alerts] недоступны: {', '.join(r['down'])}")
+    except Exception as e:
+        print(f"[alerts] tick: {e}")
+
+
 def _loop(interval: int):
     import db
     last_prune = 0.0
@@ -165,6 +185,7 @@ def _loop(interval: int):
         _web_tick()                              # ежедневный переспарсинг сайтов (00:05)
         _web_sched_tick()                        # пер-сайтовые расписания автопарсинга
         _reindex_tick()                          # авто-переиндексация папки по расписанию
+        _alerts_tick()                           # проверка здоровья + алерты о сбоях
         _stop.wait(interval)
 
 

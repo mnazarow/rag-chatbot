@@ -298,6 +298,13 @@ def _bg(job: dict, label: str, cmds: list, logfile: str, timeout: int = 24 * 360
                                    _read_full_log(logfile))
             except Exception as e:
                 print(f"[bg] не удалось сохранить лог в БД: {e}")
+        # алерт о падении задачи (кроме остановки пользователем)
+        if not ok and not job.get("stopped"):
+            try:
+                import alerts
+                alerts.job_failed(label, job.get("log") or _tail(logfile))
+            except Exception as e:
+                print(f"[bg] алерт о падении не отправлен: {e}")
 
     threading.Thread(target=run, daemon=True).start()
     return {"ok": True, "msg": f"{label}: запущено"}
@@ -319,15 +326,22 @@ _SUPPORTED = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xlsm", ".xls", ".csv"
 
 def status() -> dict:
     out: dict = {}
-    # Qdrant + число чанков через REST
+    # Векторное хранилище + число чанков через активный бэкенд (Qdrant/Milvus)
     try:
-        coll = settings.get("QDRANT_COLLECTION")
-        r = httpx.get(f"{settings.get('QDRANT_URL')}/collections/{coll}", timeout=3)
-        out["qdrant"] = r.status_code == 200
-        out["chunks"] = (r.json().get("result", {}) or {}).get("points_count", 0) \
-            if r.status_code == 200 else 0
+        import vectorstore
+        vb = vectorstore.backend()
+        out["vector_backend"] = vb
+        info = vectorstore.collection_info()
+        ok = bool(info.get("exists")) or vectorstore.ping()
+        # ключ "qdrant" сохранён для обратной совместимости UI: под Milvus это статус
+        # активного хранилища (иначе панель ложно показывала бы «недоступен»)
+        out["qdrant"] = ok
+        out["vector_ok"] = ok
+        out["chunks"] = int(info.get("points_count", 0) or 0)
     except Exception:
+        out["vector_backend"] = settings.get("VECTOR_BACKEND") or "qdrant"
         out["qdrant"] = False
+        out["vector_ok"] = False
         out["chunks"] = 0
     # LLM
     try:
@@ -451,10 +465,14 @@ def _bench_search():
 
 
 def _bench_qdrant():
-    coll = settings.get("QDRANT_COLLECTION")
+    import vectorstore
+    vb = vectorstore.backend()
     t = time.time()
-    httpx.get(f"{settings.get('QDRANT_URL')}/collections/{coll}", timeout=10)
-    return "Qdrant (REST)", (time.time() - t) * 1000, "запрос метаданных коллекции"
+    info = vectorstore.collection_info()
+    dt = (time.time() - t) * 1000
+    label = "Milvus (pymilvus)" if vb == "milvus" else "Qdrant (REST)"
+    n = int(info.get("points_count", 0) or 0)
+    return label, dt, f"запрос метаданных коллекции · чанков: {n}"
 
 
 def _bench_llm():
@@ -531,12 +549,15 @@ def _t_settings():
 
 
 def _t_qdrant():
-    coll = settings.get("QDRANT_COLLECTION")
-    r = httpx.get(f"{settings.get('QDRANT_URL')}/collections/{coll}", timeout=6)
-    if r.status_code != 200:
-        return False, f"HTTP {r.status_code}"
-    n = (r.json().get("result", {}) or {}).get("points_count", 0)
-    return True, f"коллекция «{coll}», чанков: {n}"
+    import vectorstore
+    vb = vectorstore.backend()
+    info = vectorstore.collection_info()
+    if not (info.get("exists") or vectorstore.ping()):
+        return False, f"{vb}: недоступно ({info.get('status')})"
+    n = int(info.get("points_count", 0) or 0)
+    coll = settings.get("MILVUS_COLLECTION" if vb == "milvus"
+                        else "QDRANT_COLLECTION")
+    return True, f"{vb}: коллекция «{coll}», чанков: {n}"
 
 
 def _t_embedder():
@@ -597,7 +618,7 @@ def _t_finetune():
 # критичные компоненты (для общего вердикта); граф и дообучение — опциональны
 _TESTS = [
     ("Настройки", _t_settings, True),
-    ("Qdrant", _t_qdrant, True),
+    ("Векторная база", _t_qdrant, True),
     ("Эмбеддер (bge-m3)", _t_embedder, True),
     ("Реранкер", _t_reranker, True),
     ("LLM (генерация)", _t_llm, True),
@@ -3187,48 +3208,74 @@ def system_info() -> dict:
 
 
 def _system_info_raw() -> dict:
-    """Полная сводка по компонентам: Qdrant, граф (LightRAG), дообучение, hybrid+."""
+    """Полная сводка по компонентам: векторная база, граф (LightRAG), дообучение, hybrid+."""
+    import vectorstore
+    _vbk = vectorstore.backend()
     coll = settings.get("QDRANT_COLLECTION")
     qbase = settings.get("QDRANT_URL")
 
-    # ---- Qdrant ----
-    # «online» = сервер Qdrant доступен (проверяем по списку коллекций), отдельно —
-    # существует ли наша коллекция. На свежей установке коллекции ещё нет (не было
-    # индексации) — это НЕ значит, что Qdrant недоступен.
-    qd: dict = {"online": False, "collection_exists": False}
-    try:
-        ping = httpx.get(f"{qbase}/collections", timeout=4)
-        if ping.status_code == 200:
-            qd["online"] = True
-            qd["collection"] = coll
-            r = httpx.get(f"{qbase}/collections/{coll}", timeout=4)
-            if r.status_code == 200:
-                res = r.json().get("result", {}) or {}
-                params = (res.get("config", {}) or {}).get("params", {}) or {}
-                vec = params.get("vectors", {}) or {}
+    # ---- Векторная база (Qdrant/Milvus) ----
+    # «online» = сервер доступен, отдельно — существует ли наша коллекция. На свежей
+    # установке коллекции ещё нет (не было индексации) — это НЕ значит, что база
+    # недоступна.
+    qd: dict = {"online": False, "collection_exists": False, "backend": _vbk}
+    if _vbk == "milvus":
+        # Milvus: детальные фасеты недоступны через REST — показываем базовую сводку
+        try:
+            qd["online"] = vectorstore.ping()
+            info = vectorstore.collection_info()
+            mcoll = settings.get("MILVUS_COLLECTION")
+            qd["collection"] = mcoll
+            if info.get("exists"):
                 qd.update({
                     "collection_exists": True,
-                    "points": res.get("points_count", 0),
-                    "segments": res.get("segments_count", 0),
-                    "status": res.get("status"),
-                    "vector_size": vec.get("size"),
-                    "distance": vec.get("distance"),
-                    "payload_fields": sorted((res.get("payload_schema") or {}).keys()),
-                    "by_category": {
-                        cat: _qcount(qbase, coll,
-                                     {"must": [{"key": "doc_category",
-                                                "match": {"value": cat}}]})
-                        for cat in ("price", "presentation", "training", "document")
-                    },
-                    "with_product": _qcount(qbase, coll,
-                                            {"must_not": [{"is_empty": {"key": "product"}}]}),
+                    "points": int(info.get("points_count", 0) or 0),
+                    "status": info.get("status"),
+                    "vector_size": info.get("dim"),
+                    "distance": "cosine",
                 })
-            else:
+            elif qd["online"]:
                 qd["note"] = "коллекция ещё не создана — выполните «Переиндексировать»"
-        else:
-            qd["error"] = f"Qdrant вернул HTTP {ping.status_code}"
-    except Exception as e:
-        qd = {"online": False, "collection_exists": False, "error": str(e)}
+            else:
+                qd["error"] = "Milvus недоступен"
+        except Exception as e:
+            qd = {"online": False, "collection_exists": False,
+                  "backend": "milvus", "error": str(e)}
+    else:
+        try:
+            ping = httpx.get(f"{qbase}/collections", timeout=4)
+            if ping.status_code == 200:
+                qd["online"] = True
+                qd["collection"] = coll
+                r = httpx.get(f"{qbase}/collections/{coll}", timeout=4)
+                if r.status_code == 200:
+                    res = r.json().get("result", {}) or {}
+                    params = (res.get("config", {}) or {}).get("params", {}) or {}
+                    vec = params.get("vectors", {}) or {}
+                    qd.update({
+                        "collection_exists": True,
+                        "points": res.get("points_count", 0),
+                        "segments": res.get("segments_count", 0),
+                        "status": res.get("status"),
+                        "vector_size": vec.get("size"),
+                        "distance": vec.get("distance"),
+                        "payload_fields": sorted((res.get("payload_schema") or {}).keys()),
+                        "by_category": {
+                            cat: _qcount(qbase, coll,
+                                         {"must": [{"key": "doc_category",
+                                                    "match": {"value": cat}}]})
+                            for cat in ("price", "presentation", "training", "document")
+                        },
+                        "with_product": _qcount(qbase, coll,
+                                                {"must_not": [{"is_empty": {"key": "product"}}]}),
+                    })
+                else:
+                    qd["note"] = "коллекция ещё не создана — выполните «Переиндексировать»"
+            else:
+                qd["error"] = f"Qdrant вернул HTTP {ping.status_code}"
+        except Exception as e:
+            qd = {"online": False, "collection_exists": False,
+                  "backend": "qdrant", "error": str(e)}
 
     # ---- LightRAG / граф ----
     gdir = ROOT / "graph_storage"

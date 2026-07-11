@@ -320,6 +320,16 @@ def _answer(question: str, trace: list | None = None):
                 settings.active_model() or "",
                 str(settings.get("TEMPERATURE"))]).encode("utf-8")).hexdigest()
             c = cache.get_json(ckey, ns="index")
+            # семантический кэш: на похожий по смыслу вопрос — тот же ответ
+            if not c and settings.get("ANSWER_CACHE_SEMANTIC"):
+                try:
+                    import retriever
+                    q_emb = retriever._embed_query(question)
+                    hit = cache.answer_sem_find(q_emb, settings.get("ANSWER_CACHE_SIM"))
+                    if hit:
+                        c = cache.get_json(hit["key"], ns="index")
+                except Exception:
+                    pass
             if c:
                 trace.append({"key": "answer_cache", "ms": 0, "info": {"hit": True}})
                 hits = [{"score": c.get("top_score", 0.0)}] if c.get("answered") else []
@@ -405,6 +415,18 @@ def _answer(question: str, trace: list | None = None):
                            "backend": settings.get("LLM_BACKEND"),
                            "temperature": settings.get("TEMPERATURE"),
                            "chars": len(text or "")}})
+    # проверка обоснованности ответа (антигаллюцинации) — как в веб-чате
+    if settings.get("ANSWER_VERIFY") in ("warn", "strict"):
+        try:
+            import verify
+            vt = time.time()
+            vr = verify.apply(question, text, context)
+            text = vr.get("answer", text)
+            trace.append({"key": "verify", "ms": int((time.time() - vt) * 1000),
+                          "info": {"grounded": vr.get("grounded"),
+                                   "changed": vr.get("changed")}})
+        except Exception as e:
+            print(f"[tg] проверка обоснованности не удалась: {e}")
     sources = [{"source": h["source"], "page": h.get("page"),
                 "score": round(h.get("score", 0), 3)} for h in hits]
     if ckey:
@@ -413,6 +435,10 @@ def _answer(question: str, trace: list | None = None):
             cache.set_json(ckey, 86400, {"text": text, "sources": sources,
                                          "top_score": hits[0]["score"],
                                          "answered": True}, ns="index")
+            # семантический кэш: связываем эмбеддинг вопроса с ключом ответа
+            if settings.get("ANSWER_CACHE_SEMANTIC"):
+                import retriever
+                cache.answer_sem_add(ckey, retriever._embed_query(question))
         except Exception:
             pass
     return text, sources, hits
@@ -430,6 +456,7 @@ _STAGE_META = {
     "fb_deep": ("🕵️", "Глубокий поиск (по каталогу)"),
     "attach": ("📎", "Разбор документа"), "context": ("📋", "Сборка контекста"),
     "generate": ("🧠", "Генерация (LLM)"), "engine": ("🧩", "Движок"),
+    "verify": ("🛡", "Проверка обоснованности"),
     "kag_decompose": ("🪓", "KAG: декомпозиция вопроса"),
     "kag_retrieve": ("🔗", "KAG: мультихоп-поиск"),
     "kag_graph": ("🕸", "KAG: знания графа"), "kag_generate": ("🧠", "KAG: генерация"),

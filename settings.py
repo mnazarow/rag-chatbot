@@ -1002,6 +1002,47 @@ FIELDS: list[dict] = [
              "ускоряет ежедневный автопарсинг и повторный парсинг больших сайтов. Первый парсинг "
              "запоминает «отпечатки»; следующий использует их."},
 
+    # --- Надёжность: алерты ---
+    {"key": "ALERTS_ENABLED", "label": "Алерты о сбоях", "group": "Надёжность и алерты",
+     "type": "bool", "scope": "live", "default": config.ALERTS_ENABLED,
+     "desc": "Слать уведомления при падении критичных компонентов (векторная база, LLM и др.) "
+             "и при падении фоновых задач. Проверка идёт в фоновом мониторе; повторные алерты по "
+             "той же проблеме дросселируются, при восстановлении приходит «снова доступен»."},
+    {"key": "ALERT_TG_CHAT", "label": "Telegram chat_id для алертов",
+     "group": "Надёжность и алерты", "type": "text", "scope": "live", "default": config.ALERT_TG_CHAT,
+     "desc": "Куда слать алерты в Телеграме (используется токен бота из раздела «Телеграм-бот»). "
+             "Узнать свой chat_id можно, написав боту и посмотрев логи, или через @userinfobot. "
+             "Пусто = не слать в Телеграм."},
+    {"key": "ALERT_EMAIL", "label": "E-mail для алертов", "group": "Надёжность и алерты",
+     "type": "text", "scope": "live", "default": config.ALERT_EMAIL,
+     "desc": "Получатель(и) e-mail-алертов через запятую. Требует настройки SMTP ниже. Пусто = не слать почту."},
+    {"key": "ALERT_COOLDOWN", "label": "Пауза между повторами, с", "group": "Надёжность и алерты",
+     "type": "int", "scope": "live", "default": config.ALERT_COOLDOWN,
+     "desc": "Минимальный интервал между повторными алертами об одной и той же проблеме. "
+             "Защита от «шторма» уведомлений при длительном сбое."},
+    {"key": "ALERT_ON_JOB_FAIL", "label": "Алерт при падении фоновых задач",
+     "group": "Надёжность и алерты", "type": "bool", "scope": "live", "default": config.ALERT_ON_JOB_FAIL,
+     "desc": "Слать уведомление, если фоновая задача (индексация, парсинг, дообучение и т.п.) "
+             "завершилась с ошибкой."},
+    {"key": "SMTP_HOST", "label": "SMTP-сервер", "group": "Надёжность и алерты",
+     "type": "text", "scope": "live", "default": config.SMTP_HOST,
+     "desc": "Хост почтового сервера для e-mail-алертов (напр. smtp.yandex.ru). Пусто = почта выключена."},
+    {"key": "SMTP_PORT", "label": "SMTP-порт", "group": "Надёжность и алерты",
+     "type": "int", "scope": "live", "default": config.SMTP_PORT,
+     "desc": "Обычно 587 (STARTTLS) или 465 (SSL)."},
+    {"key": "SMTP_USER", "label": "SMTP-логин", "group": "Надёжность и алерты",
+     "type": "text", "scope": "live", "default": config.SMTP_USER},
+    {"key": "SMTP_PASSWORD", "label": "SMTP-пароль", "group": "Надёжность и алерты",
+     "type": "secret", "scope": "live", "default": config.SMTP_PASSWORD,
+     "desc": "Пароль или пароль приложения. Хранится локально, в интерфейсе маскируется."},
+    {"key": "SMTP_FROM", "label": "Адрес отправителя", "group": "Надёжность и алерты",
+     "type": "text", "scope": "live", "default": config.SMTP_FROM,
+     "desc": "От кого приходят письма. Пусто = использовать SMTP-логин."},
+    {"key": "SMTP_TLS", "label": "Шифрование SMTP", "group": "Надёжность и алерты",
+     "type": "select", "scope": "live", "options": ["starttls", "ssl", "none"],
+     "default": config.SMTP_TLS,
+     "desc": "starttls (порт 587) | ssl (порт 465) | none (без шифрования, не рекомендуется)."},
+
     # --- Доступ ---
     {"key": "ADMIN_TOKEN", "label": "Токен администратора", "group": "Доступ",
      "type": "secret", "scope": "live", "default": config.ADMIN_TOKEN},
