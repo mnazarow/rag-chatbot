@@ -763,8 +763,19 @@ def _handle(msg: dict) -> None:
             ans, sources, hits = _answer(text, trace)
         answered = bool(hits)
     except Exception as e:
-        print(f"  ! telegram answer error: {e}")
-        send(chat_id, "Произошла ошибка при обработке запроса. Попробуйте позже.")
+        import traceback
+        tb = traceback.format_exc()
+        print(f"  ! telegram answer error: {e}\n{tb}")
+        # пользователям с правом обучения показываем подробности ошибки (для диагностики),
+        # остальным — обычное короткое сообщение
+        if can_train:
+            detail = ("⚠️ Ошибка при обработке запроса (подробности видны вам как "
+                      "пользователю с правом обучения):\n\n"
+                      f"{type(e).__name__}: {e}\n\n"
+                      f"{tb[-3200:]}")
+            send(chat_id, detail[:4000])
+        else:
+            send(chat_id, "Произошла ошибка при обработке запроса. Попробуйте позже.")
         db.tg_log_request(chat_id, username, text, "", 0, 0.0,
                           int((time.time() - t0) * 1000), False, [])
         if _aid is not None:
