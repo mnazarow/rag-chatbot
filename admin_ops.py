@@ -1668,6 +1668,12 @@ def _web_download(url: str, dest_dir, log, client=None,
         return None, (str(e)[:120] or "ошибка сети"), None, False
 
 
+# Предел размера HTML для тяжёлого разбора (trafilatura/BeautifulSoup). Отдельные
+# «раздутые» страницы (мегабайты DOM) заставляют парсер работать очень долго и
+# создают ощущение зависшего обхода — усекаем перед разбором.
+_WEB_MAX_HTML = 4_000_000
+
+
 def _web_extract(html: str) -> str:
     """Извлечь основной текст страницы. trafilatura (если установлена) даёт чистый
     контент с таблицами; иначе — BeautifulSoup с предпочтением <main>/<article>."""
@@ -1865,6 +1871,7 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
     последовательно и только где реально нужен."""
     from urllib.parse import urlparse
     from concurrent.futures import ThreadPoolExecutor
+    import faulthandler   # сторож: при зависании страницы дампит стек в stderr (docker logs)
     depth = ctx["depth"]; max_pages = ctx["max_pages"]; same_domain = ctx["same_domain"]
     excludes = ctx.get("excludes"); client = ctx.get("client")
     headers = ctx.get("headers") or {}; cookies = ctx.get("cookies") or {}
@@ -1942,13 +1949,18 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
             if renderer is not None and use_render:
                 need = (html is None) or (not js_auto) or (_visible_text_len(html) < _WEB_JS_MIN_WORDS)
                 if need:
-                    rhtml = renderer.render(u)
-                    if base_wait != "networkidle" and _visible_text_len(rhtml or "") < _WEB_JS_MIN_WORDS:
-                        rhtml2 = renderer.render(u, patient=True)
-                        if _visible_text_len(rhtml2 or "") > _visible_text_len(rhtml or ""):
-                            rhtml = rhtml2
-                    if rhtml:
-                        html = rhtml
+                    log(f"  · рендер (браузер): {u}")
+                    faulthandler.dump_traceback_later(150)   # если рендер завис >150с — стек в stderr
+                    try:
+                        rhtml = renderer.render(u)
+                        if base_wait != "networkidle" and _visible_text_len(rhtml or "") < _WEB_JS_MIN_WORDS:
+                            rhtml2 = renderer.render(u, patient=True)
+                            if _visible_text_len(rhtml2 or "") > _visible_text_len(rhtml or ""):
+                                rhtml = rhtml2
+                        if rhtml:
+                            html = rhtml
+                    finally:
+                        faulthandler.cancel_dump_traceback_later()
             fetched.append((u, dd, html, res))
 
         next_level = []
@@ -1959,8 +1971,16 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
                 errors.append(f"страница не загружена: {url}"
                               + (f" (HTTP {res.get('status')})" if res.get("status") else ""))
                 continue
-            text = _web_extract(html)
-            title = _web_title(html, url)
+            if len(html) > _WEB_MAX_HTML:
+                log(f"  ⚠ большой HTML {len(html)//1024} КБ — усечён для разбора: {url}")
+                html = html[:_WEB_MAX_HTML]
+            log(f"  · разбор: {url}")
+            faulthandler.dump_traceback_later(120)   # если разбор завис >120с — стек в stderr
+            try:
+                text = _web_extract(html)
+                title = _web_title(html, url)
+            finally:
+                faulthandler.cancel_dump_traceback_later()
             if text:
                 pages.append((url, title, text))
                 log(f"  стр. {len(pages)}/{max_pages}: {url}  ({len(text)} симв.)")
