@@ -1268,7 +1268,6 @@ class _Renderer:
         self._pw = sync_playwright().start()
         self._b = self._pw.chromium.launch(
             args=["--no-sandbox", "--disable-dev-shm-usage"])
-        self._ctx = self._b.new_context(user_agent=_WEB_UA)
         self._wait = (settings.get("WEB_JS_WAIT") or "domcontentloaded").strip()
         if self._wait not in ("domcontentloaded", "load", "networkidle"):
             self._wait = "domcontentloaded"
@@ -1280,12 +1279,47 @@ class _Renderer:
             self._settle = max(0, int(settings.get("WEB_JS_WAIT_MS") or 0))
         except Exception:
             self._settle = 0
+        self._block = bool(settings.get("WEB_JS_BLOCK_ASSETS"))
+        # Периодически пересоздаём контекст браузера: на длинных обходах (тысячи
+        # страниц) Chromium накапливает память даже при закрытых вкладках — это ведёт
+        # к замедлению и «зависанию». 0 — не пересоздавать.
+        try:
+            self._recycle_every = max(0, int(settings.get("WEB_JS_RECYCLE") or 150))
+        except Exception:
+            self._recycle_every = 150
+        self._auth = (None, None, None)   # (headers, cookies, base_url) — восстановить после пересоздания
         self._warmed = set()
-        if settings.get("WEB_JS_BLOCK_ASSETS"):
+        self._render_count = 0
+        self._ctx = self._make_context()
+
+    def _make_context(self):
+        ctx = self._b.new_context(user_agent=_WEB_UA)
+        # ОБЩИЙ таймаут на ВСЕ операции страницы (goto/content/close/evaluate). Без него
+        # «застрявшая» страница (бесконечный JS, битый DOM) вешает весь обход навсегда —
+        # особенно pg.content(), у которого своего таймаута нет.
+        try:
+            ctx.set_default_timeout(self._to)
+            ctx.set_default_navigation_timeout(self._to)
+        except Exception:
+            pass
+        if self._block:
             try:
-                self._ctx.route("**/*", self._route)
+                ctx.route("**/*", self._route)
             except Exception:
                 pass
+        h, c, b = self._auth
+        if h or c:
+            self._apply_auth(ctx, h, c, b)
+        return ctx
+
+    def _recycle(self):
+        """Пересоздать контекст, освободив накопленную Chromium память (на длинных обходах)."""
+        try:
+            self._ctx.close()
+        except Exception:
+            pass
+        self._warmed = set()
+        self._ctx = self._make_context()
 
     def fetch_bytes(self, url):
         """Скачать файл через браузерный контекст (несёт cookies, в т.ч. cf_clearance
@@ -1324,14 +1358,14 @@ class _Renderer:
             except Exception:
                 pass
 
-    def set_auth(self, headers=None, cookies=None, base_url=None):
-        """Применить авторизацию сайта к контексту браузера (заголовки + cookies)."""
+    @staticmethod
+    def _apply_auth(ctx, headers=None, cookies=None, base_url=None):
         try:
-            self._ctx.set_extra_http_headers(headers or {})
+            ctx.set_extra_http_headers(headers or {})
         except Exception:
             pass
         try:
-            self._ctx.clear_cookies()
+            ctx.clear_cookies()
         except Exception:
             pass
         if cookies and base_url:
@@ -1340,11 +1374,18 @@ class _Renderer:
             arr = [{"name": k, "value": v, "domain": dom, "path": "/"}
                    for k, v in cookies.items()]
             try:
-                self._ctx.add_cookies(arr)
+                ctx.add_cookies(arr)
             except Exception:
                 pass
 
+    def set_auth(self, headers=None, cookies=None, base_url=None):
+        """Применить авторизацию сайта к контексту браузера (заголовки + cookies).
+        Сохраняем её, чтобы восстановить после периодического пересоздания контекста."""
+        self._auth = (headers, cookies, base_url)
+        self._apply_auth(self._ctx, headers, cookies, base_url)
+
     def clear_auth(self):
+        self._auth = (None, None, None)
         try:
             self._ctx.set_extra_http_headers({})
         except Exception:
@@ -1361,6 +1402,12 @@ class _Renderer:
         wait = "networkidle" if patient else self._wait
         to = max(self._to, 40000) if patient else self._to
         settle = max(self._settle, 2500) if patient else self._settle
+        # периодически пересоздаём контекст — не даём Chromium разрастись на длинном обходе
+        if self._recycle_every and self._render_count and \
+                self._render_count % self._recycle_every == 0:
+            self._recycle()
+        self._render_count += 1
+        pg = None
         try:
             pg = self._ctx.new_page()
             try:
@@ -1375,12 +1422,17 @@ class _Renderer:
                     pg.wait_for_timeout(settle)
                 except Exception:
                     pass
-            html = pg.content()
-            pg.close()
-            return html
+            return pg.content()   # ограничен default timeout контекста — не зависнет навсегда
         except Exception as e:
             print(f"[web] render {url}: {e}")
             return None
+        finally:
+            # ВСЕГДА закрываем вкладку — иначе при ошибке она утекает и Chromium пухнет
+            if pg is not None:
+                try:
+                    pg.close()
+                except Exception:
+                    pass
 
     def close(self):
         for fn in (getattr(self._ctx, "close", None), getattr(self._b, "close", None),
