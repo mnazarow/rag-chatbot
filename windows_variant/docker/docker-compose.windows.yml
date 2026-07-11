@@ -89,6 +89,9 @@ services:
       dockerfile: windows_variant/docker/Dockerfile
     container_name: rag_app
     restart: unless-stopped
+    # /dev/shm по умолчанию 64 МБ — этого мало для torch/reranker (общая память
+    # между воркерами), при переполнении процесс падает с SIGBUS (exit 135).
+    shm_size: "2gb"
     depends_on:
       - qdrant
       - redis
@@ -97,6 +100,8 @@ services:
     environment:
       - HF_HOME=/root/.cache/huggingface          # кеш моделей эмбеддингов/реранка
       - RAG_DOCKER=1                               # признак контейнера (обновление — на хосте через update.cmd)
+      - PYTHONFAULTHANDLER=1                        # печатать нативный трейс при SIGBUS/SIGSEGV (диагностика падений)
+      - PYTHONUNBUFFERED=1                          # не буферизовать stdout/stderr — чтобы трейс краха попал в docker logs
       # адрес Qdrant в сети compose — фиксируем здесь (имеет приоритет над .env.docker),
       # чтобы приложение всегда обращалось к сервису qdrant, а не к localhost
       - QDRANT_URL=http://qdrant:6333
