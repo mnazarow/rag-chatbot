@@ -15,6 +15,9 @@ def _int(name: str, default: int) -> int:
 def _float(name: str, default: float) -> float:
     return float(os.getenv(name, default))
 
+def _bool(name: str, default: bool) -> bool:
+    return os.getenv(name, "1" if default else "0") not in ("0", "false", "False", "no", "")
+
 # Документы
 DOCS_DIR = Path(os.getenv("DOCS_DIR", "/opt/db")).expanduser()
 
@@ -39,6 +42,12 @@ LLM_QUEUE_TIMEOUT = _int("LLM_QUEUE_TIMEOUT", 120)   # макс. ожидани�
 # Минимальная пауза между началами запросов к LLM (с). Запросы стартуют не чаще,
 # чем раз в LLM_REQUEST_DELAY секунд. 0 — без паузы. Бережёт модель/GPU от «пиков».
 LLM_REQUEST_DELAY = _float("LLM_REQUEST_DELAY", 0.0)
+# «Размышления» гибридных моделей (Qwen3/3.6, DeepSeek-R1 и т. п.). Для таких моделей
+# Ollama по умолчанию генерирует длинную фазу рассуждений (поле message.thinking или
+# блок <think>…</think>), из-за чего видимый ответ появляется с большой задержкой или
+# «молчит». False (по умолчанию) — просить модель отвечать сразу, без размышлений;
+# True — оставить размышления (медленнее, но иногда точнее на сложных вопросах).
+LLM_THINK = _bool("LLM_THINK", False)
 
 # Qdrant
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -134,10 +143,6 @@ VLLM_TP = _int("VLLM_TP", 1)
 # Дообучение (QLoRA): базовая fp16-модель. Пусто = берётся из VLLM_MODEL
 # (с отбрасыванием суффиксов квантизации -AWQ/-GPTQ/-Int4).
 FINETUNE_BASE = os.getenv("FINETUNE_BASE", "")
-
-
-def _bool(name: str, default: bool) -> bool:
-    return os.getenv(name, "1" if default else "0") not in ("0", "false", "False", "no", "")
 
 
 # Индексация: какие тяжёлые экстракторы включать (отключение ускоряет индексацию).

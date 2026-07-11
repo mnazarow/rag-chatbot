@@ -15,6 +15,102 @@ import httpx
 import settings
 
 
+def _think() -> bool:
+    """Разрешены ли «размышления» гибридных моделей (Qwen3/3.6, DeepSeek-R1 …)."""
+    return bool(settings.get("LLM_THINK"))
+
+
+# Кэш: какие модели Ollama поддерживают «thinking» (чтобы не слать параметр `think`
+# несовместимым моделям — иначе Ollama вернёт HTTP 400). TTL небольшой.
+_THINK_CAP: dict[str, bool] = {}
+_THINK_CAP_TS = 0.0
+
+
+def _ollama_supports_think(model: str) -> bool:
+    """True, если у модели Ollama есть возможность рассуждений (capabilities:thinking).
+    Результат кэшируется на 5 минут; при ошибке — консервативно False (не слать `think`)."""
+    global _THINK_CAP_TS
+    import time as _t
+    now = _t.time()
+    if now - _THINK_CAP_TS > 300:
+        _THINK_CAP.clear()
+        _THINK_CAP_TS = now
+    if model in _THINK_CAP:
+        return _THINK_CAP[model]
+    ok = False
+    try:
+        r = httpx.post(f"{settings.get('OLLAMA_URL')}/api/show",
+                       json={"model": model}, timeout=4)
+        if r.status_code == 200:
+            caps = r.json().get("capabilities") or []
+            ok = "thinking" in caps
+    except Exception:
+        ok = False
+    _THINK_CAP[model] = ok
+    return ok
+
+
+def _ollama_think_payload(model: str) -> dict:
+    """Ключ `think` для payload Ollama — только для моделей, что его поддерживают."""
+    return {"think": _think()} if _ollama_supports_think(model) else {}
+
+
+def _strip_think(text: str) -> str:
+    """Убрать блок рассуждений <think>…</think> из готового ответа (если модель
+    всё же вставила его в content, несмотря на think=false)."""
+    if not text or "<think>" not in text:
+        return text
+    import re
+    return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
+
+
+def _emit_len(buf: str, tag: str) -> int:
+    """Сколько символов из начала buf можно отдать/отбросить, не разрезав возможный
+    неполный тег в конце: len(buf) минус самый длинный суффикс buf, являющийся
+    префиксом tag."""
+    for k in range(min(len(tag) - 1, len(buf)), 0, -1):
+        if tag.startswith(buf[-k:]):
+            return len(buf) - k
+    return len(buf)
+
+
+class _ThinkFilter:
+    """Потоковый фильтр: не пропускает наружу содержимое между <think> и </think>,
+    даже если теги пришли в разных чанках. Нужен на случай, когда модель игнорирует
+    think=false и всё равно печатает рассуждения прямо в content."""
+    def __init__(self):
+        self._buf = ""
+        self._in = False
+
+    def feed(self, chunk: str) -> str:
+        self._buf += chunk
+        out = []
+        while True:
+            if not self._in:
+                i = self._buf.find("<think>")
+                if i < 0:
+                    cut = _emit_len(self._buf, "<think>")
+                    out.append(self._buf[:cut]); self._buf = self._buf[cut:]
+                    break
+                out.append(self._buf[:i]); self._buf = self._buf[i + len("<think>"):]
+                self._in = True
+            else:
+                j = self._buf.find("</think>")
+                if j < 0:
+                    cut = _emit_len(self._buf, "</think>")
+                    self._buf = self._buf[cut:]          # отбрасываем «мысли»
+                    break
+                self._buf = self._buf[j + len("</think>"):]
+                self._in = False
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Отдать остаток (только если мы не внутри блока размышлений)."""
+        r = "" if self._in else self._buf
+        self._buf = ""
+        return r
+
+
 def _label_from_messages(messages: list[dict]) -> str:
     """Короткая подпись запроса — последнее сообщение пользователя (без контекста)."""
     try:
@@ -124,23 +220,31 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
         else:  # ollama
             url = f"{settings.get('OLLAMA_URL')}/api/chat"
             payload = {"model": model, "messages": messages,
-                       "stream": True, "options": {"temperature": temperature}}
+                       "stream": True, "options": {"temperature": temperature},
+                       **_ollama_think_payload(model)}
+            tf = _ThinkFilter()
             async with httpx.AsyncClient(timeout=None) as c:
                 async with c.stream("POST", url, json=payload) as r:
                     async for line in r.aiter_lines():
                         if not line.strip():
                             continue
                         obj = json.loads(line)
-                        tok = obj.get("message", {}).get("content", "")
+                        msg = obj.get("message", {}) or {}
+                        tok = msg.get("content", "")   # «мысли» приходят в message.thinking — их не отдаём
                         if obj.get("done"):     # финальный ответ Ollama несёт счётчики
                             ptok = int(obj.get("prompt_eval_count") or ptok)
                             ctok = int(obj.get("eval_count") or ctok)
                             gen_ms = int((obj.get("eval_duration") or 0) / 1e6)  # нс→мс
                         if tok:
-                            nchars += len(tok)
-                            if nchars % 64 < len(tok):
-                                _act_tokens(cid, nchars)
-                            yield tok
+                            piece = tf.feed(tok)      # на случай <think>…</think> прямо в content
+                            if piece:
+                                nchars += len(piece)
+                                if nchars % 64 < len(piece):
+                                    _act_tokens(cid, nchars)
+                                yield piece
+                    tail = tf.flush()
+                    if tail:
+                        nchars += len(tail); _act_tokens(cid, nchars); yield tail
     except Exception as e:
         ok = False
         err = str(e)
@@ -178,10 +282,11 @@ def chat(messages: list[dict], temperature: float = 0.1,
             r = httpx.post(
                 f"{settings.get('OLLAMA_URL')}/api/chat", timeout=None,
                 json={"model": model, "messages": messages,
-                      "stream": False, "options": {"temperature": temperature}},
+                      "stream": False, "options": {"temperature": temperature},
+                      **_ollama_think_payload(model)},
             )
             j = r.json()
-            out = j["message"]["content"]
+            out = _strip_think(j["message"]["content"])
             ptok, ctok = int(j.get("prompt_eval_count") or 0), int(j.get("eval_count") or 0)
             gen_ms = int((j.get("eval_duration") or 0) / 1e6)
         _act_end(cid, ok=True, chars=len(out or ""), ptok=ptok, ctok=ctok, gen_ms=gen_ms)
@@ -261,10 +366,11 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
                 r = httpx.post(
                     f"{settings.get('OLLAMA_URL')}/api/chat", timeout=timeout,
                     json={"model": model, "stream": False, "options": {"temperature": 0.2},
-                          "messages": [{"role": "user", "content": prompt, "images": [b64]}]})
+                          "messages": [{"role": "user", "content": prompt, "images": [b64]}],
+                          **_ollama_think_payload(model)})
                 r.raise_for_status()
                 j = r.json()
-                out = (j.get("message", {}).get("content", "") or "").strip()
+                out = _strip_think((j.get("message", {}).get("content", "") or "")).strip()
                 ptok, ctok = int(j.get("prompt_eval_count") or 0), int(j.get("eval_count") or 0)
                 gen_ms = int((j.get("eval_duration") or 0) / 1e6)
             _act_end(cid, ok=True, chars=len(out), ptok=ptok, ctok=ctok, gen_ms=gen_ms)
