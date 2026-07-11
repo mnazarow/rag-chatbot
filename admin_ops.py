@@ -812,7 +812,8 @@ def _web_site_excludes(url: str, per_site_map: dict | None = None,
 # ---------- пер-сайтовые настройки обхода ----------
 # kv "web_site_cfg": {url: {depth,max_pages,max_files,concurrency,same_domain,js_render}}
 # Пустые/None-поля означают «брать глобальную настройку».
-_WEB_CFG_KEYS = ("depth", "max_pages", "max_files", "concurrency", "same_domain", "js_render")
+_WEB_CFG_KEYS = ("depth", "max_pages", "max_files", "concurrency", "same_domain",
+                 "js_render", "crawl_delay")
 
 
 def _web_cfg_load() -> dict:
@@ -846,7 +847,7 @@ def web_set_site_cfg(url: str, cfg: dict) -> dict:
                 clean[k] = max(0, int(v))
             except (TypeError, ValueError):
                 pass
-    for k in ("same_domain", "js_render"):
+    for k in ("same_domain", "js_render", "crawl_delay"):
         v = cfg.get(k)
         if v in ("", None, "global", "auto"):
             continue
@@ -948,6 +949,8 @@ def _web_eff(url: str, cfg_map: dict | None = None) -> dict:
                        else bool(settings.get("WEB_SAME_DOMAIN")),
         "js_render": bool(c.get("js_render")) if "js_render" in c
                      else bool(settings.get("WEB_JS_RENDER")),
+        "crawl_delay": bool(c.get("crawl_delay")) if "crawl_delay" in c
+                       else bool(settings.get("WEB_RESPECT_CRAWL_DELAY")),
     }
     return eff
 
@@ -1244,6 +1247,74 @@ def delete_web(url: str) -> dict:
     except Exception as e:
         return {"ok": True, "msg": f"удалён из списка и папки; из векторной базы не удалён: {e}"}
     return {"ok": True, "msg": "сайт удалён из базы знаний"}
+
+
+def web_reparse_fresh(url: str, index: bool = True) -> dict:
+    """Удалить скачанные файлы сайта и его чанки, сбросить отпечатки инкремента —
+    и спарсить сайт заново «с нуля» (всё скачивается повторно). Сайт остаётся в списке."""
+    from urllib.parse import urlparse as _up
+    url = (url or "").strip()
+    if not url:
+        return {"ok": False, "msg": "не указан URL"}
+    if _web_job.get("running"):
+        return {"ok": False, "msg": "парсинг сайтов уже идёт — дождитесь завершения"}
+    docroot = Path(settings.get("DOCS_DIR")).expanduser()
+    slug = _web_slug(url)
+    removed = 0
+    # 1) страница-сводка сайта + её чанки
+    page_rel = f"web/{slug}.html"
+    pf = docroot / page_rel
+    if pf.exists():
+        try:
+            pf.unlink(); removed += 1
+        except Exception:
+            pass
+    try:
+        vectorstore.delete({"source": page_rel})
+    except Exception:
+        pass
+    # 2) скачанные файлы этого сайта (по его статистике) + их чанки
+    st = _web_stats_load().get(url) or {}
+    for it in (st.get("items") or []):
+        if it.get("kind") != "file":
+            continue
+        rel = it.get("source")
+        if not rel:
+            continue
+        fpath = docroot / rel
+        if fpath.exists():
+            try:
+                fpath.unlink(); removed += 1
+            except Exception:
+                pass
+        try:
+            vectorstore.delete({"source": rel})
+        except Exception:
+            pass
+    # 3) сбросить отпечатки инкремента для домена (чтобы всё скачалось заново)
+    try:
+        net = _up(url).netloc
+        fpm = _web_fp_load()
+        rm = [k for k in fpm if _up(k).netloc == net]
+        for k in rm:
+            fpm.pop(k, None)
+        if rm:
+            _web_fp_save(fpm)
+    except Exception:
+        pass
+    # 4) очистить сохранённую статистику сайта
+    try:
+        stall = _web_stats_load()
+        if url in stall:
+            stall.pop(url, None)
+            _web_stats_save(stall)
+    except Exception:
+        pass
+    # 5) спарсить заново (save=False — не трогаем список остальных сайтов)
+    r = ingest_web([url], index=index, save=False)
+    pref = f"удалено файлов: {removed}. "
+    r["msg"] = pref + (r.get("msg") or "")
+    return r
 
 
 # расширения «страниц» (их обходим как HTML); всё остальное считаем файлами и скачиваем
@@ -1876,6 +1947,16 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
     excludes = ctx.get("excludes"); client = ctx.get("client")
     headers = ctx.get("headers") or {}; cookies = ctx.get("cookies") or {}
     disallow = ctx.get("disallow") or []; crawl_delay = float(ctx.get("crawl_delay") or 0.0)
+    # Ограничиваем паузу robots.txt: некоторые сайты задают Crawl-delay 20+ секунд, что
+    # делает обход практически бесконечным (1 стр. / 20 с) и выглядит как зависание.
+    # Соблюдаем robots, но не медленнее заданного максимума. 0 — не ограничивать.
+    try:
+        _cd_max = float(settings.get("WEB_CRAWL_DELAY_MAX") or 0)
+    except Exception:
+        _cd_max = 0.0
+    if _cd_max > 0 and crawl_delay > _cd_max:
+        log(f"  crawl-delay {crawl_delay:g}c ограничен до {_cd_max:g}c (WEB_CRAWL_DELAY_MAX)")
+        crawl_delay = _cd_max
     use_render = ctx.get("use_render", True)
     incremental = bool(ctx.get("incremental")); fp_map = ctx.get("fp_map") or {}
     fp_out = ctx.get("fp_out"); reused = ctx.get("reused")
@@ -1925,7 +2006,11 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
                 for u, res in ex.map(lambda ud: _get(ud[0]), batch):
                     results[u] = res
         else:
-            for (u, dd) in batch:
+            for _i, (u, dd) in enumerate(batch, 1):
+                # при crawl-delay фаза 1 идёт медленно и молча — логируем прогресс, чтобы
+                # обход не выглядел зависшим (видно, что идёт загрузка уровня)
+                if crawl_delay > 0:
+                    log(f"  · загрузка {_i}/{len(batch)} (пауза {crawl_delay:g}c): {u}")
                 _, res = _get(u)
                 results[u] = res
                 if crawl_delay > 0:
@@ -2061,38 +2146,59 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
             workers = max(1, int(settings.get("WEB_CONCURRENCY") or 1))
             filesdir = webdir / "files"
             with open(logfile, "w", buffering=1, errors="ignore") as fp:
-                def _log(m):
-                    fp.write(m + "\n")
-                    fp.flush()
+                import threading as _th
+                from urllib.parse import urlparse as _urlparse
+                _wlock = _th.Lock()   # защита лога/статистики/счётчиков при параллельных сайтах
+                def _rawlog(m):
+                    with _wlock:
+                        fp.write(m + "\n"); fp.flush()
+                _log = _rawlog
+                def _save_stats():
+                    with _wlock:
+                        _web_stats_save(stats_map)
+                counters = {"ok": 0, "err": 0}
+                def _inc(k):
+                    with _wlock:
+                        counters[k] += 1
+                site_par = max(1, int(settings.get("WEB_SITE_CONCURRENCY") or 1))
 
-                # общий httpx-клиент (keep-alive/HTTP2) на весь прогон — быстрее
-                client = _web_client(workers)
-                # headless-браузер (Playwright) — один на весь прогон, если включён/доступен
-                renderer = None
-                if settings.get("WEB_JS_RENDER"):
+                # общий httpx-клиент (keep-alive) — потокобезопасен для запросов
+                client = _web_client(max(workers, site_par * workers))
+                # доступность Playwright проверяем один раз; сам браузер — свой на каждый сайт
+                _pw_ok = bool(settings.get("WEB_JS_RENDER"))
+                if _pw_ok:
                     try:
-                        renderer = _Renderer()
-                        _log("Headless-браузер (Playwright Chromium) активен"
-                             + (" · умный режим (браузер только для JS-страниц)"
-                                if settings.get("WEB_JS_AUTO") else " · рендер каждой страницы"))
+                        import playwright  # noqa: F401
                     except Exception as e:
-                        _log(f"Headless-браузер недоступен ({e}); обычная загрузка. "
-                             "Установка: pip install playwright && playwright install chromium")
-                        renderer = None
+                        _pw_ok = False
+                        _rawlog(f"Headless-браузер недоступен ({e}); обычная загрузка. "
+                                "Установка: pip install playwright && playwright install chromium")
                 fp.write(f"Парсинг: глубина {depth}, до {max_pages} стр. и {max_files} "
                          f"файлов/сайт, параллельно ×{workers}"
+                         f"{f', сайтов ×{site_par}' if site_par > 1 else ''}"
                          f"{', sitemap' if use_sitemap else ''}"
                          f"{', robots' if respect_robots else ''}"
                          f"{', инкремент' if incremental else ''}\n")
                 stats_map = {}
                 try:
-                    for u in urls:
+                    def _parse_site(u):
+                        # свой логгер (с префиксом сайта в параллельном режиме) и свой браузер
+                        _host = _urlparse(u).netloc or u
+                        def _log(m):
+                            _rawlog(f"[{_host}] {m}" if site_par > 1 else m)
+                        renderer = None
+                        if _pw_ok and _web_eff(u, cfg_map).get("js_render"):
+                            try:
+                                renderer = _Renderer()
+                            except Exception as e:
+                                _log(f"Headless-браузер недоступен ({e}); обычная загрузка")
+                                renderer = None
                         site_errors, site_limits, site_items = [], {}, []
                         site_depth_urls = []
                         pages, dl, site_ok = [], 0, False
                         stats_map[u] = {"url": u, "ts": time.time(), "items": [],
                                         "progress": {"phase": "crawl", "pct": 8}}
-                        _web_stats_save(stats_map)
+                        _save_stats()
                         try:
                             _log(f"САЙТ: {u}")
                             # эффективные настройки: пер-сайтовые поверх глобальных
@@ -2100,6 +2206,7 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                             s_depth = eff["depth"]; s_maxp = eff["max_pages"]
                             s_maxf = eff["max_files"]; s_workers = eff["concurrency"]
                             s_same = eff["same_domain"]; s_render = eff["js_render"]
+                            s_delay = eff["crawl_delay"]
                             if cfg_map.get(u):
                                 _log(f"  настройки сайта: глубина {s_depth}, до {s_maxp} стр./"
                                      f"{s_maxf} файлов, ×{s_workers}, "
@@ -2121,6 +2228,10 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                 rob = _web_robots(u, client, a_headers, a_cookies)
                                 disallow = rob["disallow"]; crawl_delay = rob["crawl_delay"]
                                 sm_seeds = rob["sitemaps"]
+                                if crawl_delay and not s_delay:
+                                    _log(f"  robots.txt: crawl-delay {crawl_delay}c ОТКЛЮЧЁН "
+                                         "(задержка выключена для сайта/глобально)")
+                                    crawl_delay = 0.0
                                 if disallow or crawl_delay:
                                     _log(f"  robots.txt: запрещённых путей {len(disallow)}"
                                          + (f", crawl-delay {crawl_delay}c" if crawl_delay else ""))
@@ -2173,7 +2284,7 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                             nf = len(file_list)
                             _docroot = Path(settings.get("DOCS_DIR")).expanduser()
                             stats_map[u]["progress"] = {"phase": "download", "done": 0, "total": nf, "pct": 40}
-                            _web_stats_save(stats_map)
+                            _save_stats()
                             if nf:
                                 _log(f"  файлов к скачиванию: {nf}"
                                      + (f" (параллельно ×{s_workers})" if s_workers > 1 and nf > 1 else ""))
@@ -2194,7 +2305,7 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                 stats_map[u]["progress"] = {"phase": "download", "done": done, "total": nf,
                                                             "pct": min(88, 40 + int(done * 45 / max(1, nf)))}
                                 if done % 5 == 0:
-                                    _web_stats_save(stats_map)
+                                    _save_stats()
 
                             # скачивание одного файла: авторизация + инкремент (304 →
                             # переиспользуем файл с диска) + запись отпечатка
@@ -2293,36 +2404,48 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                                       "source": prel, "size": psize, "ok": True,
                                                       "pages": len(pages)})
                             if pages or dl:
-                                ok += 1
+                                _inc("ok")
                                 site_ok = True
-                                fp.write(f"ИТОГО {u}: страниц {len(pages)}, файлов {dl}\n")
+                                _log(f"ИТОГО {u}: страниц {len(pages)}, файлов {dl}")
                             else:
-                                err += 1
+                                _inc("err")
                                 site_errors.append("ни текста, ни файлов (пустая страница "
                                                    "или JS-сайт без headless-браузера)")
-                                fp.write(f"ERR {u}: ни текста, ни файлов (пустая страница "
-                                         "или JS-сайт без headless-браузера)\n")
+                                _log(f"ERR {u}: ни текста, ни файлов (пустая страница "
+                                     "или JS-сайт без headless-браузера)")
                         except Exception as e:
-                            err += 1
+                            _inc("err")
                             site_errors.append(str(e))
-                            fp.write(f"ERR {u}: {e}\n")
-                        if renderer is not None:
-                            renderer.clear_auth()
+                            _log(f"ERR {u}: {e}")
+                        finally:
+                            # свой браузер сайта закрываем всегда (освобождаем Chromium)
+                            if renderer is not None:
+                                try:
+                                    renderer.close()
+                                except Exception:
+                                    pass
                         stats_map[u] = {"url": u, "ok": site_ok, "pages": len(pages),
                                         "files": dl, "errors": site_errors,
                                         "limits": site_limits, "ts": time.time(),
                                         "items": site_items, "depth_urls": site_depth_urls,
                                         "progress": {"phase": "parsed", "pct": 92}}
-                        _web_stats_save(stats_map)
-                        fp.flush()
+                        _save_stats()
+
+                    # запуск сайтов: последовательно или параллельно (каждый — свой поток+браузер)
+                    if site_par > 1 and len(urls) > 1:
+                        from concurrent.futures import ThreadPoolExecutor as _TPE
+                        with _TPE(max_workers=min(site_par, len(urls))) as _ex:
+                            list(_ex.map(_parse_site, urls))
+                    else:
+                        for u in urls:
+                            _parse_site(u)
+                    ok, err = counters["ok"], counters["err"]
                 finally:
-                    if renderer is not None:
-                        renderer.close()
                     try:
                         client.close()
                     except Exception:
                         pass
-                    _web_stats_save(stats_map)
+                    _save_stats()
                     # отпечатки для инкрементального парсинга (следующий запуск быстрее)
                     try:
                         if fp_out:

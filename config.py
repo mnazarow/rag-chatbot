@@ -307,6 +307,17 @@ WEB_AUTO_REPARSE = _bool("WEB_AUTO_REPARSE", False)
 WEB_USE_SITEMAP = _bool("WEB_USE_SITEMAP", True)
 # Учитывать robots.txt (Disallow) и его Crawl-delay при обходе.
 WEB_RESPECT_ROBOTS = _bool("WEB_RESPECT_ROBOTS", True)
+# Соблюдать паузу Crawl-delay из robots.txt вообще. False — игнорировать задержку
+# (Disallow всё равно учитывается, если включён robots). Быстрый тумблер «задержки».
+WEB_RESPECT_CRAWL_DELAY = _bool("WEB_RESPECT_CRAWL_DELAY", True)
+# Верхний предел паузы Crawl-delay из robots.txt (сек). Некоторые сайты задают 20+ с,
+# из-за чего обход идёт ~1 стр./20 с и кажется зависшим. robots соблюдается, но не
+# медленнее этого предела. 0 — не ограничивать (полностью доверять robots).
+WEB_CRAWL_DELAY_MAX = _float("WEB_CRAWL_DELAY_MAX", 5.0)
+# Сколько САЙТОВ парсить одновременно (каждый — в своём потоке, со своим браузером).
+# 1 — последовательно (как раньше). Больше — быстрее на нескольких сайтах, но каждый
+# параллельный сайт поднимает свой Chromium (расход памяти).
+WEB_SITE_CONCURRENCY = _int("WEB_SITE_CONCURRENCY", 1)
 # Инкрементальный парсинг: условными запросами (ETag/Last-Modified) пропускать
 # неизменённые страницы и файлы — быстрый ежедневный автопарсинг.
 WEB_INCREMENTAL = _bool("WEB_INCREMENTAL", True)

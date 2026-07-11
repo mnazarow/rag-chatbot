@@ -5527,6 +5527,7 @@ async function loadWebUrls(){
           <label class="note">Потоков <input id="${cfid}_conc" type="number" min="1" style="width:64px" value="${cf.concurrency??''}"></label>
           <label class="note">Домен <select id="${cfid}_dom"><option value="">глоб.</option><option value="1" ${cf.same_domain===true?'selected':''}>только свой</option><option value="0" ${cf.same_domain===false?'selected':''}>любой</option></select></label>
           <label class="note">Браузер <select id="${cfid}_js"><option value="">глоб.</option><option value="1" ${cf.js_render===true?'selected':''}>вкл</option><option value="0" ${cf.js_render===false?'selected':''}>выкл</option></select></label>
+          <label class="note">Задержка robots <select id="${cfid}_delay"><option value="">глоб.</option><option value="1" ${cf.crawl_delay===true?'selected':''}>соблюдать</option><option value="0" ${cf.crawl_delay===false?'selected':''}>без задержки</option></select></label>
           <label class="note">Автопарсинг <select id="${cfid}_sch">
             <option value="" ${!cf.schedule?'selected':''}>глоб. (00:05)</option>
             <option value="off" ${cf.schedule==='off'?'selected':''}>выкл</option>
@@ -5568,6 +5569,7 @@ async function loadWebUrls(){
           ${badge}
           <button class="dirbtn" onclick="reparseWeb('${escAttr(s.url)}',true)" title="Спарсить заново и добавить в базу знаний (только этот сайт)">↻ Спарсить</button>
           <button class="dirbtn" onclick="reparseWeb('${escAttr(s.url)}',false)" title="Спарсить заново без индексации (только этот сайт)">📥</button>
+          <button class="dirbtn" style="border-color:#f59e0b;color:#fbbf24" onclick="reparseFreshWeb('${escAttr(s.url)}')" title="Удалить скачанные файлы сайта и его чанки, сбросить инкремент — и спарсить с нуля">🗑↻ Файлы+заново</button>
           <button class="dirbtn" onclick="webToggle('${cfid}')" title="Настройки обхода этого сайта">⚙</button>
           <button class="dirbtn" onclick="webToggle('${auid}')" title="Авторизация на сайт">🔐</button>
           <button class="dirbtn" onclick="webToggle('${exc}')" title="Исключения по ключевым словам">🚫${exList.length?(' '+exList.length):''}</button>
@@ -5604,6 +5606,13 @@ async function reparseWeb(url, index){
   webMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
   pollJob(); pollWeb();
 }
+async function reparseFreshWeb(url){
+  if(!confirm('Удалить скачанные файлы этого сайта и его чанки, сбросить инкремент и спарсить С НУЛЯ?\n\n'+url))return;
+  webMsg('удаление файлов и парсинг с нуля: '+url+' …');
+  const r=await adminPost('/api/admin/web-reparse-fresh',{url, index:true});
+  webMsg(r.msg||(r.ok?'запущено':'ошибка'),r.ok!==false);
+  pollJob(); pollWeb();
+}
 async function webSaveExcludes(url, inputId){
   const inp=$('#'+inputId); if(!inp) return;
   const msg=$('#'+inputId.replace(/_in$/,'')+'_msg'); if(msg){ msg.textContent='сохранение…'; msg.className='note'; }
@@ -5624,7 +5633,7 @@ async function webSaveCfg(url, id){
   const v=(x)=>{ const e=$('#'+id+'_'+x); return e?e.value.trim():''; };
   const cfg={ depth:v('depth'), max_pages:v('maxp'), max_files:v('maxf'),
               concurrency:v('conc'), same_domain:v('dom'), js_render:v('js'),
-              schedule:v('sch') };
+              crawl_delay:v('delay'), schedule:v('sch') };
   const msg=$('#'+id+'_msg'); if(msg){ msg.textContent='сохранение…'; msg.className='note'; }
   const r=await adminPost('/api/admin/web-site-cfg',{url, cfg});
   if(msg){ msg.textContent=(r&&r.ok!==false)?('✓ '+(r.msg||'сохранено')):'✗ ошибка';

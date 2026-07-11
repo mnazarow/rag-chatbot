@@ -1948,6 +1948,14 @@ def admin_web_delete(payload: dict = Body(...), x_admin_token: str | None = Head
     return admin_ops.delete_web(payload.get("url", ""))
 
 
+@app.post("/api/admin/web-reparse-fresh")
+def admin_web_reparse_fresh(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    """Удалить файлы сайта и его чанки, сбросить инкремент и спарсить заново с нуля."""
+    _check_admin(x_admin_token)
+    return admin_ops.web_reparse_fresh(payload.get("url", ""),
+                                       index=payload.get("index", True))
+
+
 @app.post("/api/admin/web-excludes")
 def admin_web_excludes(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
     """Задать исключения по ключевым словам для сайта: URL, содержащие любое из слов,
