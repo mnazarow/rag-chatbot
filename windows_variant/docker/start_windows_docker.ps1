@@ -309,6 +309,23 @@ if ($appUp) {
             Item ok "Запущено на CPU (ключ -Cpu)" "генерация идёт через Ollama на хосте (может использовать GPU). Уберите -Cpu для GPU-эмбеддингов"
         }
     } catch { Item warn "Не удалось проверить CUDA в контейнере" "$($_.Exception.Message)"; $warns++ }
+
+    # 10. Стабильность контейнера: проброс GPU в WSL2 иногда даёт SIGBUS/периодические
+    # перезапуски (exit 135). Наблюдаем несколько секунд и проверяем счётчик рестартов.
+    Start-Sleep -Seconds 6
+    $rc = 0
+    try { $rc = [int](docker inspect -f '{{.RestartCount}}' rag_app 2>$null) } catch {}
+    if ($rc -ge 1) {
+        Item warn "Контейнер приложения уже перезапускался ($rc)" "возможна нестабильность"; $warns++
+        if (-not $Cpu) {
+            Write-Host "     Частая причина на Windows — проброс GPU в контейнер (WSL2): периодические" -ForegroundColor Gray
+            Write-Host "     падения с SIGBUS (exit 135). Если чат/индексация «отваливаются» — перезапустите" -ForegroundColor Gray
+            Write-Host "     в CPU-режиме:  update.cmd -Cpu   (генерация всё равно на GPU хоста через Ollama)." -ForegroundColor Gray
+        }
+        ShowLog "состояние rag_app" { docker inspect -f 'Restarts={{.RestartCount}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} Status={{.State.Status}}' rag_app }
+    } else {
+        Item ok "Контейнер приложения стабилен" "перезапусков нет"
+    }
 }
 
 Write-Host "============================================================" -ForegroundColor Cyan
@@ -324,6 +341,8 @@ Write-Host ""
 Log "Веб-интерфейс: http://localhost:8000   (раздел «Администратор»)"
 $cfStr = ($Compose -join ' ')
 Log "Логи:          docker compose $cfStr logs -f app"
-Log "Остановить:    docker compose $cfStr down"
+Log "Обновление:    update.cmd  (GPU по умолчанию)  либо  update.cmd -Cpu"
+Log "Остановить:    docker compose $cfStr down    (или restart.cmd для перезапуска)"
+Log "Удаление:      uninstall.cmd  (контейнеры; данные сохраняются)  /  uninstall.cmd -Purge  (полная очистка)"
 if ($Cpu) { Log "Запущено на CPU (-Cpu). Чтобы задействовать NVIDIA GPU — перезапустите без ключа -Cpu (нужны WSL2 + драйвер NVIDIA)." }
 Log "Дальше: откройте панель -> «Администратор» -> «Переиндексировать»."
