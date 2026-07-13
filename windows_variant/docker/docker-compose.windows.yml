@@ -59,8 +59,10 @@ services:
     profiles: ["milvus"]
     restart: unless-stopped
     environment:
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
+      # креды берутся из .env (MINIO_ACCESS_KEY/MINIO_SECRET_KEY); дефолт — для локального
+      # внутреннего MinIO под профилем milvus (наружу не публикуется). Задайте свои в .env.
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
     command: minio server /minio_data
     volumes:
       - milvus_minio:/minio_data
@@ -119,6 +121,13 @@ services:
       - MILVUS_LITE_PATH=/app/state/milvus_lite.db
     extra_hosts:
       - "host.docker.internal:host-gateway"       # доступ к Ollama на хосте
+    healthcheck:
+      # /health отвечает сразу после старта uvicorn; curl есть в образе
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s                           # запас на первый старт/прогрев
     ports:
       - "8000:8000"                               # веб-интерфейс: http://localhost:8000
     volumes:

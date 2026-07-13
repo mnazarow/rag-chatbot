@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import smtplib
+import threading
 import time
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate
@@ -26,6 +27,9 @@ _KV_PREFIX = "alert:state:"
 # Последние отправленные алерты (для UI): кольцевой лог в kv
 _KV_LOG = "alert:log"
 _LOG_MAX = 25
+# Сериализует read-modify-write состояния и лога: health_tick (поток монитора) и
+# job_failed (потоки фоновых задач) могут писать одновременно.
+_LOCK = threading.RLock()
 
 
 # ------------------------------------------------------------------ состояние --
@@ -57,19 +61,20 @@ def _state_del(key: str) -> None:
 
 def _log_add(entry: dict) -> None:
     """Добавить запись в кольцевой лог алертов (для отображения в админке)."""
-    try:
-        import db
-        raw = db.kv_get(_KV_LOG)
-        arr = json.loads(raw) if raw else []
-    except Exception:
-        arr = []
-    arr.insert(0, entry)
-    arr = arr[:_LOG_MAX]
-    try:
-        import db
-        db.kv_set(_KV_LOG, json.dumps(arr, ensure_ascii=False))
-    except Exception:
-        pass
+    with _LOCK:
+        try:
+            import db
+            raw = db.kv_get(_KV_LOG)
+            arr = json.loads(raw) if raw else []
+        except Exception:
+            arr = []
+        arr.insert(0, entry)
+        arr = arr[:_LOG_MAX]
+        try:
+            import db
+            db.kv_set(_KV_LOG, json.dumps(arr, ensure_ascii=False))
+        except Exception:
+            pass
 
 
 def recent(limit: int = _LOG_MAX) -> list[dict]:
@@ -153,14 +158,16 @@ def notify(key: str, subject: str, body: str, level: str = "error") -> dict:
     Не трогает up/down-состояние — для разовых событий (напр. падение задачи)."""
     if not settings.get("ALERTS_ENABLED"):
         return {"sent": False, "reason": "alerts выключены"}
-    st = _state_get(key)
     now = time.time()
     cooldown = int(settings.get("ALERT_COOLDOWN") or 900)
-    if st.get("last_alert") and (now - st["last_alert"]) < cooldown:
-        return {"sent": False, "reason": "cooldown"}
+    # решение о троттлинге и обновление состояния — атомарно; рассылку (сеть) — вне лока
+    with _LOCK:
+        st = _state_get(key)
+        if st.get("last_alert") and (now - st["last_alert"]) < cooldown:
+            return {"sent": False, "reason": "cooldown"}
+        st["last_alert"] = now
+        _state_set(key, st)
     channels = _dispatch(subject, body)
-    st["last_alert"] = now
-    _state_set(key, st)
     _log_add({"ts": now, "key": key, "level": level, "subject": subject,
               "channels": channels})
     return {"sent": True, "channels": channels}
@@ -170,32 +177,34 @@ def report_down(key: str, subject: str, body: str) -> dict:
     """Компонент упал. Первый переход up→down шлётся сразу; далее — по cooldown."""
     if not settings.get("ALERTS_ENABLED"):
         return {"sent": False, "reason": "alerts выключены"}
-    st = _state_get(key)
     now = time.time()
-    first = st.get("status") != "down"
-    if first:
-        st = {"status": "down", "since": now, "last_alert": 0}
     cooldown = int(settings.get("ALERT_COOLDOWN") or 900)
-    sent = False
+    with _LOCK:
+        st = _state_get(key)
+        first = st.get("status") != "down"
+        if first:
+            st = {"status": "down", "since": now, "last_alert": 0}
+        do_send = first or (now - (st.get("last_alert") or 0)) >= cooldown
+        if do_send:
+            st["last_alert"] = now
+        _state_set(key, st)
     channels = {}
-    if first or (now - (st.get("last_alert") or 0)) >= cooldown:
+    if do_send:
         channels = _dispatch(f"🔴 {subject}", body)
-        st["last_alert"] = now
-        sent = True
         _log_add({"ts": now, "key": key, "level": "error",
                   "subject": f"🔴 {subject}", "channels": channels})
-    _state_set(key, st)
-    return {"sent": sent, "channels": channels, "first": first}
+    return {"sent": do_send, "channels": channels, "first": first}
 
 
 def report_up(key: str, subject: str, body: str = "") -> dict:
     """Компонент восстановился. Если ранее был down — шлём «снова доступен»."""
-    st = _state_get(key)
-    if st.get("status") != "down":
-        return {"sent": False, "reason": "не был в падении"}
-    now = time.time()
-    dur = int(now - (st.get("since") or now))
-    _state_del(key)
+    with _LOCK:
+        st = _state_get(key)
+        if st.get("status") != "down":
+            return {"sent": False, "reason": "не был в падении"}
+        now = time.time()
+        dur = int(now - (st.get("since") or now))
+        _state_del(key)
     if not settings.get("ALERTS_ENABLED"):
         return {"sent": False, "reason": "alerts выключены"}
     text = body or f"Компонент снова доступен (недоступен был ~{dur} с)."

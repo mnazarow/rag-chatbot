@@ -51,14 +51,23 @@ services:
       dockerfile: windows_variant/docker/Dockerfile
     container_name: rag_app
     restart: unless-stopped
+    shm_size: "2gb"                                 # torch/reranker: иначе SIGBUS (exit 135) при переполнении /dev/shm
     depends_on:
       - qdrant
       - redis
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
     env_file:
       - .env.docker
     environment:
       - HF_HOME=/root/.cache/huggingface           # кеш моделей эмбеддингов/реранка
       - RAG_DOCKER=1                                # признак контейнера (обновление — на хосте через start.cmd/update)
+      - PYTHONFAULTHANDLER=1                        # нативный трейс при SIGBUS/SIGSEGV (диагностика)
+      - PYTHONUNBUFFERED=1                          # не буферизовать stdout/stderr
       # Адрес Qdrant в сети compose — фиксируем здесь (приоритет над .env.docker)
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_COLLECTION=company_kb

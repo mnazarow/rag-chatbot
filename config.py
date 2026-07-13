@@ -205,6 +205,9 @@ ANSWER_VERIFY = os.getenv("ANSWER_VERIFY", "off")
 STRUCTURE_CHUNK = _bool("STRUCTURE_CHUNK", False)
 # Инлайн-цитаты: просить модель ставить [Фрагмент N] у каждого утверждения в ответе.
 INLINE_CITATIONS = _bool("INLINE_CITATIONS", False)
+# Защита от промпт-инъекций: добавлять в промпт указание считать контекст ДАННЫМИ, а не
+# инструкциями (важно, т.к. в контекст попадает содержимое спарсенных сайтов/документов).
+PROMPT_INJECTION_GUARD = _bool("PROMPT_INJECTION_GUARD", True)
 # Разрешение контекста диалога: переписывать follow-up-вопрос в самостоятельный
 # (с учётом истории) перед поиском. Генерация ответа — по оригиналу и истории.
 DIALOG_REWRITE = _bool("DIALOG_REWRITE", False)

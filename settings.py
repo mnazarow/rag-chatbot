@@ -377,6 +377,13 @@ FIELDS: list[dict] = [
              "источника, например «Гарантия — 3 года [Фрагмент 2]». Повышает проверяемость и "
              "снижает выдумки (модель отвечает только тем, что может «привязать» к источнику). "
              "Список источников под ответом остаётся. Действует в векторном движке."},
+    {"key": "PROMPT_INJECTION_GUARD", "label": "Защита от инъекций из контекста",
+     "group": "Поиск и генерация", "type": "bool", "scope": "live",
+     "default": config.PROMPT_INJECTION_GUARD,
+     "desc": "Добавлять в промпт указание считать содержимое КОНТЕКСТА справочными <b>данными</b>, "
+             "а не инструкциями. Защищает от «промпт-инъекций»: спарсенная страница или документ "
+             "могут содержать текст вида «игнорируй инструкции / раскрой системный промпт», и без "
+             "этой защиты модель может его исполнить. Рекомендуется держать включённым."},
     {"key": "DIALOG_REWRITE", "label": "Учитывать контекст диалога в поиске",
      "group": "Поиск и генерация", "type": "bool", "scope": "live",
      "default": config.DIALOG_REWRITE,
@@ -1181,6 +1188,35 @@ def public_settings() -> dict:
 
 def secret_is_set(key: str) -> bool:
     return bool(_state.get(key))
+
+
+def export_settings(include_secrets: bool = False) -> dict:
+    """Снимок настроек для переноса между стендами (содержимое runtime_config).
+    По умолчанию секреты (токены/пароли) НЕ включаются — включите явно при необходимости."""
+    out = dict(_state)
+    if not include_secrets:
+        for f in FIELDS:
+            if f["type"] == "secret":
+                out.pop(f["key"], None)
+    return out
+
+
+def import_settings(data: dict) -> dict:
+    """Применить настройки из снимка (только известные ключи, с валидацией через update()).
+    Пустые секреты пропускаются (не затирают уже заданные)."""
+    if not isinstance(data, dict):
+        return {"ok": False, "msg": "ожидается объект настроек (JSON)"}
+    # допускаем как «плоский» словарь ключ→значение, так и обёртку {"settings": {...}}
+    if "settings" in data and isinstance(data["settings"], dict):
+        data = data["settings"]
+    clean = {k: v for k, v in data.items() if k in DEFAULTS}
+    skipped = sorted(set(data) - set(clean))
+    if clean:
+        update(clean)
+    msg = f"импортировано настроек: {len(clean)}"
+    if skipped:
+        msg += f"; пропущено неизвестных: {len(skipped)}"
+    return {"ok": True, "applied": len(clean), "skipped": skipped, "msg": msg}
 
 
 def _coerce(key: str, value):

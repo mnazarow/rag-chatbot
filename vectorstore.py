@@ -203,7 +203,14 @@ def milvus_uri() -> str:
 def _milvus():
     """Синглтон MilvusClient, пересоздаётся при смене URI. Ленивый импорт pymilvus."""
     global _mclient, _mclient_key
-    from pymilvus import MilvusClient
+    try:
+        from pymilvus import MilvusClient
+    except ImportError as e:
+        # Понятная ошибка вместо голого ImportError, если бэкенд Milvus, а пакета нет.
+        raise RuntimeError(
+            "Выбран бэкенд Milvus (VECTOR_BACKEND=milvus), но пакет pymilvus не установлен. "
+            "Установите его кнопкой «Установить/проверить Milvus» в админке или переключитесь "
+            "на Qdrant.") from e
     uri = milvus_uri()
     token = (settings.get("MILVUS_TOKEN") or "").strip()
     key = (uri, token)
@@ -513,8 +520,15 @@ def ensure_collection(dim: int, reset: bool = False, backend_name: str | None = 
 
 
 def search(vector, limit: int, flt: dict | None = None, with_payload: bool = True) -> list[dict]:
-    return _m_search(vector, limit, flt, with_payload) if is_milvus() \
-        else _q_search(vector, limit, flt, with_payload)
+    if not is_milvus():
+        return _q_search(vector, limit, flt, with_payload)
+    try:
+        return _m_search(vector, limit, flt, with_payload)
+    except Exception as e:
+        # Milvus недоступен/pymilvus не установлен — не роняем ответ 500, деградируем к
+        # «ничего не найдено» (получится честное «нет ответа»).
+        print(f"[vectorstore] Milvus search недоступен, пустой результат: {e}")
+        return []
 
 
 def search_on(backend_name: str, vector, limit: int, flt: dict | None = None,
@@ -539,7 +553,13 @@ def list_values(key: str, limit: int = 100000, flt: dict | None = None) -> list:
 
 
 def count(flt: dict | None = None) -> int:
-    return _m_count(flt) if is_milvus() else _q_count(flt)
+    if not is_milvus():
+        return _q_count(flt)
+    try:
+        return _m_count(flt)
+    except Exception as e:
+        print(f"[vectorstore] Milvus count недоступен: {e}")
+        return 0
 
 
 def upsert(points, wait: bool = False) -> None:
@@ -552,7 +572,12 @@ def delete(flt: dict) -> None:
 
 def collection_info(backend_name: str | None = None) -> dict:
     b = backend_name or backend()
-    return _m_info() if b == "milvus" else _q_info()
+    if b != "milvus":
+        return _q_info()
+    try:
+        return _m_info()
+    except Exception as e:
+        return {"exists": False, "points_count": 0, "status": f"milvus недоступен: {e}"}
 
 
 def iterate_all(batch: int = 1000, backend_name: str | None = None):

@@ -10,6 +10,10 @@
 
 # Unix/Docker-скрипты — всегда LF (иначе не запустятся в контейнере/на сервере)
 *.sh                text eol=lf
+# Docker-файлы и compose — LF (RUN с переносами строк безопаснее в LF, BuildKit ожидает LF)
+Dockerfile          text eol=lf
+*.yml               text eol=lf
+*.yaml              text eol=lf
 
 # бинарные файлы — не трогать
 *.deb               binary

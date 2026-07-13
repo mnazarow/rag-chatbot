@@ -333,7 +333,8 @@ def _answer(question: str, trace: list | None = None):
             if c:
                 trace.append({"key": "answer_cache", "ms": 0, "info": {"hit": True}})
                 hits = [{"score": c.get("top_score", 0.0)}] if c.get("answered") else []
-                return c.get("text", ""), c.get("sources", []), hits
+                # совместимость с веб-кэшем: там текст лежит в "answer"
+                return (c.get("text") or c.get("answer") or ""), c.get("sources", []), hits
         except Exception:
             ckey = None
 
@@ -432,9 +433,10 @@ def _answer(question: str, trace: list | None = None):
     if ckey:
         try:
             import cache
-            cache.set_json(ckey, 86400, {"text": text, "sources": sources,
+            cache.set_json(ckey, 86400, {"text": text, "answer": text,  # "answer" — для кросс-канального кэша
+                                         "sources": sources,
                                          "top_score": hits[0]["score"],
-                                         "answered": True}, ns="index")
+                                         "answered": not prompts.is_no_answer(text)}, ns="index")
             # семантический кэш: связываем эмбеддинг вопроса с ключом ответа
             if settings.get("ANSWER_CACHE_SEMANTIC"):
                 import retriever

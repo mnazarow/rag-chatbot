@@ -195,6 +195,9 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
                        "stream": True, "temperature": temperature,
                        "stream_options": {"include_usage": True}}
             headers = {"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"}
+            # vLLM с reasoning-моделью может печатать <think>…</think> прямо в content —
+            # фильтруем, если размышления выключены (как в ollama-ветке)
+            tf = None if _think() else _ThinkFilter()
             async with httpx.AsyncClient(timeout=None) as c:
                 async with c.stream("POST", url, json=payload, headers=headers) as r:
                     async for line in r.aiter_lines():
@@ -213,15 +216,24 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
                         delta = (choices[0].get("delta", {}).get("content", "")
                                  if choices else "")
                         if delta:
-                            nchars += len(delta)
-                            if nchars % 64 < len(delta):
-                                _act_tokens(cid, nchars)
-                            yield delta
+                            piece = tf.feed(delta) if tf else delta
+                            if piece:
+                                nchars += len(piece)
+                                if nchars % 64 < len(piece):
+                                    _act_tokens(cid, nchars)
+                                yield piece
+                    if tf:
+                        tail = tf.flush()
+                        if tail:
+                            nchars += len(tail); _act_tokens(cid, nchars); yield tail
         else:  # ollama
             url = f"{settings.get('OLLAMA_URL')}/api/chat"
+            # проба поддержки thinking делает синхронный httpx-запрос — уводим её с event loop
+            _think_kw = await asyncio.get_event_loop().run_in_executor(
+                None, _ollama_think_payload, model)
             payload = {"model": model, "messages": messages,
                        "stream": True, "options": {"temperature": temperature},
-                       **_ollama_think_payload(model)}
+                       **_think_kw}
             tf = _ThinkFilter()
             async with httpx.AsyncClient(timeout=None) as c:
                 async with c.stream("POST", url, json=payload) as r:
@@ -276,6 +288,8 @@ def chat(messages: list[dict], temperature: float = 0.1,
             )
             j = r.json()
             out = j["choices"][0]["message"]["content"]
+            if not _think():
+                out = _strip_think(out)
             u = j.get("usage") or {}
             ptok, ctok = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
         else:
@@ -359,7 +373,7 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
                           "messages": [{"role": "user", "content": content}]})
                 r.raise_for_status()
                 j = r.json()
-                out = (j["choices"][0]["message"]["content"] or "").strip()
+                out = _strip_think((j["choices"][0]["message"]["content"] or "")).strip()
                 u = j.get("usage") or {}
                 ptok, ctok = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
             else:

@@ -390,7 +390,8 @@ async def chat(req: ChatRequest):
         if cached:
             async def cached_stream():
                 yield _stg("answer_cache", "done", {"hit": True})
-                txt = cached.get("answer", "")
+                # совместимость с кэшем из Телеграма/VoIP: там текст лежит в "text"
+                txt = cached.get("answer") or cached.get("text") or ""
                 for i in range(0, len(txt), 40):
                     yield json.dumps({"type": "answer", "text": txt[i:i + 40]},
                                      ensure_ascii=False) + "\n"
@@ -482,13 +483,16 @@ async def chat(req: ChatRequest):
         yield _stg("generate", "start", {"backend": settings.get("LLM_BACKEND"),
                                          "model": settings.active_model(),
                                          "temperature": settings.get("TEMPERATURE")})
+        # strict: не стримим по токенам — сперва проверим/перегенерируем, затем отдадим финал
+        _strict = settings.get("ANSWER_VERIFY") == "strict"
         acc = []
         try:
             async for tok in llm_backend.chat_stream(
                     messages, temperature=settings.get("TEMPERATURE"),
                     model=settings.active_model(), kind="chat", label=req.question):
                 acc.append(tok)
-                yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
+                if not _strict:
+                    yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
@@ -503,22 +507,55 @@ async def chat(req: ChatRequest):
             return
         gen_ms = max(0, int((time.time() - t0) * 1000) - retrieve_ms)
         yield _stg("generate", "done", {"chars": len("".join(acc)), "ms": gen_ms}, gen_ms)
-        # проверка обоснованности: в веб-чате ответ уже стримится, поэтому при
-        # необеспеченности дописываем пометку отдельным фрагментом
-        if settings.get("ANSWER_VERIFY") in ("warn", "strict") and acc:
+        # проверка обоснованности (антигаллюцинации). verify.* делают синхронные вызовы LLM —
+        # уводим их с event loop через run_in_executor.
+        _vmode = settings.get("ANSWER_VERIFY")
+        if _vmode in ("warn", "strict") and acc:
+            import asyncio as _aio
+            _loop = _aio.get_event_loop()
+            _ans = "".join(acc)
             try:
                 import verify
-                _ans = "".join(acc)
-                if not prompts.is_no_answer(_ans) and not verify.is_grounded(req.question, _ans, context):
-                    acc.append(verify.CAVEAT)
-                    yield json.dumps({"type": "answer", "text": verify.CAVEAT},
-                                     ensure_ascii=False) + "\n"
-            except Exception:
-                pass
+                if _strict:
+                    # перегенерация ДО отдачи, если ответ не обоснован (потому и не стримили)
+                    yield _stg("verify", "start", {"mode": "strict"})
+                    vr = await _loop.run_in_executor(None, verify.apply,
+                                                     req.question, _ans, context)
+                    final = (vr or {}).get("answer", _ans)
+                    acc = [final]
+                    yield _stg("verify", "done", {"grounded": (vr or {}).get("grounded"),
+                                                  "changed": (vr or {}).get("changed")})
+                    for i in range(0, len(final), 40):
+                        yield json.dumps({"type": "answer", "text": final[i:i + 40]},
+                                         ensure_ascii=False) + "\n"
+                else:  # warn — как раньше: дописываем пометку, если не обосновано
+                    grounded = await _loop.run_in_executor(
+                        None, verify.is_grounded, req.question, _ans, context)
+                    if not prompts.is_no_answer(_ans) and not grounded:
+                        acc.append(verify.CAVEAT)
+                        yield json.dumps({"type": "answer", "text": verify.CAVEAT},
+                                         ensure_ascii=False) + "\n"
+            except Exception as _ve:
+                print(f"[chat] проверка обоснованности не удалась: {_ve}")
+                # strict: мы ещё ничего не отдали — отдаём исходный ответ
+                if _strict and _ans:
+                    for i in range(0, len(_ans), 40):
+                        yield json.dumps({"type": "answer", "text": _ans[i:i + 40]},
+                                         ensure_ascii=False) + "\n"
         out_sources = sources
         if settings.get("HIDE_SOURCES_IF_NO_ANSWER") and prompts.is_no_answer("".join(acc)):
             out_sources = []
         yield json.dumps({"type": "sources", "items": out_sources}, ensure_ascii=False) + "\n"
+        # «что попало в контекст» — фрагменты, реально поданные модели (сворачиваемый блок)
+        try:
+            _ctx_items = [{"n": i + 1, "source": h.get("source"), "page": h.get("page"),
+                           "score": round(h.get("score", 0), 3),
+                           "text": (h.get("parent") or h.get("text") or "")[:4000]}
+                          for i, h in enumerate(hits)]
+            yield json.dumps({"type": "context", "items": _ctx_items},
+                             ensure_ascii=False) + "\n"
+        except Exception:
+            pass
         latency = int((time.time() - t0) * 1000)
         if req.debug:
             yield json.dumps({"type": "debug", "info": {
@@ -537,7 +574,8 @@ async def chat(req: ChatRequest):
             try:
                 import cache
                 cache.set_json(acache_key, 86400, {
-                    "answer": "".join(acc), "sources": sources, "category": category,
+                    "answer": "".join(acc), "text": "".join(acc),  # "text" — для кросс-канального кэша
+                    "sources": sources, "category": category,
                     "n_hits": len(hits), "top_score": hits[0]["score"]}, ns="index")
                 # семантический кэш: связываем эмбеддинг вопроса с ключом ответа
                 if settings.get("ANSWER_CACHE_SEMANTIC"):
@@ -1295,6 +1333,26 @@ def api_reset_config(x_admin_token: str | None = Header(None)):
     return {"ok": True, "values": settings.reset()}
 
 
+@app.get("/api/admin/settings/export")
+def api_settings_export(secrets: int = 0, x_admin_token: str | None = Header(None)):
+    """Снимок настроек (JSON) для переноса между стендами. secrets=1 — включить секреты."""
+    _check_admin(x_admin_token)
+    import json as _json
+    data = settings.export_settings(include_secrets=bool(secrets))
+    body = _json.dumps({"settings": data}, ensure_ascii=False, indent=2)
+    from fastapi.responses import Response
+    fn = "rag_settings.json"
+    return Response(content=body, media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+@app.post("/api/admin/settings/import")
+def api_settings_import(payload: dict = Body(...), x_admin_token: str | None = Header(None)):
+    """Применить настройки из снимка (JSON). Пустые секреты не затирают заданные."""
+    _check_admin(x_admin_token)
+    return settings.import_settings(payload)
+
+
 @app.get("/api/mode")
 def api_mode():
     return {"current": settings.current_mode(), "modes": settings.modes_catalog()}
@@ -1954,6 +2012,13 @@ def admin_web_reparse_fresh(payload: dict = Body(...), x_admin_token: str | None
     _check_admin(x_admin_token)
     return admin_ops.web_reparse_fresh(payload.get("url", ""),
                                        index=payload.get("index", True))
+
+
+@app.post("/api/admin/web-parse/stop")
+def admin_web_parse_stop(x_admin_token: str | None = Header(None)):
+    """Кооперативно остановить текущий парсинг сайтов (между страницами/сайтами)."""
+    _check_admin(x_admin_token)
+    return admin_ops.stop_web_parse()
 
 
 @app.post("/api/admin/web-excludes")

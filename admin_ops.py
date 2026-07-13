@@ -1057,15 +1057,6 @@ def _web_filehash_save(m: dict) -> None:
         pass
 
 
-def _sha256_file(path) -> str | None:
-    try:
-        h = hashlib.sha256()
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                h.update(chunk)
-        return h.hexdigest()
-    except Exception:
-        return None
 
 
 def _web_cond_headers(fp: dict | None) -> dict:
@@ -1249,6 +1240,15 @@ def delete_web(url: str) -> dict:
     return {"ok": True, "msg": "сайт удалён из базы знаний"}
 
 
+def stop_web_parse() -> dict:
+    """Запросить кооперативную остановку парсинга сайтов. Обход прекращается между
+    страницами/сайтами (в пределах таймаута текущей страницы), уже скачанное — сохраняется."""
+    if not _web_job.get("running"):
+        return {"ok": False, "msg": "парсинг сайтов не запущен"}
+    _web_job["stop"] = True
+    return {"ok": True, "msg": "остановка запрошена — обход завершится после текущей страницы"}
+
+
 def web_reparse_fresh(url: str, index: bool = True) -> dict:
     """Удалить скачанные файлы сайта и его чанки, сбросить отпечатки инкремента —
     и спарсить сайт заново «с нуля» (всё скачивается повторно). Сайт остаётся в списке."""
@@ -1273,14 +1273,28 @@ def web_reparse_fresh(url: str, index: bool = True) -> dict:
         vectorstore.delete({"source": page_rel})
     except Exception:
         pass
-    # 2) скачанные файлы этого сайта (по его статистике) + их чанки
-    st = _web_stats_load().get(url) or {}
+    # 2) скачанные файлы этого сайта (по его статистике) + их чанки.
+    # ВАЖНО: из-за дедупа один и тот же файл может быть общим для нескольких сайтов —
+    # такие файлы (на которые ссылаются ДРУГИЕ сайты) не удаляем, иначе осиротим их чанки.
+    _all_stats = _web_stats_load()
+    st = _all_stats.get(url) or {}
+    other_sources = set()
+    for _ou, _os in _all_stats.items():
+        if _ou == url:
+            continue
+        for _oi in (_os.get("items") or []):
+            if _oi.get("source"):
+                other_sources.add(_oi["source"])
+    skipped_shared = 0
     for it in (st.get("items") or []):
         if it.get("kind") != "file":
             continue
         rel = it.get("source")
         if not rel:
             continue
+        if rel in other_sources:
+            skipped_shared += 1
+            continue   # файл общий с другим сайтом — не трогаем
         fpath = docroot / rel
         if fpath.exists():
             try:
@@ -1312,7 +1326,8 @@ def web_reparse_fresh(url: str, index: bool = True) -> dict:
         pass
     # 5) спарсить заново (save=False — не трогаем список остальных сайтов)
     r = ingest_web([url], index=index, save=False)
-    pref = f"удалено файлов: {removed}. "
+    pref = f"удалено файлов: {removed}"
+    pref += (f" (пропущено общих с др. сайтами: {skipped_shared}). " if skipped_shared else ". ")
     r["msg"] = pref + (r.get("msg") or "")
     return r
 
@@ -1943,6 +1958,21 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
     from urllib.parse import urlparse
     from concurrent.futures import ThreadPoolExecutor
     import faulthandler   # сторож: при зависании страницы дампит стек в stderr (docker logs)
+    # Таймер faulthandler один на процесс — при параллельных сайтах потоки перезаписывают/
+    # отменяют чужой таймер, поэтому сторож включаем только в последовательном режиме.
+    _watch = bool(ctx.get("watchdog", True))
+    def _wd_arm(sec):
+        if _watch:
+            try:
+                faulthandler.dump_traceback_later(sec)
+            except Exception:
+                pass
+    def _wd_cancel():
+        if _watch:
+            try:
+                faulthandler.cancel_dump_traceback_later()
+            except Exception:
+                pass
     depth = ctx["depth"]; max_pages = ctx["max_pages"]; same_domain = ctx["same_domain"]
     excludes = ctx.get("excludes"); client = ctx.get("client")
     headers = ctx.get("headers") or {}; cookies = ctx.get("cookies") or {}
@@ -1970,6 +2000,12 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
     par = 1 if crawl_delay > 0 else max(1, int(ctx.get("workers") or 1))
     js_auto = bool(settings.get("WEB_JS_AUTO"))
     base_wait = (settings.get("WEB_JS_WAIT") or "domcontentloaded").strip().lower()
+    _stop = ctx.get("stop")   # кооперативная остановка: проверяем между страницами
+    def _stopped():
+        try:
+            return bool(_stop and _stop())
+        except Exception:
+            return False
 
     def _skip(u):
         nonlocal excluded_n, robots_skipped
@@ -1982,6 +2018,9 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
         return False
 
     while level and len(pages) < max_pages:
+        if _stopped():
+            errors.append("остановлено пользователем")
+            break
         batch = []
         for url, d in level:
             if url in seen:
@@ -2019,6 +2058,8 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
         # фаза 2: разбор + браузер (только где нужен)
         fetched = []
         for (u, dd) in batch:
+            if _stopped():
+                break
             res = results.get(u) or {}
             # инкремент: сервер сказал «не изменилось» — берём текст из кэша, без рендера
             if incremental and res.get("not_modified"):
@@ -2035,7 +2076,7 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
                 need = (html is None) or (not js_auto) or (_visible_text_len(html) < _WEB_JS_MIN_WORDS)
                 if need:
                     log(f"  · рендер (браузер): {u}")
-                    faulthandler.dump_traceback_later(150)   # если рендер завис >150с — стек в stderr
+                    _wd_arm(150)   # если рендер завис >150с — стек в stderr (только seq-режим)
                     try:
                         rhtml = renderer.render(u)
                         if base_wait != "networkidle" and _visible_text_len(rhtml or "") < _WEB_JS_MIN_WORDS:
@@ -2045,7 +2086,7 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
                         if rhtml:
                             html = rhtml
                     finally:
-                        faulthandler.cancel_dump_traceback_later()
+                        _wd_cancel()
             fetched.append((u, dd, html, res))
 
         next_level = []
@@ -2060,12 +2101,12 @@ def _web_crawl(seed: str, renderer, log, ctx: dict):
                 log(f"  ⚠ большой HTML {len(html)//1024} КБ — усечён для разбора: {url}")
                 html = html[:_WEB_MAX_HTML]
             log(f"  · разбор: {url}")
-            faulthandler.dump_traceback_later(120)   # если разбор завис >120с — стек в stderr
+            _wd_arm(120)   # если разбор завис >120с — стек в stderr (только seq-режим)
             try:
                 text = _web_extract(html)
                 title = _web_title(html, url)
             finally:
-                faulthandler.cancel_dump_traceback_later()
+                _wd_cancel()
             if text:
                 pages.append((url, title, text))
                 log(f"  стр. {len(pages)}/{max_pages}: {url}  ({len(text)} симв.)")
@@ -2122,7 +2163,7 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
 
     def run():
         _web_job.update(running=True, started=time.time(), finished=None, ok=None,
-                        log="", summary="", logfile=logfile)
+                        log="", summary="", logfile=logfile, stop=False)
         ok = err = 0
         rc = -1
         try:
@@ -2196,8 +2237,11 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                         site_errors, site_limits, site_items = [], {}, []
                         site_depth_urls = []
                         pages, dl, site_ok = [], 0, False
-                        stats_map[u] = {"url": u, "ts": time.time(), "items": [],
-                                        "progress": {"phase": "crawl", "pct": 8}}
+                        # добавление нового ключа верхнего уровня — под локом (иначе гонка с
+                        # json.dumps в _save_stats из другого потока-сайта)
+                        with _wlock:
+                            stats_map[u] = {"url": u, "ts": time.time(), "items": [],
+                                            "progress": {"phase": "crawl", "pct": 8}}
                         _save_stats()
                         try:
                             _log(f"САЙТ: {u}")
@@ -2250,7 +2294,8 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                     "disallow": disallow, "crawl_delay": crawl_delay,
                                     "sitemap_urls": sitemap_urls, "use_render": s_render,
                                     "incremental": incremental, "fp_map": fp_map, "fp_out": fp_out,
-                                    "reused": []}
+                                    "reused": [], "watchdog": site_par <= 1,
+                                    "stop": lambda: bool(_web_job.get("stop"))}
                             pages, file_urls, cstat = _web_crawl(u, renderer, _log, _ctx)
                             site_errors.extend(cstat.get("errors", []))
                             if cstat.get("excluded"):
@@ -2307,6 +2352,12 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                 if done % 5 == 0:
                                     _save_stats()
 
+                            # Playwright sync привязан к потоку, где создан браузер (поток сайта).
+                            # При параллельном скачивании (s_workers>1) файлы качаются в пуле
+                            # потоков — из них renderer трогать нельзя, поэтому WAF-фолбэк через
+                            # браузер доступен только в последовательном режиме.
+                            _dl_browser = renderer if s_workers <= 1 else None
+
                             # скачивание одного файла: авторизация + инкремент (304 →
                             # переиспользуем файл с диска) + запись отпечатка
                             def _dl_file(furl):
@@ -2314,7 +2365,7 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                 cond = _web_cond_headers(prev) if incremental else None
                                 p, reason, fpx, nm = _web_download(furl, filesdir, _log, client,
                                                                    a_headers, a_cookies, cond,
-                                                                   browser=renderer)
+                                                                   browser=_dl_browser)
                                 if nm:
                                     relp = prev.get("path")
                                     cachedp = (_docroot / relp) if relp else None
@@ -2323,7 +2374,7 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                         return cachedp, "не изменился (кэш)"
                                     p, reason, fpx, nm = _web_download(furl, filesdir, _log,
                                                                        client, a_headers, a_cookies,
-                                                                       None, browser=renderer)
+                                                                       None, browser=_dl_browser)
                                 if p is not None:
                                     # дедуп по содержимому: одинаковый файл (с любого сайта)
                                     # не дублируем — переиспользуем уже сохранённый
@@ -2432,12 +2483,19 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                         _save_stats()
 
                     # запуск сайтов: последовательно или параллельно (каждый — свой поток+браузер)
+                    def _site_guarded(u):
+                        if _web_job.get("stop"):
+                            return
+                        _parse_site(u)
                     if site_par > 1 and len(urls) > 1:
                         from concurrent.futures import ThreadPoolExecutor as _TPE
                         with _TPE(max_workers=min(site_par, len(urls))) as _ex:
-                            list(_ex.map(_parse_site, urls))
+                            list(_ex.map(_site_guarded, urls))
                     else:
                         for u in urls:
+                            if _web_job.get("stop"):
+                                _log("⏹ остановлено пользователем — оставшиеся сайты пропущены")
+                                break
                             _parse_site(u)
                     ok, err = counters["ok"], counters["err"]
                 finally:
@@ -5503,13 +5561,17 @@ _CAT_FLUSH_FILES = 100               # размер пакета записи (�
 _CAT_FLUSH_BYTES = 16 * 1024 * 1024  # либо по суммарному объёму содержимого в пакете
 
 
-def _sha256_file(p) -> str:
-    """SHA-256 файла потоково (без загрузки целиком в память)."""
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _sha256_file(p) -> str | None:
+    """SHA-256 файла потоково (без загрузки целиком в память). None при ошибке чтения —
+    вызывающий код (дедуп, каталог) корректно обрабатывает отсутствие хэша."""
+    try:
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
 
 
 def _catalog_prepare(rel, p, sz, mt, method, txt, ex):

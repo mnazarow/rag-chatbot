@@ -161,10 +161,18 @@ def _alerts_tick():
         if time.time() - last < iv:
             return
         import alerts
-        r = alerts.health_tick()
+        # проверку + рассылку (SMTP/Telegram могут быть медленными) уводим в отдельный
+        # поток, чтобы не блокировать цикл монитора (сбор метрик и пр.)
         db.kv_set("alerts_last", str(time.time()))
-        if r.get("down"):
-            print(f"[alerts] недоступны: {', '.join(r['down'])}")
+
+        def _run():
+            try:
+                r = alerts.health_tick()
+                if r.get("down"):
+                    print(f"[alerts] недоступны: {', '.join(r['down'])}")
+            except Exception as e:
+                print(f"[alerts] health_tick: {e}")
+        threading.Thread(target=_run, daemon=True, name="alerts-tick").start()
     except Exception as e:
         print(f"[alerts] tick: {e}")
 

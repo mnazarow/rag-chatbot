@@ -82,6 +82,17 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
 }
 
 # ----- 4. Перезапуск проекта в Docker -----
+# гарантируем наличие .env.docker и state-файлов (bind-mount'ы требуют файлы, не папки)
+if (-not (Test-Path ".env.docker")) {
+    if (Test-Path ".env.docker.example") { Copy-Item ".env.docker.example" ".env.docker" }
+    else { "" | Set-Content ".env.docker" }
+}
+New-Item -ItemType Directory -Force -Path "state" | Out-Null
+if (-not (Test-Path "state\runtime_config.json")) { "{}" | Set-Content "state\runtime_config.json" }
+if (-not (Test-Path "state\ingest_stats.json"))   { "{}" | Set-Content "state\ingest_stats.json" }
+if (-not (Test-Path "state\rag_logs.db"))          { New-Item -ItemType File -Force -Path "state\rag_logs.db" | Out-Null }
+New-Item -ItemType Directory -Force -Path "backups" | Out-Null
+
 $Compose = @("-f","docker-compose.windows.yml")
 if (-not $Cpu) { $Compose += @("-f","docker-compose.gpu.yml") }
 Log "Перезапускаю контейнеры проекта (данные сохраняются)..."

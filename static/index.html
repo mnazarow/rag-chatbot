@@ -1365,9 +1365,14 @@
     <!-- авто-сгенерированные поля по группам -->
     <div id="cfgroot"></div>
 
-    <div class="box" style="display:flex;align-items:center;gap:10px">
+    <div class="box" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <button class="act" onclick="saveConfig()">💾 Сохранить настройки</button>
       <button class="act ghost" onclick="resetConfig()">Сбросить к умолчаниям</button>
+      <span style="width:1px;height:22px;background:var(--line)"></span>
+      <button class="act ghost" onclick="exportSettings(false)" title="Скачать настройки в JSON (без секретов)">⬇ Экспорт</button>
+      <button class="act ghost" onclick="exportSettings(true)" title="Скачать настройки в JSON ВКЛЮЧАЯ секреты (токены/пароли) — храните файл в безопасности">⬇ Экспорт с секретами</button>
+      <button class="act ghost" onclick="document.getElementById('cfg_import_file').click()" title="Загрузить настройки из JSON-файла">⬆ Импорт</button>
+      <input type="file" id="cfg_import_file" accept="application/json,.json" style="display:none" onchange="importSettings(this)">
       <span id="savemsg"></span>
     </div>
 
@@ -1985,6 +1990,7 @@
         <button class="act" onclick="ingestWeb(true)">🌐 Спарсить и добавить в базу</button>
         <button class="act ghost" onclick="ingestWeb(false)" title="Скачать содержимое без индексации — проиндексировать можно позже">📥 Только спарсить</button>
         <button class="act ghost" onclick="webClearQueue()">Очистить очередь</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="stopWebParse()">⏹ Остановить парсинг</button>
         <button class="act ghost" onclick="loadWebUrls()">Обновить список</button>
         <span id="webmsg"></span>
       </div>
@@ -5595,6 +5601,12 @@ async function loadWebUrls(){
   const log=$('#weblog');
   if(log){ if(r.log){ log.style.display='block'; log.textContent=r.log; } else log.style.display='none'; }
 }
+async function stopWebParse(){
+  webMsg('запрос остановки парсинга…');
+  const r=await adminPost('/api/admin/web-parse/stop');
+  webMsg(r.msg||(r.ok?'остановка запрошена':'парсинг не запущен'),r.ok!==false);
+  pollJob(); pollWeb();
+}
 async function ingestWeb(index){
   if(index===undefined) index=true;
   webAdd();                       // подхватить адрес, оставшийся в поле ввода
@@ -6008,6 +6020,31 @@ async function resetConfig(){
   $('#savemsg').className=r.ok?'saved':'note';
   if(r.ok) loadConfig();
   setTimeout(()=>$('#savemsg').textContent='',3500);
+}
+async function exportSettings(withSecrets){
+  if(withSecrets && !confirm('Файл будет содержать СЕКРЕТЫ (токены/пароли) в открытом виде. Хранить в безопасном месте. Продолжить?'))return;
+  try{
+    const r=await fetch('/api/admin/settings/export?secrets='+(withSecrets?1:0)+'&t='+Date.now(),
+      {cache:'no-store',headers:{'X-Admin-Token':tok()}});
+    if(!r.ok){ $('#savemsg').textContent='✗ ошибка экспорта ('+r.status+')'; $('#savemsg').className='note'; return; }
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.download='rag_settings.json'; document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
+    $('#savemsg').textContent='✓ Экспортировано'+(withSecrets?' (с секретами)':''); $('#savemsg').className='saved';
+    setTimeout(()=>$('#savemsg').textContent='',3500);
+  }catch(e){ $('#savemsg').textContent='✗ '+e.message; $('#savemsg').className='note'; }
+}
+async function importSettings(inp){
+  const f=inp.files&&inp.files[0]; inp.value='';
+  if(!f) return;
+  if(!confirm('Применить настройки из файла «'+f.name+'»? Текущие значения будут перезаписаны (пустые секреты не затираются).'))return;
+  let data; try{ data=JSON.parse(await f.text()); }catch(e){ $('#savemsg').textContent='✗ файл не является корректным JSON'; $('#savemsg').className='note'; return; }
+  const r=await adminPost('/api/admin/settings/import',data);
+  $('#savemsg').textContent=(r&&r.ok!==false)?('✓ '+(r.msg||'импортировано')):('✗ '+((r&&r.msg)||'ошибка'));
+  $('#savemsg').className=(r&&r.ok!==false)?'saved':'note';
+  if(r&&r.ok!==false) loadConfig();
+  setTimeout(()=>$('#savemsg').textContent='',5000);
 }
 
 // ---- админка: операции ----
@@ -6830,6 +6867,7 @@ async function ask(){
           const s=document.createElement('div');s.className='src';
           s.innerHTML=renderSources(ev.items);
           bot.appendChild(s);}
+        else if(ev.type==='context'&&ev.items&&ev.items.length){ addContext(bot,ev.items); }
         else if(ev.type==='debug'&&ev.info){ addDebug(bot,ev.info); }
         else if(ev.type==='error'){
           const em=document.createElement('div'); em.className='note';
@@ -6931,6 +6969,25 @@ function _hlWords(text, q){
 function citeSnippet(i){
   if(!i.snippet) return '';
   return `<div class="note" style="margin:2px 0 6px 0;padding:5px 8px;border-left:3px solid var(--accent);background:var(--panel2);border-radius:0 6px 6px 0;font-size:12px;line-height:1.4">«…${_hlWords(i.snippet,_lastQ)}…»</div>`;
+}
+function addContext(bot, items){
+  // сворачиваемый блок «что попало в контекст» — фрагменты, поданные модели
+  const d=document.createElement('details');
+  d.style.cssText='margin-top:6px;font-size:12px';
+  const sm=document.createElement('summary');
+  sm.style.cssText='cursor:pointer;color:var(--muted)';
+  sm.textContent='🔍 Что попало в контекст ('+items.length+' фрагм.)';
+  d.appendChild(sm);
+  const wrap=document.createElement('div');
+  wrap.style.cssText='margin-top:6px;max-height:340px;overflow:auto';
+  wrap.innerHTML=items.map(it=>{
+    const loc=esc(it.source||'')+(it.page?(', с.'+it.page):'')+(it.score!=null?(' · '+it.score):'');
+    return `<div style="margin:4px 0;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel2)">
+      <div class="note" style="margin-bottom:3px">[${it.n}] ${loc}</div>
+      <div style="white-space:pre-wrap;line-height:1.4">${_hlWords(it.text||'',_lastQ)}</div></div>`;
+  }).join('');
+  d.appendChild(wrap);
+  bot.appendChild(d);
 }
 function renderSources(items){
   let html='<div style="margin-bottom:4px">Источники:</div>';
@@ -7061,6 +7118,7 @@ const STAGE_META={
   attach:{icon:'📎',label:'Разбор документа'},
   context:{icon:'📋',label:'Сборка контекста'},
   generate:{icon:'🧠',label:'Генерация (LLM)'},
+  verify:{icon:'🛡',label:'Проверка обоснованности'},
   engine:{icon:'🧩',label:'Движок'},
   kag_decompose:{icon:'🪓',label:'KAG: декомпозиция вопроса'},
   kag_retrieve:{icon:'🔗',label:'KAG: мультихоп-поиск'},

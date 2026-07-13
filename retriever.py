@@ -150,10 +150,30 @@ def _build_filter(filters: dict | None) -> dict | None:
     return flt or None
 
 
+# Внутрипроцессный LRU-кэш вектора запроса: горячие/повторные вопросы не гоняют ни
+# эмбеддер, ни Redis (работает и при выключенном Redis). Ключ — (модель, норм. вопрос).
+import threading as _threading
+from collections import OrderedDict as _OrderedDict
+_QEMB_LRU: "_OrderedDict[tuple, list]" = _OrderedDict()
+_QEMB_MAX = 512
+_QEMB_LOCK = _threading.Lock()
+
+
 def _embed_query(question: str):
-    """Вектор запроса с кэшированием в Redis (ключ привязан к модели эмбеддингов;
-    при выключенном/недоступном Redis считается напрямую). Возвращает list[float]."""
+    """Вектор запроса с двухуровневым кэшем: внутрипроцессный LRU → Redis → расчёт.
+    Ключ привязан к модели эмбеддингов и нормализованному вопросу. Возвращает list[float]."""
     model = settings.get("EMBED_MODEL")
+    try:
+        import cache
+        nq = cache.norm_q(question)
+    except Exception:
+        nq = (question or "").strip().lower()
+    lkey = (model, nq)
+    with _QEMB_LOCK:
+        v = _QEMB_LRU.get(lkey)
+        if v is not None:
+            _QEMB_LRU.move_to_end(lkey)
+            return v
 
     def _enc():
         import metrics
@@ -162,10 +182,16 @@ def _embed_query(question: str):
 
     try:
         import cache
-        key = "emb:" + hashlib.sha1(f"{model}|{cache.norm_q(question)}".encode("utf-8")).hexdigest()
-        return cache.get_or_set(key, 86400, _enc, ns="embed")
+        key = "emb:" + hashlib.sha1(f"{model}|{nq}".encode("utf-8")).hexdigest()
+        vec = cache.get_or_set(key, 86400, _enc, ns="embed")
     except Exception:
-        return _enc()
+        vec = _enc()
+    with _QEMB_LOCK:
+        _QEMB_LRU[lkey] = vec
+        _QEMB_LRU.move_to_end(lkey)
+        while len(_QEMB_LRU) > _QEMB_MAX:
+            _QEMB_LRU.popitem(last=False)
+    return vec
 
 
 def _dense_search(qvec, qfilter):

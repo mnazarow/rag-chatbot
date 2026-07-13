@@ -63,6 +63,21 @@ if (-not $NoPull) {
     }
 }
 
+# ----- 1b. Гарантируем наличие .env.docker и state-файлов -----
+# ВАЖНО: одиночные bind-mount'ы (runtime_config.json, rag_logs.db, ingest_stats.json)
+# требуют СУЩЕСТВУЮЩИХ файлов — иначе Docker создаст на их месте ПАПКИ и приложение
+# сломается. Гарантируем их наличие и здесь (а не только в start.cmd), чтобы update/
+# restart можно было запускать первыми.
+if (-not (Test-Path ".env.docker")) {
+    if (Test-Path ".env.docker.example") { Copy-Item ".env.docker.example" ".env.docker"; Log "Создан .env.docker из примера." }
+    else { "" | Set-Content ".env.docker"; Warn ".env.docker.example не найден — создан пустой .env.docker." }
+}
+New-Item -ItemType Directory -Force -Path "state" | Out-Null
+if (-not (Test-Path "state\runtime_config.json")) { "{}" | Set-Content "state\runtime_config.json" }
+if (-not (Test-Path "state\ingest_stats.json"))   { "{}" | Set-Content "state\ingest_stats.json" }
+if (-not (Test-Path "state\rag_logs.db"))          { New-Item -ItemType File -Force -Path "state\rag_logs.db" | Out-Null }
+New-Item -ItemType Directory -Force -Path "backups" | Out-Null
+
 # ----- 2. Пересборка образа и перезапуск контейнеров -----
 if (-not $Cpu) { Log "Режим GPU (по умолчанию): пересобираю CUDA-образ и пробрасываю NVIDIA GPU. Для CPU — ключ -Cpu." }
 Log "Пересобираю образ приложения и перезапускаю контейнеры (данные сохраняются)..."

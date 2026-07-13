@@ -3,7 +3,9 @@
 #
 # Использование (вместе с основным compose):
 #   docker compose -f docker-compose.windows.yml -f docker-compose.gpu.yml up -d --build
-# Либо через лаунчер:  start.cmd -Cuda      (или  install.ps1 ... -Cuda)
+# Либо через лаунчер:  start.cmd / update.cmd   (GPU включён ПО УМОЛЧАНИЮ).
+#   Для CPU-режима добавьте ключ  -Cpu  (напр.  update.cmd -Cpu).  Отдельного ключа
+#   «-Cuda» нет — GPU и так по умолчанию.
 #
 # Что делает:
 #   - собирает образ с CUDA-сборкой PyTorch (build-arg TORCH_INDEX_URL=cu124);
