@@ -29,7 +29,8 @@ nvidia-smi -L
 # ----- 1. системные пакеты --------------------------------------------------
 log "Устанавливаю базовые пакеты..."
 apt-get update -y
-apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg
+apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg git
+apt-get install -y libgl1 libglib2.0-0 espeak-ng 2>/dev/null || true   # OpenCV/pymupdf/rawpy + TTS (espeak)
 apt-get install -y tesseract-ocr tesseract-ocr-rus libredwg-tools antiword p7zip-full unar 2>/dev/null || true   # OCR (rus) + DWG + .doc + архивы
 # ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb
 bash "${ROOT_DIR}/scripts/install_oda.sh" "${ROOT_DIR}" || true
@@ -84,6 +85,8 @@ source .venv/bin/activate
 pip install --upgrade pip wheel
 pip install torch --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
 pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
+# headless-браузер для парсинга JS-сайтов (браузер + системные зависимости)
+python -m playwright install --with-deps chromium 2>/dev/null || python -m playwright install chromium 2>/dev/null || true
 # приложение читает .env из текущей папки — кладём симлинк на gpu-конфиг
 ln -sf "${PROJECT_DIR}/.env" "${ROOT_DIR}/.env"
 

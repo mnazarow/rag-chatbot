@@ -115,6 +115,18 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
     Warn "Установите вручную: winget install -e --id Ollama.Ollama"
 }
 
+# ----- 2b. Git (нужен для обновлений через update.cmd). Остальные пакеты (Python,
+#           ffmpeg, tesseract, playwright/chromium, espeak и т.п.) — внутри образа. -----
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Log "Устанавливаю Git (winget; нужен для обновлений update.cmd)..."
+        winget install -e --id Git.Git --silent --accept-source-agreements --accept-package-agreements
+        Refresh-Path
+    } else {
+        Warn "Git не найден — обновления через update.cmd будут недоступны (winget install -e --id Git.Git)."
+    }
+}
+
 # ----- 3. Конфиг .env.docker -----
 if (-not (Test-Path ".env.docker")) {
     Copy-Item ".env.docker.example" ".env.docker"

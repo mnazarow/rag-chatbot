@@ -31,7 +31,9 @@ nvidia-smi -L
 log "Системные пакеты..."
 apt-get update -y
 # системный python3 (3.10–3.12 подходят) + venv + pip; версия-специфичный пакет не требуется
-apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg
+apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg git
+apt-get install -y libgl1 libglib2.0-0 2>/dev/null || true   # зависимости OpenCV/pymupdf/rawpy (загрузка изображений)
+apt-get install -y espeak-ng 2>/dev/null || true   # синтез речи для голосовых ответов (TTS)
 apt-get install -y libredwg-tools 2>/dev/null || true   # dwg2dxf: конвертация DWG (необязательно)
 apt-get install -y tesseract-ocr tesseract-ocr-rus 2>/dev/null || true   # OCR для CR2/фото
 apt-get install -y antiword 2>/dev/null || true   # чтение старого .doc
@@ -92,6 +94,10 @@ sudo -u "${RUN_USER}" ./.venv/bin/pip install torch --index-url "https://downloa
   exit 1; }
 sudo -u "${RUN_USER}" ./.venv/bin/pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
 sudo -u "${RUN_USER}" ./.venv/bin/pip install -q ezdxf rawpy pytesseract Pillow matplotlib extract-msg py7zr rarfile psutil || true   # DWG/DXF + OCR + Outlook .msg + архивы + метрики
+# headless-браузер для парсинга JS-сайтов: OS-зависимости ставим от root (apt),
+# сам браузер — в кэш пользователя сервиса (иначе приложение его не найдёт)
+"${ROOT_DIR}/.venv/bin/python" -m playwright install-deps chromium 2>/dev/null || true
+sudo -u "${RUN_USER}" ./.venv/bin/python -m playwright install chromium 2>/dev/null || true
 chmod +x "${PROJECT_DIR}/apply_llm.sh"
 
 # ----- 5. systemd-сервис API (автозапуск + Restart=always) ------------------

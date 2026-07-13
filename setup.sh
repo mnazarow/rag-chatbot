@@ -43,6 +43,7 @@ brew install python@3.11 ffmpeg libmagic poppler tesseract tesseract-lang || tru
 brew install libredwg || true   # dwg2dxf: конвертация DWG в DXF (необязательно)
 brew install antiword || true    # чтение старого .doc (Word 97-2003)
 brew install p7zip unar || true  # распаковка архивов (.7z/.rar и др.)
+brew install espeak || true      # синтез речи (TTS); на macOS есть и системный `say`
 brew install --cask docker || true          # для Qdrant (Docker Desktop)
 brew install ollama || true
 
@@ -69,6 +70,8 @@ source .venv/bin/activate
 pip install --upgrade pip wheel
 pip install -r requirements.txt
 pip install -q ezdxf rawpy pytesseract Pillow matplotlib extract-msg py7zr rarfile psutil || true   # DWG/DXF + OCR (RAW/фото) + Outlook .msg + архивы + метрики сервера
+# headless-браузер для парсинга JS-сайтов (на macOS зависимости идут с браузером)
+python -m playwright install chromium 2>/dev/null || true
 
 # ----- 6. .env --------------------------------------------------------------
 if [[ ! -f "${PROJECT_DIR}/.env" ]]; then

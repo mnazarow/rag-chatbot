@@ -21,6 +21,16 @@ LLM_MODEL="${LLM_MODEL:-qwen3.6:35b-a3b-q4_K_M}"
 AUTO="${NO_AUTOINSTALL:-0}"
 SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
 
+# ----- 0. базовые утилиты (нужны для установки Docker/Ollama и git-обновлений) -----
+# Все прикладные пакеты (Python, ffmpeg, tesseract, playwright/chromium, espeak и т.п.)
+# ставятся ВНУТРИ образа приложения (Dockerfile) — на хосте достаточно этих утилит.
+if [ "$OS" = "Linux" ] && command -v apt-get >/dev/null 2>&1; then
+  if ! command -v curl >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || ! command -v gpg >/dev/null 2>&1; then
+    log "Ставлю базовые пакеты (curl, ca-certificates, git, gnupg)…"
+    $SUDO apt-get update -y && $SUDO apt-get install -y curl ca-certificates git gnupg || true
+  fi
+fi
+
 # ----- 1. Docker -----
 if ! command -v docker >/dev/null 2>&1; then
   if [ "$AUTO" = "1" ]; then red "Docker не найден (NO_AUTOINSTALL=1)."; exit 1; fi
