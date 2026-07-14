@@ -137,9 +137,9 @@ apt-get install -y espeak-ng 2>/dev/null || true   # синтез речи дл�
 apt-get install -y libredwg-tools 2>/dev/null || true   # dwg2dxf: конвертация DWG (необязательно)
 # критичные пакеты извлечения контента: OCR + .doc + архивы + PDF→картинки.
 # Ставим НЕ молча (с повтором), затем проверяем и явно предупреждаем, если не встало.
-_content_pkgs="tesseract-ocr tesseract-ocr-rus antiword p7zip-full unar poppler-utils"
+_content_pkgs="tesseract-ocr tesseract-ocr-rus antiword p7zip-full unar libarchive-tools poppler-utils"
 apt-get install -y ${_content_pkgs} || { apt-get update -y; apt-get install -y ${_content_pkgs} || true; }
-for _b in tesseract antiword 7z unar pdftoppm; do
+for _b in tesseract antiword 7z unar bsdtar pdftoppm; do
   command -v "${_b}" >/dev/null 2>&1 || echo "[!] системный пакет для '${_b}' не установился — доставьте: sudo apt install -y ${_content_pkgs}"
 done
 # ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb

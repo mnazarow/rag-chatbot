@@ -222,6 +222,10 @@ PROMPT_INJECTION_GUARD = _bool("PROMPT_INJECTION_GUARD", True)
 # (с учётом истории) перед поиском. Генерация ответа — по оригиналу и истории.
 DIALOG_REWRITE = _bool("DIALOG_REWRITE", True)
 VISION_MODEL = os.getenv("VISION_MODEL", "")   # vision-модель (пусто = основная LLM)
+# Максимальная сторона изображения перед отправкой vision-модели (px). Большие фото/сканы
+# раздувают число image-токенов и память vLLM (частая причина «Server disconnected»/краша).
+# 0 — не уменьшать. По умолчанию 1536.
+VISION_MAX_SIDE = _int("VISION_MAX_SIDE", 1536)
 VISION_TIMEOUT = _int("VISION_TIMEOUT", 180)   # таймаут запроса к vision-модели, сек
 VISION_RETRIES = _int("VISION_RETRIES", 2)     # число попыток описать изображение
 # Tesseract PSM (page segmentation mode): 3 — авто; 4 — колонками; 6 — единый блок;

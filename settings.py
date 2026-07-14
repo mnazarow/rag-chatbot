@@ -521,6 +521,12 @@ FIELDS: list[dict] = [
              "<code>gemma3</code> (Ollama). Имя должно совпадать с тем, что реально обслуживает "
              "vLLM/Ollama (для vLLM это одна обслуживаемая модель — см. примечание ниже). "
              "Пусто = основная LLM, если она с поддержкой изображений."},
+    {"key": "VISION_MAX_SIDE", "label": "Макс. сторона картинки для vision (px)",
+     "group": "OCR (распознавание текста)", "type": "int", "scope": "live",
+     "default": config.VISION_MAX_SIDE,
+     "desc": "Большие фото/сканы уменьшаются до этого размера перед отправкой vision-модели. "
+             "Снижает число image-токенов и память vLLM (частая причина «Server disconnected»/"
+             "краша движка). 0 — не уменьшать. По умолчанию 1536."},
     {"key": "VISION_TIMEOUT", "label": "Таймаут vision-модели, сек",
      "group": "OCR (распознавание текста)", "type": "int", "scope": "live",
      "default": config.VISION_TIMEOUT,

@@ -334,15 +334,25 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
     import base64
     import io
     try:
+        from PIL import Image
         if hasattr(image, "save"):                    # PIL.Image
-            buf = io.BytesIO()
-            image.convert("RGB").save(buf, format="PNG")
-            data = buf.getvalue()
+            im = image
         elif isinstance(image, (bytes, bytearray)):
-            data = bytes(image)
+            im = Image.open(io.BytesIO(bytes(image)))
         else:
-            with open(image, "rb") as f:
-                data = f.read()
+            im = Image.open(image)
+        im = im.convert("RGB")
+        # Уменьшаем большие изображения: гигантские фото/сканы дают очень много image-токенов
+        # и раздувают память vLLM — частая причина «Server disconnected» (краш воркера).
+        try:
+            max_side = int(settings.get("VISION_MAX_SIDE") or 1536)
+        except Exception:
+            max_side = 1536
+        if max_side > 0 and max(im.size) > max_side:
+            im.thumbnail((max_side, max_side))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        data = buf.getvalue()
     except Exception as e:
         print(f"[vision] чтение изображения: {e}")
         return ""

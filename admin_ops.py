@@ -1720,6 +1720,11 @@ def _web_download(url: str, dest_dir, log, client=None,
                                     last = pct
                                     log(f"        {name}: {pct}% "
                                         f"({_fmt_bytes(got)} из {_fmt_bytes(total)})")
+                # Защита от «обрезанных» загрузок: если сервер обещал content-length,
+                # но прислал меньше — файл неполный (частая причина битых архивов/PDF).
+                # Бросаем как временную ошибку → сработает повтор, а не сохранение обрезка.
+                if total and got < total:
+                    raise httpx.ReadError(f"неполная загрузка: {got} из {total} байт")
                 tmp.rename(out)
                 log(f"    ФАЙЛ сохранён: {out.name} ({_fmt_bytes(got)})")
                 fp["size"] = got

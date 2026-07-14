@@ -226,6 +226,51 @@ def _rem(c, key: str, local: dict, tok: str) -> None:
         local.pop(tok, None)
 
 
+# Атомарный «занять слот, если активных < m». Проверка счётчика и добавление ДОЛЖНЫ быть
+# атомарны, иначе всплеск параллельных вызовов (напр. 8 vision-запросов ingest) проскакивает
+# лимит (виден эффект «выполняется 3 / 1»). Для Redis — Lua (atomic), для SQLite — транзакция
+# BEGIN IMMEDIATE, для памяти процесса — под _lock.
+_ACQ_LUA = ("redis.call('zremrangebyscore', KEYS[1], '-inf', ARGV[1]) "
+            "local n = redis.call('zcard', KEYS[1]) "
+            "if tonumber(n) < tonumber(ARGV[2]) then "
+            "redis.call('zadd', KEYS[1], ARGV[3], ARGV[4]) return 1 end return 0")
+
+
+def _try_acquire(c, tok: str, m: int) -> bool:
+    """Атомарно занять слот, если активных < m. True — занято, False — мест нет."""
+    now = time.time()
+    if c is not None:
+        try:
+            return int(c.eval(_ACQ_LUA, 1, _ACTIVE, now, m, now + _HOLD_TTL, tok)) == 1
+        except Exception:
+            pass
+    else:
+        conn = _sql()
+        if conn is not None:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM llm_queue WHERE expire < ?", (now,))
+                r = conn.execute("SELECT COUNT(*) FROM llm_queue WHERE kind='active'").fetchone()
+                if (int(r[0]) if r else 0) < m:
+                    conn.execute("INSERT OR REPLACE INTO llm_queue(kind,tok,expire) VALUES('active',?,?)",
+                                 (tok, now + _HOLD_TTL))
+                    conn.execute("COMMIT")
+                    return True
+                conn.execute("COMMIT")
+                return False
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+    with _lock:                                 # локально в пределах процесса — атомарно
+        _prune_local(_local_active)
+        if len(_local_active) < m:
+            _local_active[tok] = now + _HOLD_TTL
+            return True
+    return False
+
+
 def acquire() -> str:
     """Занять слот к LLM (блокирующе). Возвращает токен для release()."""
     tok = f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
@@ -257,20 +302,23 @@ def acquire() -> str:
         else:
             with _lock:
                 _local_wait[tok] = time.time() + _WAIT_TTL
+    got = False
     try:
         while True:
             m = _limit()
             if m <= 0:
-                break
-            if _active_count(c) < m:
+                break                        # лимит сняли на лету — проходим
+            if _try_acquire(c, tok, m):      # атомарно заняли слот, если было место
+                got = True
                 break
             if deadline is not None and time.time() > deadline:
                 break               # вышло время ожидания — проходим всё равно
             time.sleep(0.1)
     finally:
         _rem(c, _WAIT, _local_wait, tok)
-    _add_active(c, tok)
-    _pace()                              # пауза между запросами (если задана)
+    if not got:
+        _add_active(c, tok)          # лимит снят или таймаут ожидания — учитываем слот принудительно
+    _pace()                          # пауза между запросами (если задана)
     return tok
 
 

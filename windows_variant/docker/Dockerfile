@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         tesseract-ocr tesseract-ocr-rus \
         antiword \
-        p7zip-full unar \
+        p7zip-full unar libarchive-tools \
         poppler-utils \
         libgl1 libglib2.0-0 \
         espeak-ng \

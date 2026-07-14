@@ -133,10 +133,10 @@ apt-get install -y libgl1 libglib2.0-0 espeak-ng 2>/dev/null || true   # OpenCV/
 # критичные пакеты извлечения контента: OCR + .doc + архивы + PDF→картинки.
 # Ставим НЕ молча (с повтором), затем проверяем бинарники и явно предупреждаем, если
 # что-то не встало (напр. когда-то не хватило места) — чтобы это не оставалось незамеченным.
-_content_pkgs="tesseract-ocr tesseract-ocr-rus antiword p7zip-full unar poppler-utils"
+_content_pkgs="tesseract-ocr tesseract-ocr-rus antiword p7zip-full unar libarchive-tools poppler-utils"
 apt-get install -y ${_content_pkgs} || { apt-get update -y; apt-get install -y ${_content_pkgs} || true; }
 apt-get install -y libredwg-tools 2>/dev/null || true   # DWG→DXF (может отсутствовать в репо — необязательно)
-for _b in tesseract antiword 7z unar pdftoppm; do
+for _b in tesseract antiword 7z unar bsdtar pdftoppm; do
   command -v "${_b}" >/dev/null 2>&1 || echo "[!] системный пакет для '${_b}' не установился — доставьте вручную: sudo apt install -y ${_content_pkgs}"
 done
 # ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb

@@ -122,7 +122,7 @@ def _enabled(key: str) -> bool:
 
 def _describe_due(total_chars: int) -> bool:
     """Нужно ли описывать изображение моделью: получилось ≤ N чанков (0/1 по умолч.)."""
-    if not _enabled("OCR_LLM_DESCRIBE"):
+    if not _enabled("OCR_LLM_DESCRIBE") or not _vision_available():
         return False
     try:
         cs = int(settings.get("CHUNK_SIZE") or 900)
@@ -137,15 +137,41 @@ def _describe_due(total_chars: int) -> bool:
     return chunks <= maxc
 
 
+# Предохранитель vision: если модель падает подряд (vLLM «Server disconnected»/краш движка),
+# перестаём её дёргать до конца процесса — иначе тормозим индексацию и добиваем упавший vLLM.
+_vision_state = {"fails": 0, "off": False}
+
+
+def _vision_available() -> bool:
+    return not _vision_state["off"]
+
+
+def _vision_result(ok: bool) -> None:
+    if ok:
+        _vision_state["fails"] = 0
+    else:
+        _vision_state["fails"] += 1
+        if _vision_state["fails"] >= 8 and not _vision_state["off"]:
+            _vision_state["off"] = True
+            print("  ! vision-модель не отвечает 8 раз подряд — отключаю описание "
+                  "картинок/чертежей до конца индексации. Перезапустите vLLM "
+                  "(docker restart rag_vllm) и проверьте память/лимит одновременных запросов.",
+                  flush=True)
+
+
 def _describe_image_part(img, page=None):
     """Описать изображение vision-моделью → {'text','page'} или None."""
+    if not _vision_available():
+        return None
     try:
         import llm_backend
         desc = llm_backend.describe_image(img)
+        _vision_result(bool(desc and desc.strip()))
         if desc and desc.strip():
             return {"text": "Описание изображения (vision-модель):\n" + desc.strip(),
                     "page": page, "vision_desc": True}
     except Exception as e:
+        _vision_result(False)
         print(f"  ~ описание изображения моделью не удалось: {e}")
     return None
 
@@ -510,16 +536,20 @@ def _render_cad_image(doc):
 
 def _describe_cad_part(doc):
     """Отрисовать чертёж и описать vision-моделью → {'text','vision_desc'} или None."""
+    if not _vision_available():
+        return None
     img = _render_cad_image(doc)
     if img is None:
         return None
     try:
         import llm_backend
         desc = llm_backend.describe_image(img, prompt=_CAD_VISION_PROMPT)
+        _vision_result(bool(desc and desc.strip()))
         if desc and desc.strip():
             return {"text": "Описание чертежа (vision-модель):\n" + desc.strip(),
                     "page": None, "vision_desc": True}
     except Exception as e:
+        _vision_result(False)
         print(f"  ~ CAD: описание чертежа моделью не удалось: {e}")
     return None
 
@@ -1066,8 +1096,14 @@ def _load_archive(path: Path, depth: int):
     with tempfile.TemporaryDirectory() as td:
         dest = Path(td)
         if not _extract_archive(path, dest):
-            print(f"  ! не удалось распаковать {path.name}: "
-                  f"нет py7zr/rarfile или утилит 7z/bsdtar/unar")
+            import shutil as _sh
+            _have = any(_sh.which(t) for t in ("unar", "unrar", "bsdtar", "7z", "7za", "7zr"))
+            if _have:
+                print(f"  ! {path.name}: архив не распаковался — вероятно повреждён, обрезан "
+                      f"(неполная загрузка) или это том многотомного RAR (нужны все части); пропуск")
+            else:
+                print(f"  ! не удалось распаковать {path.name}: нет утилит распаковки — "
+                      f"установите: sudo apt install -y unar libarchive-tools p7zip-full")
             return
         n = 0
         for inner in sorted(dest.rglob("*")):
