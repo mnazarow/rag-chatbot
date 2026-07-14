@@ -349,6 +349,11 @@ CATALOG_SOURCE = os.getenv("CATALOG_SOURCE", "filesystem")
 
 # --- Кэш Redis (по умолчанию выключен) ---
 REDIS_ENABLED = _bool("REDIS_ENABLED", False)
+# Меж-процессный обмен состоянием LLM (список вызовов + очередь) через общую rag_logs.db,
+# когда Redis выключен. Позволяет видеть и учитывать vision-вызовы из процесса индексации
+# без Redis. По умолчанию включено; выключить: PROC_SHARE_SQLITE=0 (тогда без Redis видны
+# только вызовы самого веб-процесса — прежнее поведение).
+PROC_SHARE_SQLITE = _bool("PROC_SHARE_SQLITE", True)
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = _int("REDIS_PORT", 6379)
 REDIS_DB = _int("REDIS_DB", 0)

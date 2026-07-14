@@ -4168,7 +4168,10 @@ def server_load() -> dict:
         except Exception:
             pass
 
-    out["gpu"] = _gpu_info()
+    try:
+        out["gpu"] = _gpu_info()
+    except Exception as e:
+        out["gpu"] = {"vendor": "none", "devices": [], "error": str(e)}
     # фактическое устройство вычислений (эмбеддинги/реранк) — с учётом доступности
     # torch/CUDA/MPS. Считается только здесь (в процессе приложения, где torch уже
     # загружен), а не в _gpu_info(), который дёргает и лёгкий монитор-подпроцесс.
@@ -5415,18 +5418,35 @@ def milvus_switch(target: str) -> dict:
 def redis_install() -> dict:
     """Установить и запустить Redis-сервер средствами ОС (apt/brew/apk/dnf/yum),
     включить REDIS_ENABLED и проверить подключение. Возвращает {ok, msg, log}."""
+    import os as _os
     import platform
     import shutil as _sh
     log: list[str] = []
+    _is_root = (getattr(_os, "geteuid", lambda: 1)() == 0)
+    # apt в неинтерактивном режиме (иначе может ждать ответа) + без блокировки на dpkg-lock
+    _env = {**_os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+
+    def _priv(cmd):
+        """Не root — префикс sudo -n (без пароля), чтобы НЕ зависнуть на промпте пароля;
+        при отсутствии passwordless-sudo команда завершится сразу с понятной ошибкой."""
+        if not _is_root and _sh.which("sudo"):
+            return ["sudo", "-n", *cmd]
+        return cmd
 
     def run(cmd, **kw):
         log.append("$ " + " ".join(cmd))
         try:
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=300, **kw)
+            # timeout=180 + короткий dpkg-lock timeout не дают запросу зависать бесконечно
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
+                               env=_env, **kw)
             out = (p.stdout or "") + (p.stderr or "")
             if out.strip():
                 log.append(out.strip()[:4000])
             return p.returncode
+        except subprocess.TimeoutExpired:
+            log.append("[таймаут] команда не завершилась за 180 c (возможно, занят dpkg-lock "
+                       "фоновым apt/unattended-upgrades) — прервана.")
+            return 1
         except Exception as e:
             log.append(f"[ошибка запуска] {e}")
             return 1
@@ -5460,17 +5480,18 @@ def redis_install() -> dict:
 
     sysname = platform.system().lower()
     # 1) установка пакета Redis подходящим менеджером
-    if _sh.which("brew"):                                   # macOS / Linuxbrew
+    if _sh.which("brew"):                                   # macOS / Linuxbrew (root не нужен)
         run(["brew", "install", "redis"])
     elif _sh.which("apt-get"):                              # Debian/Ubuntu
-        run(["apt-get", "update"])
-        run(["apt-get", "install", "-y", "redis-server"])
+        # DPkg::Lock::Timeout=120 — ждать блокировку не бесконечно, а максимум 120 c
+        run(_priv(["apt-get", "-o", "DPkg::Lock::Timeout=120", "update"]))
+        run(_priv(["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y", "redis-server"]))
     elif _sh.which("apk"):                                  # Alpine (Docker)
-        run(["apk", "add", "--no-cache", "redis"])
+        run(_priv(["apk", "add", "--no-cache", "redis"]))
     elif _sh.which("dnf"):                                  # Fedora/RHEL
-        run(["dnf", "install", "-y", "redis"])
+        run(_priv(["dnf", "install", "-y", "redis"]))
     elif _sh.which("yum"):
-        run(["yum", "install", "-y", "redis"])
+        run(_priv(["yum", "install", "-y", "redis"]))
     else:
         return {"ok": False,
                 "msg": "не найден поддерживаемый менеджер пакетов (brew/apt/apk/dnf/yum)",
@@ -5486,10 +5507,10 @@ def redis_install() -> dict:
     else:
         # системные службы Linux
         if _sh.which("systemctl"):
-            run(["systemctl", "enable", "--now", "redis-server"]) or \
-                run(["systemctl", "enable", "--now", "redis"])
+            run(_priv(["systemctl", "enable", "--now", "redis-server"])) or \
+                run(_priv(["systemctl", "enable", "--now", "redis"]))
         elif _sh.which("service"):
-            run(["service", "redis-server", "start"])
+            run(_priv(["service", "redis-server", "start"]))
 
     # 3) подождать и проверить
     for _ in range(10):

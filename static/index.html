@@ -2316,7 +2316,7 @@ async function loadLlmActivity(){
   const qe=$('#llmact_queue'); if(qe){
     const qd=d.queue||{};
     const shareNote = (qd.shared===false)
-      ? ' <span style="color:#f59e0b" title="Включите Redis, чтобы видеть вызовы LLM из процесса индексации (описание картинок vision-моделью)">⚠ без Redis вызовы из индексации (vision) здесь не видны</span>'
+      ? ' <span style="color:#f59e0b" title="Общий учёт вызовов из процесса индексации (vision) идёт через Redis или общую БД rag_logs.db. Включите Redis или не выключайте PROC_SHARE_SQLITE.">⚠ общий учёт выключен: вызовы из индексации (vision) здесь не видны</span>'
       : '';
     const delayNote = (qd.delay>0)
       ? ` · <span class="tag" title="Минимальный интервал между началами запросов к LLM">⏱ пауза ${qd.delay} c</span>` : '';

@@ -221,6 +221,14 @@ if [ "${INSTALL_XTTS}" = "1" ]; then
 fi
 chmod +x "${PROJECT_DIR}/apply_llm.sh"
 
+# Сервис-пользователь должен иметь доступ к рабочей папке, иначе systemd падает на шаге
+# CHDIR (status=200/CHDIR) и бесконечно перезапускается. Частый случай: проект в /root
+# (домашняя root, права 700), а SUDO_USER — обычный пользователь → доступа в /root нет.
+if [ "${RUN_USER}" != "root" ] && ! sudo -u "${RUN_USER}" test -x "${ROOT_DIR}" 2>/dev/null; then
+  log "[!] Пользователь ${RUN_USER} не имеет доступа к ${ROOT_DIR} (проект в /root?) — сервис будет от root."
+  RUN_USER="root"
+fi
+
 # ----- 5. systemd-сервис API (автозапуск + Restart=always) ------------------
 log "Регистрирую systemd-сервис rag-api..."
 sed -e "s|__USER__|${RUN_USER}|g" -e "s|__ROOT__|${ROOT_DIR}|g" -e "s|__PORT__|${API_PORT}|g" \

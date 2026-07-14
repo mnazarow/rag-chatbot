@@ -250,6 +250,14 @@ PY
 # ----- 7b. запуск приложения как systemd-сервиса (автозапуск + Restart=always) --
 API_PORT="${API_PORT:-8000}"
 SVC_USER="${SUDO_USER:-root}"
+# Сервис-пользователь ДОЛЖЕН иметь доступ к рабочей папке, иначе systemd падает на шаге
+# CHDIR (status=200/CHDIR) и бесконечно перезапускается. Частый случай: проект в /root
+# (домашняя root, права 700), а SUDO_USER — обычный пользователь → доступа в /root нет.
+# Проверяем реальный доступ; если его нет — запускаем сервис от root.
+if [ "${SVC_USER}" != "root" ] && ! sudo -u "${SVC_USER}" test -x "${ROOT_DIR}" 2>/dev/null; then
+  warn "Пользователь ${SVC_USER} не имеет доступа к ${ROOT_DIR} (проект в /root?) — сервис будет запущен от root."
+  SVC_USER="root"
+fi
 # venv в setup_gpu.sh создаётся под root; если сервис под пользователем — отдать права
 [ "${SVC_USER}" != "root" ] && chown -R "${SVC_USER}:${SVC_USER}" "${ROOT_DIR}" 2>/dev/null || true
 # папка документов из .env (создаём, если нет)

@@ -38,6 +38,36 @@ def _redis():
         return None
 
 
+# --- SQLite-фолбэк (общая rag_logs.db) — чтобы очередь была общей без Redis --- #
+# vision-вызовы из процесса индексации учитываются в общей очереди через тот же файл
+# rag_logs.db (см. procshare.py). Kind: 'active' (занятые слоты) / 'waiting' (ожидающие).
+def _sql():
+    try:
+        import procshare
+        return procshare.conn()
+    except Exception:
+        return None
+
+
+def _kind_for(key: str) -> str:
+    return "active" if key == _ACTIVE else "waiting"
+
+
+def _sql_add(conn, kind: str, tok: str, ttl: float) -> None:
+    conn.execute("INSERT OR REPLACE INTO llm_queue(kind,tok,expire) VALUES(?,?,?)",
+                 (kind, tok, time.time() + ttl))
+
+
+def _sql_rem(conn, kind: str, tok: str) -> None:
+    conn.execute("DELETE FROM llm_queue WHERE kind=? AND tok=?", (kind, tok))
+
+
+def _sql_count(conn, kind: str) -> int:
+    conn.execute("DELETE FROM llm_queue WHERE expire < ?", (time.time(),))   # авто-уборка
+    r = conn.execute("SELECT COUNT(*) FROM llm_queue WHERE kind=?", (kind,)).fetchone()
+    return int(r[0]) if r else 0
+
+
 def _limit() -> int:
     try:
         return int(settings.get("LLM_MAX_CONCURRENCY") or 0)
@@ -85,9 +115,28 @@ def _pace() -> None:
                 start = max(now, _pace_next[0])
                 _pace_next[0] = start + d
     else:
-        with _pace_lock:
-            start = max(now, _pace_next[0])
-            _pace_next[0] = start + d
+        conn = _sql()
+        done = False
+        if conn is not None:
+            try:
+                # атомарно резервируем общий «момент старта» (BEGIN IMMEDIATE — блокировка записи)
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT next FROM llm_queue_pace WHERE k='next'").fetchone()
+                n = float(row[0]) if row and row[0] is not None else 0.0
+                start = max(now, n)
+                conn.execute("INSERT OR REPLACE INTO llm_queue_pace(k,next) VALUES('next',?)",
+                             (start + d,))
+                conn.execute("COMMIT")
+                done = True
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+        if not done:
+            with _pace_lock:
+                start = max(now, _pace_next[0])
+                _pace_next[0] = start + d
     wait = start - time.time()
     if wait > 0:
         time.sleep(min(wait, 60.0))
@@ -107,6 +156,13 @@ def _active_count(c) -> int:
             return int(c.zcard(_ACTIVE) or 0)
         except Exception:
             pass
+    else:
+        conn = _sql()
+        if conn is not None:
+            try:
+                return _sql_count(conn, "active")
+            except Exception:
+                pass
     with _lock:
         _prune_local(_local_active)
         return len(_local_active)
@@ -120,6 +176,13 @@ def _waiting_count(c) -> int:
             return int(c.zcard(_WAIT) or 0)
         except Exception:
             pass
+    else:
+        conn = _sql()
+        if conn is not None:
+            try:
+                return _sql_count(conn, "waiting")
+            except Exception:
+                pass
     with _lock:
         _prune_local(_local_wait)
         return len(_local_wait)
@@ -132,6 +195,14 @@ def _add_active(c, tok: str) -> None:
             return
         except Exception:
             pass
+    else:
+        conn = _sql()
+        if conn is not None:
+            try:
+                _sql_add(conn, "active", tok, _HOLD_TTL)
+                return
+            except Exception:
+                pass
     with _lock:
         _local_active[tok] = time.time() + _HOLD_TTL
 
@@ -143,6 +214,14 @@ def _rem(c, key: str, local: dict, tok: str) -> None:
             return
         except Exception:
             pass
+    else:
+        conn = _sql()
+        if conn is not None:
+            try:
+                _sql_rem(conn, _kind_for(key), tok)
+                return
+            except Exception:
+                pass
     with _lock:
         local.pop(tok, None)
 
@@ -168,8 +247,16 @@ def acquire() -> str:
             with _lock:
                 _local_wait[tok] = time.time() + _WAIT_TTL
     else:
-        with _lock:
-            _local_wait[tok] = time.time() + _WAIT_TTL
+        conn = _sql()
+        if conn is not None:
+            try:
+                _sql_add(conn, "waiting", tok, _WAIT_TTL)
+            except Exception:
+                with _lock:
+                    _local_wait[tok] = time.time() + _WAIT_TTL
+        else:
+            with _lock:
+                _local_wait[tok] = time.time() + _WAIT_TTL
     try:
         while True:
             m = _limit()
@@ -211,4 +298,5 @@ def stats() -> dict:
     m = _limit()
     return {"max": m, "running": _active_count(c), "waiting": _waiting_count(c),
             "enabled": m > 0, "timeout": _timeout(), "delay": _delay(),
-            "shared": bool(c)}
+            # общая очередь есть либо через Redis, либо через общую rag_logs.db (procshare)
+            "shared": bool(c) or (_sql() is not None)}
