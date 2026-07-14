@@ -98,6 +98,11 @@ def _q_search(vector, limit, flt, with_payload) -> list[dict]:
     if qf:
         body["filter"] = qf
     r = httpx.post(f"{base}/collections/{coll}/points/query", json=body, timeout=_qtimeout())
+    if r.status_code == 404:
+        # коллекция ещё не создана (база знаний не проиндексирована) — не роняем чат в 500,
+        # а возвращаем «ничего не найдено»: пайплайн ответит, что данных нет.
+        print(f"[vectorstore] коллекция '{coll}' не найдена (404) — база пуста? Верните пусто.")
+        return []
     r.raise_for_status()
     pts = (r.json().get("result", {}) or {}).get("points", [])
     return [{"id": p.get("id"), "score": p.get("score"), "payload": p.get("payload") or {}}
@@ -114,6 +119,8 @@ def _q_scroll(flt, limit, offset, with_vectors, with_payload):
     if offset is not None:
         body["offset"] = offset
     r = httpx.post(f"{base}/collections/{coll}/points/scroll", json=body, timeout=_qtimeout())
+    if r.status_code == 404:
+        return [], None                       # коллекция ещё не создана — пусто, без 500
     r.raise_for_status()
     res = r.json().get("result", {}) or {}
     pts = [{"id": p.get("id"), "payload": p.get("payload") or {},

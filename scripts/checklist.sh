@@ -101,8 +101,10 @@ import importlib, importlib.metadata as md
 req = ["fastapi","uvicorn","qdrant_client","sentence_transformers","FlagEmbedding",
        "torch","transformers","rank_bm25","fitz","docx","pptx","openpyxl",
        "bs4","lxml","charset_normalizer","PIL","psutil","requests","numpy"]
+# coqui-tts (TTS) намеренно НЕ проверяем в ядре: XTTS вынесен в отдельный сервис
+# (.venv-xtts + rag-xtts), его готовность проверяется ниже в разделе «Сервисы» (XTTS_URL).
 opt = ["xlrd","ezdxf","rawpy","pytesseract","extract_msg","py7zr","rarfile",
-       "paramiko","multipart","playwright","pyVoIP","redis","TTS","networkx","lightrag"]
+       "paramiko","multipart","playwright","pyVoIP","redis","networkx","lightrag"]
 stt = ["faster_whisper","mlx_whisper"]
 def ver(m):
     for name in (m, m.replace('_','-')):
@@ -140,7 +142,6 @@ PY
         PIL) label="Pillow (изображения)";;
         multipart) label="python-multipart (загрузка файлов)";;
         pyVoIP) label="pyVoIP (SIP-регистрация, опц.)";;
-        TTS) label="coqui-tts в ядре (XTTS in-process, обычно не нужен — есть сервис)";;
         redis) label="redis (общий кэш, опц.)";;
         lightrag) label="LightRAG (граф-RAG, опц.)";;
         networkx) label="networkx (граф, опц.)";;
