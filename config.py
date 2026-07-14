@@ -48,6 +48,10 @@ LLM_REQUEST_DELAY = _float("LLM_REQUEST_DELAY", 0.0)
 # «молчит». False (по умолчанию) — просить модель отвечать сразу, без размышлений;
 # True — оставить размышления (медленнее, но иногда точнее на сложных вопросах).
 LLM_THINK = _bool("LLM_THINK", True)
+# Скрывать блок рассуждений <think>…</think> в ответе — отдельно для веб-чата и Телеграма.
+# Модель может рассуждать (LLM_THINK=да), но сами «мысли» пользователю не показываем.
+HIDE_THINK_CHAT = _bool("HIDE_THINK_CHAT", True)
+HIDE_THINK_TELEGRAM = _bool("HIDE_THINK_TELEGRAM", True)
 
 # Qdrant
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -151,6 +155,10 @@ FINETUNE_BASE = os.getenv("FINETUNE_BASE", "")
 OCR_IMAGES = _bool("OCR_IMAGES", True)        # OCR изображений (jpg/png/…) — самый долгий
 OCR_RAW = _bool("OCR_RAW", True)              # OCR RAW-фото (CR2/NEF/…)
 PARSE_CAD = _bool("PARSE_CAD", True)          # чертежи DXF/DWG и 3D-CAD (конвертация DWG долгая)
+# Дополнительно отрисовать чертёж DWG/DXF в изображение и описать vision-моделью
+# (как «глазами»): помогает по чертежам без текстовых надписей. Требуется мультимодальная
+# модель (VISION_MODEL или основная LLM) + matplotlib. По умолчанию выкл. (тяжело/медленно).
+CAD_LLM_DESCRIBE = _bool("CAD_LLM_DESCRIBE", False)
 TRANSCRIBE_AV = _bool("TRANSCRIBE_AV", True)  # транскрибация аудио/видео (Whisper, минуты на файл)
 FILE_PARSE_TIMEOUT = _int("FILE_PARSE_TIMEOUT", 0)  # лимит времени на файл, c (0 = без лимита)
 # Параллельное извлечение файлов при индексации (парсинг/OCR/конвертация в несколько

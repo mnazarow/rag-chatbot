@@ -174,9 +174,11 @@ def _act_end(cid, ok: bool, chars: int = 0, error: str | None = None,
 
 async def chat_stream(messages: list[dict], temperature: float = 0.1,
                       model: str | None = None, kind: str = "chat",
-                      label: str = "") -> AsyncIterator[str]:
-    """Асинхронно отдаёт токены ответа по мере генерации."""
+                      label: str = "", hide_think: bool | None = None) -> AsyncIterator[str]:
+    """Асинхронно отдаёт токены ответа по мере генерации.
+    hide_think: True/None — вырезать <think>…</think> (по умолчанию); False — показать."""
     model = model or settings.get("LLM_MODEL")
+    _hide_think = True if hide_think is None else bool(hide_think)
     # очередь к LLM: ждём свободный слот (не блокируя event loop)
     import asyncio
     import llm_queue
@@ -197,7 +199,7 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
             headers = {"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"}
             # vLLM с reasoning-моделью может печатать <think>…</think> прямо в content —
             # фильтруем, если размышления выключены (как в ollama-ветке)
-            tf = None if _think() else _ThinkFilter()
+            tf = _ThinkFilter() if _hide_think else None
             async with httpx.AsyncClient(timeout=None) as c:
                 async with c.stream("POST", url, json=payload, headers=headers) as r:
                     async for line in r.aiter_lines():
@@ -234,7 +236,7 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
             payload = {"model": model, "messages": messages,
                        "stream": True, "options": {"temperature": temperature},
                        **_think_kw}
-            tf = _ThinkFilter()
+            tf = _ThinkFilter() if _hide_think else None
             async with httpx.AsyncClient(timeout=None) as c:
                 async with c.stream("POST", url, json=payload) as r:
                     async for line in r.aiter_lines():
@@ -248,13 +250,13 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
                             ctok = int(obj.get("eval_count") or ctok)
                             gen_ms = int((obj.get("eval_duration") or 0) / 1e6)  # нс→мс
                         if tok:
-                            piece = tf.feed(tok)      # на случай <think>…</think> прямо в content
+                            piece = tf.feed(tok) if tf else tok   # на случай <think>…</think> в content
                             if piece:
                                 nchars += len(piece)
                                 if nchars % 64 < len(piece):
                                     _act_tokens(cid, nchars)
                                 yield piece
-                    tail = tf.flush()
+                    tail = tf.flush() if tf else ""
                     if tail:
                         nchars += len(tail); _act_tokens(cid, nchars); yield tail
     except Exception as e:
@@ -270,9 +272,12 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
 
 
 def chat(messages: list[dict], temperature: float = 0.1,
-         model: str | None = None, kind: str = "llm", label: str = "") -> str:
-    """Синхронный полный ответ (для скриптов/сравнения)."""
+         model: str | None = None, kind: str = "llm", label: str = "",
+         hide_think: bool | None = None) -> str:
+    """Синхронный полный ответ (для скриптов/сравнения).
+    hide_think: True/None — вырезать <think>…</think> (по умолчанию); False — показать."""
     model = model or settings.get("LLM_MODEL")
+    _hide_think = True if hide_think is None else bool(hide_think)
     import llm_queue
     _qtok = llm_queue.acquire()
     cid = _act_begin(kind, model, label or _label_from_messages(messages),
@@ -288,7 +293,7 @@ def chat(messages: list[dict], temperature: float = 0.1,
             )
             j = r.json()
             out = j["choices"][0]["message"]["content"]
-            if not _think():
+            if _hide_think:
                 out = _strip_think(out)
             u = j.get("usage") or {}
             ptok, ctok = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
@@ -300,7 +305,8 @@ def chat(messages: list[dict], temperature: float = 0.1,
                       **_ollama_think_payload(model)},
             )
             j = r.json()
-            out = _strip_think(j["message"]["content"])
+            _raw = j["message"]["content"]
+            out = _strip_think(_raw) if _hide_think else _raw
             ptok, ctok = int(j.get("prompt_eval_count") or 0), int(j.get("eval_count") or 0)
             gen_ms = int((j.get("eval_duration") or 0) / 1e6)
         _act_end(cid, ok=True, chars=len(out or ""), ptok=ptok, ctok=ctok, gen_ms=gen_ms)

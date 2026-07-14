@@ -93,7 +93,8 @@ def _answer_sync(question: str, filters: dict | None = None) -> dict:
                 {"role": "user", "content": prompts.build_user_message(question, context)}]
     try:
         answer = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
-                                  model=settings.active_model())
+                                  model=settings.active_model(),
+                                  hide_think=bool(settings.get("HIDE_THINK_CHAT")))
     except Exception as e:
         answer = f"Ошибка генерации: {e}"
     # проверка обоснованности (антигаллюцинации)
@@ -489,7 +490,8 @@ async def chat(req: ChatRequest):
         try:
             async for tok in llm_backend.chat_stream(
                     messages, temperature=settings.get("TEMPERATURE"),
-                    model=settings.active_model(), kind="chat", label=req.question):
+                    model=settings.active_model(), kind="chat", label=req.question,
+                    hide_think=bool(settings.get("HIDE_THINK_CHAT"))):
                 acc.append(tok)
                 if not _strict:
                     yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
@@ -705,7 +707,8 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
         acc = []
         async for tok in llm_backend.chat_stream(
                 messages, temperature=settings.get("TEMPERATURE"),
-                model=settings.active_model(), kind="chat-doc", label=question):
+                model=settings.active_model(), kind="chat-doc", label=question,
+                hide_think=bool(settings.get("HIDE_THINK_CHAT"))):
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield _stg("generate", "done", {"chars": len("".join(acc))})

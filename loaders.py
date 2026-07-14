@@ -473,6 +473,57 @@ def _has_cyr_or_space(s: str) -> bool:
     return (" " in s) or any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in s)
 
 
+_CAD_VISION_PROMPT = (
+    "Это инженерный/технический чертёж (САПР). Опиши по-русски, что на нём изображено: "
+    "тип изделия/детали/узла, основные элементы и их назначение, характерные размеры и "
+    "обозначения, материалы, надписи и содержимое основной надписи (штампа), если видны. "
+    "Кратко и по делу, без вступлений.")
+
+
+def _render_cad_image(doc):
+    """Отрисовать модель чертежа (DXF/сконвертированный DWG) в растровое изображение
+    (PIL Image) для описания vision-моделью. None при неудаче/пустом чертеже."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")                       # без дисплея (сервер)
+        import matplotlib.pyplot as plt
+        from ezdxf.addons.drawing import RenderContext, Frontend
+        from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+        from PIL import Image
+        import io as _io
+        msp = doc.modelspace()
+        fig = plt.figure(figsize=(14, 10))
+        ax = fig.add_axes([0, 0, 1, 1]); ax.set_axis_off()
+        try:
+            Frontend(RenderContext(doc), MatplotlibBackend(ax)).draw_layout(msp, finalize=True)
+        except Exception:
+            plt.close(fig); return None
+        buf = _io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        buf.seek(0)
+        return Image.open(buf).convert("RGB")
+    except Exception as e:
+        print(f"  ~ CAD: рендер чертежа в изображение не удался: {e}")
+        return None
+
+
+def _describe_cad_part(doc):
+    """Отрисовать чертёж и описать vision-моделью → {'text','vision_desc'} или None."""
+    img = _render_cad_image(doc)
+    if img is None:
+        return None
+    try:
+        import llm_backend
+        desc = llm_backend.describe_image(img, prompt=_CAD_VISION_PROMPT)
+        if desc and desc.strip():
+            return {"text": "Описание чертежа (vision-модель):\n" + desc.strip(),
+                    "page": None, "vision_desc": True}
+    except Exception as e:
+        print(f"  ~ CAD: описание чертежа моделью не удалось: {e}")
+    return None
+
+
 def _load_cad(path: Path):
     """Извлечь весь текст из чертежа DXF/DWG: TEXT, MTEXT, атрибуты блоков,
     размеры, имена слоёв (для DWG требуется конвертация в DXF). Повреждённые файлы
@@ -579,6 +630,12 @@ def _load_cad(path: Path):
         body = body.strip()
         if body:
             yield {"text": body, "page": None}
+        # Дополнительно: отрисовать чертёж и описать vision-моделью (опция CAD_LLM_DESCRIBE).
+        # Делаем ДО очистки временного DXF (в finally) — нужен разобранный doc.
+        if doc is not None and _enabled("CAD_LLM_DESCRIBE"):
+            d = _describe_cad_part(doc)
+            if d:
+                yield d
     finally:
         if tmp:
             try:

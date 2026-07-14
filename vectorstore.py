@@ -158,8 +158,21 @@ def _q_upsert(points, wait) -> None:
     url = f"{base}/collections/{coll}/points"
     if not wait:
         url += "?wait=false"
-    r = httpx.put(url, json=body, timeout=int(settings.get("QDRANT_INGEST_TIMEOUT") or 480))
-    r.raise_for_status()
+    to = int(settings.get("QDRANT_INGEST_TIMEOUT") or 480)
+    # Повтор при таймауте/временном сбое: под тяжёлой индексацией Qdrant может кратко
+    # «залипнуть» (индексация HNSW, всплеск памяти). 3 попытки с нарастающей паузой,
+    # прежде чем отдать ошибку выше (иначе один таймаут рушит запись всего файла).
+    last = None
+    for attempt in range(3):
+        try:
+            r = httpx.put(url, json=body, timeout=to)
+            r.raise_for_status()
+            return
+        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.TransportError) as e:
+            last = e
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))   # 2с, 4с
+    raise last
 
 
 def _q_delete(flt) -> None:

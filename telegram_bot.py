@@ -410,7 +410,8 @@ def _answer(question: str, trace: list | None = None):
     t = time.time()
     text = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
                             model=settings.active_model(),
-                            kind="telegram", label=question)
+                            kind="telegram", label=question,
+                            hide_think=bool(settings.get("HIDE_THINK_TELEGRAM")))
     trace.append({"key": "generate", "ms": int((time.time() - t) * 1000),
                   "info": {"model": settings.active_model(),
                            "backend": settings.get("LLM_BACKEND"),
@@ -591,7 +592,8 @@ def _answer_attachment(path: str, name: str, question: str, trace: list | None =
     t = time.time()
     text = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
                             model=settings.active_model(),
-                            kind="telegram", label=q)
+                            kind="telegram", label=q,
+                            hide_think=bool(settings.get("HIDE_THINK_TELEGRAM")))
     trace.append({"key": "generate", "ms": int((time.time() - t) * 1000),
                   "info": {"model": settings.active_model(),
                            "backend": settings.get("LLM_BACKEND"),
