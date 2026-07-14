@@ -28,7 +28,7 @@ FAILS=0; WARNS=0; OKS=0
 ok()   { printf "  ${C_G}[OK]${C_0} %s${C_D}%s${C_0}\n" "$1" "${2:+  — $2}"; OKS=$((OKS+1)); }
 warn() { printf "  ${C_Y}[~]${C_0}  %s${C_D}%s${C_0}\n" "$1" "${2:+  — $2}"; WARNS=$((WARNS+1)); }
 fail() { printf "  ${C_R}[X]${C_0}  %s${C_D}%s${C_0}\n" "$1" "${2:+  — $2}"; FAILS=$((FAILS+1)); }
-head() { printf "\n${C_C}%s${C_0}\n" "$1"; }
+sec() { printf "\n${C_C}%s${C_0}\n" "$1"; }   # заголовок раздела (не 'head' — иначе перекрывает команду head)
 
 has() { command -v "$1" >/dev/null 2>&1; }
 envval() { [[ -f "$ENVF" ]] && grep -E "^$1=" "$ENVF" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
@@ -48,7 +48,7 @@ printf "${C_C}  Проект: %s${C_0}\n" "$ROOT"
 printf "${C_C}============================================================${C_0}\n"
 
 # ============================ 1. Системные пакеты ============================
-head "1. Системные пакеты"
+sec "1. Системные пакеты"
 if has python3; then ok "Python 3" "$(python3 --version 2>&1)"; else fail "Python 3 не найден"; fi
 if has ffmpeg; then ok "ffmpeg (аудио/видео, TTS, VoIP)"; else fail "ffmpeg не найден" "нужен для транскрибации, кадров видео и голосового вывода"; fi
 
@@ -91,7 +91,7 @@ if has ollama; then ok "Ollama (клиент)"; else warn "Ollama не найд�
 has redis-server && ok "redis-server" || true   # опционально
 
 # ============================ 2. Python-зависимости =========================
-head "2. Python-пакеты (окружение: ${VPY:-нет})"
+sec "2. Python-пакеты (окружение: ${VPY:-нет})"
 if [[ -z "$VPY" || ! -x "$VPY" ]]; then
   fail "Python-окружение (.venv) не найдено" "создайте venv и поставьте requirements"
 else
@@ -157,7 +157,7 @@ PY
 fi
 
 # ============================ 3. Сервисы ====================================
-head "3. Сервисы и подключения"
+sec "3. Сервисы и подключения"
 QURL="$(envval QDRANT_URL)"; QURL="${QURL:-http://localhost:6333}"
 if http_ok "${QURL%/}/collections" 5; then ok "Qdrant отвечает" "$QURL"; \
 else warn "Qdrant не отвечает" "$QURL — возможно, ещё стартует или не запущен"; fi

@@ -41,6 +41,17 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
 fi
 nvidia-smi -L
 
+# ----- 0a. проверка свободного места (torch + образ vLLM + веса модели: 40+ ГБ) --
+_free_gb="$(df -PBG / 2>/dev/null | awk 'NR==2{gsub(/G/,"",$4);print $4}')"
+if [ -n "${_free_gb}" ] && [ "${_free_gb}" -lt 40 ]; then
+  echo "[!] На корне (/) свободно ~${_free_gb} ГБ. Нужно 40+ ГБ (torch, образ vLLM, веса модели)."
+  echo "    Если это LVM с маленьким корнем — расширьте том на свободное место группы:"
+  echo "      sudo lvextend -l +100%FREE /dev/mapper/ubuntu--vg-ubuntu--lv && sudo resize2fs /dev/mapper/ubuntu--vg-ubuntu--lv"
+  echo "    (df -h /  и  sudo vgs  покажут текущее и свободное место)."
+  printf "Продолжить всё равно? [y/N]: "; read -r _go || _go=""
+  case "${_go}" in y|Y|да|Да) : ;; *) echo "Прервано — освободите/расширьте диск и повторите."; exit 1 ;; esac
+fi
+
 # ----- 0b. авто-подбор модели Qwen3.6 по VRAM (рекомендация для меню) --------
 # Ориентируемся на VRAM одной карты (модель split'ится по картам через TP).
 _gpu_mem="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | sort -n | head -1)"
@@ -106,7 +117,7 @@ log "Устанавливаю базовые пакеты..."
 apt-get update -y
 apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg git
 apt-get install -y libgl1 libglib2.0-0 espeak-ng 2>/dev/null || true   # OpenCV/pymupdf/rawpy + TTS (espeak)
-apt-get install -y tesseract-ocr tesseract-ocr-rus libredwg-tools antiword p7zip-full unar 2>/dev/null || true   # OCR (rus) + DWG + .doc + архивы
+apt-get install -y tesseract-ocr tesseract-ocr-rus libredwg-tools antiword p7zip-full unar poppler-utils 2>/dev/null || true   # OCR (rus) + DWG + .doc + архивы + PDF→картинки
 # ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb
 bash "${ROOT_DIR}/scripts/install_oda.sh" "${ROOT_DIR}" || true
 # Python для приложения: нужен 3.10–3.13 (под 3.14+ ещё НЕТ колёс PyTorch). Системный
@@ -202,15 +213,39 @@ FlagReranker("BAAI/bge-reranker-v2-m3", use_fp16=True)
 print("OK")
 PY
 
+# ----- 7b. запуск приложения как systemd-сервиса (автозапуск + Restart=always) --
+API_PORT="${API_PORT:-8000}"
+SVC_USER="${SUDO_USER:-root}"
+# venv в setup_gpu.sh создаётся под root; если сервис под пользователем — отдать права
+[ "${SVC_USER}" != "root" ] && chown -R "${SVC_USER}:${SVC_USER}" "${ROOT_DIR}" 2>/dev/null || true
+# папка документов из .env (создаём, если нет)
+_docs="$(grep -E '^DOCS_DIR=' "${PROJECT_DIR}/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
+[ -n "${_docs}" ] && mkdir -p "${_docs}" 2>/dev/null || true
+if command -v systemctl >/dev/null 2>&1; then
+  log "Регистрирую и запускаю systemd-сервис rag-api (автозапуск)..."
+  sed -e "s|__USER__|${SVC_USER}|g" -e "s|__ROOT__|${ROOT_DIR}|g" -e "s|__PORT__|${API_PORT}|g" \
+      "${PROJECT_DIR}/rag-api.service.tpl" > /etc/systemd/system/rag-api.service
+  systemctl daemon-reload
+  systemctl enable --now rag-api
+  log "Жду готовности веб-интерфейса (загрузка эмбеддера/реранка — до ~1–2 мин)..."
+  for i in {1..40}; do curl -sf "http://localhost:${API_PORT}/health" >/dev/null 2>&1 && { log "Веб-интерфейс поднялся."; break; }; sleep 3; done
+else
+  log "systemd не найден — запустите вручную: ${ROOT_DIR}/.venv/bin/uvicorn app:app --host 0.0.0.0 --port ${API_PORT}"
+fi
+
+IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 cat <<EOF
 
 ============================================================
-  Готово. Дальше:
-  1) Отредактируйте gpu_variant/.env -> DOCS_DIR
-  2) Индексация:   source .venv/bin/activate && python ingest.py
-  3) Запуск API:   uvicorn app:app --host 0.0.0.0 --port 8000
-  4) Веб-чат:      http://<ip-сервера>:8000
-  vLLM API:        http://localhost:8001/v1  (модель ${VLLM_MODEL})
+  Готово! Приложение запущено как сервис rag-api.
+  Веб-чат:     http://${IP:-<ip-сервера>}:${API_PORT}    (раздел «Администратор»)
+  vLLM API:    http://localhost:8001/v1   (модель ${VLLM_MODEL})
+
+  Папка документов: DOCS_DIR в gpu_variant/.env (по умолч. ${_docs:-/opt/db}) —
+    положите туда файлы и нажмите «Переиндексировать» в админке.
+  Управление:  systemctl status|restart|stop rag-api
+  Логи:        journalctl -u rag-api -f
+  После правки .env:  sudo systemctl restart rag-api
 ============================================================
 EOF
 

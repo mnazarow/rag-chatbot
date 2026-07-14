@@ -53,6 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr tesseract-ocr-rus \
         antiword \
         p7zip-full unar \
+        poppler-utils \
         libgl1 libglib2.0-0 \
         espeak-ng \
         curl ca-certificates \

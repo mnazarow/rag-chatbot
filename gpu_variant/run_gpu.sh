@@ -39,6 +39,14 @@ if ! command -v nvidia-smi >/dev/null 2>&1; then
 fi
 nvidia-smi -L
 
+# ----- 0a. проверка свободного места (torch + образ vLLM + веса модели: 40+ ГБ) --
+_free_gb="$(df -PBG / 2>/dev/null | awk 'NR==2{gsub(/G/,"",$4);print $4}')"
+if [ -n "${_free_gb}" ] && [ "${_free_gb}" -lt 40 ]; then
+  echo "[!] На корне (/) свободно ~${_free_gb} ГБ. Нужно 40+ ГБ (torch, образ vLLM, веса модели)."
+  echo "    LVM с маленьким корнем — расширьте на свободное место группы:"
+  echo "      sudo lvextend -l +100%FREE /dev/mapper/ubuntu--vg-ubuntu--lv && sudo resize2fs /dev/mapper/ubuntu--vg-ubuntu--lv"
+fi
+
 # ----- 0b. авто-подбор модели vLLM по VRAM и числу GPU (если не задано вручную) -----
 _gpu_mem="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | sort -n | head -1)"
 _gpu_cnt="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | grep -c .)"
@@ -109,6 +117,7 @@ apt-get install -y libredwg-tools 2>/dev/null || true   # dwg2dxf: конвер�
 apt-get install -y tesseract-ocr tesseract-ocr-rus 2>/dev/null || true   # OCR для CR2/фото
 apt-get install -y antiword 2>/dev/null || true   # чтение старого .doc
 apt-get install -y p7zip-full unar 2>/dev/null || true   # распаковка архивов (.7z/.rar)
+apt-get install -y poppler-utils 2>/dev/null || true   # рендер страниц PDF в картинки (pdftoppm)
 # ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb
 bash "${ROOT_DIR}/scripts/install_oda.sh" "${ROOT_DIR}" || true
 # Нужен Python 3.10–3.13 (под 3.14+ ещё НЕТ колёс PyTorch). Если системный слишком новый —
