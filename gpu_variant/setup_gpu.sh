@@ -109,7 +109,22 @@ apt-get install -y libgl1 libglib2.0-0 espeak-ng 2>/dev/null || true   # OpenCV/
 apt-get install -y tesseract-ocr tesseract-ocr-rus libredwg-tools antiword p7zip-full unar 2>/dev/null || true   # OCR (rus) + DWG + .doc + архивы
 # ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb
 bash "${ROOT_DIR}/scripts/install_oda.sh" "${ROOT_DIR}" || true
-PYBIN="$(command -v python3.11 || command -v python3.12 || command -v python3.10 || command -v python3)"
+# Python для приложения: нужен 3.10–3.13 (под 3.14+ ещё НЕТ колёс PyTorch). Системный
+# python3 может быть слишком новым (напр. 3.14) — тогда доустанавливаем 3.12.
+_pick_py(){ for v in python3.12 python3.11 python3.13 python3.10; do command -v "$v" >/dev/null 2>&1 && { echo "$v"; return 0; }; done; return 1; }
+PYBIN="$(_pick_py || true)"
+if [ -z "${PYBIN}" ]; then
+  log "Совместимый Python (3.10–3.13) не найден — ставлю python3.12 (для PyTorch)..."
+  apt-get install -y python3.12 python3.12-venv python3.12-dev 2>/dev/null || {
+    apt-get install -y software-properties-common 2>/dev/null || true
+    add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
+    apt-get update -y
+    apt-get install -y python3.12 python3.12-venv python3.12-dev 2>/dev/null || true
+  }
+  PYBIN="$(_pick_py || true)"
+fi
+[ -n "${PYBIN}" ] || { echo "Не удалось получить Python 3.10–3.13. Поставьте вручную: sudo apt install python3.12 python3.12-venv, затем повторите."; exit 1; }
+log "Python для приложения: ${PYBIN} ($(${PYBIN} --version 2>&1))"
 
 # ----- 2. Docker + Compose --------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
@@ -160,6 +175,12 @@ done
 # ----- 6. Python-окружение приложения --------------------------------------
 log "Ставлю Python-зависимости (torch ${TORCH_CUDA} + RAG)..."
 cd "${ROOT_DIR}"
+# пересоздать venv, если он собран другой версией Python (напр. остался на 3.14)
+if [ -d .venv ]; then
+  _cur="$(.venv/bin/python -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo none)"
+  _want="$(${PYBIN} -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
+  [ "${_cur}" != "${_want}" ] && { log "Пересоздаю .venv (${_cur} → ${_want})"; rm -rf .venv; }
+fi
 "${PYBIN}" -m venv .venv
 # shellcheck disable=SC1091
 source .venv/bin/activate

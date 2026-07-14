@@ -111,7 +111,21 @@ apt-get install -y antiword 2>/dev/null || true   # чтение старого 
 apt-get install -y p7zip-full unar 2>/dev/null || true   # распаковка архивов (.7z/.rar)
 # ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb
 bash "${ROOT_DIR}/scripts/install_oda.sh" "${ROOT_DIR}" || true
-PYBIN="$(command -v python3.11 || command -v python3.12 || command -v python3.10 || command -v python3)"
+# Нужен Python 3.10–3.13 (под 3.14+ ещё НЕТ колёс PyTorch). Если системный слишком новый —
+# доустанавливаем python3.12.
+_pick_py(){ for v in python3.12 python3.11 python3.13 python3.10; do command -v "$v" >/dev/null 2>&1 && { echo "$v"; return 0; }; done; return 1; }
+PYBIN="$(_pick_py || true)"
+if [ -z "${PYBIN}" ]; then
+  log "Совместимый Python (3.10–3.13) не найден — ставлю python3.12 (для PyTorch)..."
+  apt-get install -y python3.12 python3.12-venv python3.12-dev 2>/dev/null || {
+    apt-get install -y software-properties-common 2>/dev/null || true
+    add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
+    apt-get update -y
+    apt-get install -y python3.12 python3.12-venv python3.12-dev 2>/dev/null || true
+  }
+  PYBIN="$(_pick_py || true)"
+fi
+[ -n "${PYBIN}" ] || { echo "Не удалось получить Python 3.10–3.13. Поставьте вручную: apt install python3.12 python3.12-venv."; exit 1; }
 log "Использую интерпретатор: ${PYBIN} ($(${PYBIN} --version 2>&1))"
 command -v docker >/dev/null || { log "Docker..."; curl -fsSL https://get.docker.com | sh; }
 usermod -aG docker "${RUN_USER}" || true
@@ -155,6 +169,12 @@ cd "${ROOT_DIR}"
 # каталог должен принадлежать пользователю сервиса: и для venv, и чтобы приложение
 # могло писать runtime_config.json, журнал и т.п.
 chown -R "${RUN_USER}:${RUN_USER}" "${ROOT_DIR}"
+# пересоздать venv, если собран другой версией Python (напр. остался на 3.14 без torch)
+if [ -d .venv ]; then
+  _cur="$(.venv/bin/python -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo none)"
+  _want="$(${PYBIN} -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
+  [ "${_cur}" != "${_want}" ] && { log "Пересоздаю .venv (${_cur} → ${_want})"; rm -rf .venv; }
+fi
 sudo -u "${RUN_USER}" "${PYBIN}" -m venv .venv
 sudo -u "${RUN_USER}" ./.venv/bin/pip install --upgrade pip wheel
 # torch без жёсткой версии — pip подберёт совместимый с вашим Python и CUDA-каналом
