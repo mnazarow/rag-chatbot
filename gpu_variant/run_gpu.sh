@@ -10,10 +10,13 @@
 set -euo pipefail
 
 # ----- параметры первого запуска (дальше всё меняется в админке) -------------
-# Модель vLLM по VRAM (см. docs/MODELS.md): 24 ГБ → 14B-AWQ; 48 ГБ → 32B-AWQ; 80 ГБ → 72B-AWQ.
-VLLM_MODEL="${VLLM_MODEL:-Qwen/Qwen3.6-35B-A3B}"
+# Модель и TP подбираются АВТОМАТИЧЕСКИ по VRAM/числу GPU (ниже) + меню выбора.
+# Образ vLLM v0.19.0 понимает Qwen3.6 (qwen3_5_moe) и GLM-5.2.
+_USER_MODEL="${VLLM_MODEL:-}"; _USER_TP="${VLLM_TP:-}"      # пусто = авто-подбор
+VLLM_MODEL="${VLLM_MODEL:-QuantTrio/Qwen3.6-35B-A3B-AWQ}"
 VLLM_MAX_LEN="${VLLM_MAX_LEN:-16384}"
 VLLM_TP="${VLLM_TP:-1}"
+VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.19.0}"        # ≥0.19 нужна для Qwen3.6/GLM-5.2
 TORCH_CUDA="${TORCH_CUDA:-cu124}"
 API_PORT="${API_PORT:-8000}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-}"                 # рекомендуется задать!
@@ -24,8 +27,76 @@ ROOT_DIR="$(cd "${PROJECT_DIR}/.." && pwd)"
 log(){ printf "\033[1;32m[run-gpu]\033[0m %s\n" "$*"; }
 
 [[ $EUID -eq 0 ]] || { echo "Запустите через sudo (нужны установка пакетов и systemd)."; exit 1; }
-command -v nvidia-smi >/dev/null || { echo "nvidia-smi не найден — установите драйвер NVIDIA."; exit 1; }
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "nvidia-smi не найден — этот скрипт для сервера с видеокартой NVIDIA (vLLM на CUDA)."
+  if command -v lspci >/dev/null 2>&1 && lspci 2>/dev/null | grep -qi nvidia; then
+    echo "GPU NVIDIA обнаружена, но драйвер не установлен. Установите и перезагрузитесь:"
+    echo "  sudo ubuntu-drivers install   (старые версии: sudo ubuntu-drivers autoinstall)  &&  sudo reboot"
+  else
+    echo "GPU нет. Для сервера БЕЗ видеокарты используйте CPU-вариант:  cd ../docker_variant && ./start.sh"
+  fi
+  exit 1
+fi
 nvidia-smi -L
+
+# ----- 0b. авто-подбор модели vLLM по VRAM и числу GPU (если не задано вручную) -----
+_gpu_mem="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | sort -n | head -1)"
+_gpu_cnt="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | grep -c .)"
+_gpu_mem="${_gpu_mem:-0}"; _gpu_cnt="${_gpu_cnt:-1}"
+if [ -z "${_USER_MODEL}" ]; then
+  if   [ "${_gpu_mem}" -ge 40000 ] && [ "${_gpu_cnt}" -ge 2 ]; then VLLM_MODEL="QuantTrio/Qwen3.6-35B-A3B-AWQ"; _atp=2
+  elif [ "${_gpu_mem}" -ge 22000 ]; then VLLM_MODEL="QuantTrio/Qwen3.6-35B-A3B-AWQ"; _atp=1
+  elif [ "${_gpu_mem}" -ge 16000 ]; then VLLM_MODEL="QuantTrio/Qwen3.6-27B-AWQ";     _atp=1
+  else VLLM_MODEL="QuantTrio/Qwen3.6-27B-AWQ"; _atp=1
+  fi
+  [ -z "${_USER_TP}" ] && VLLM_TP="${_atp}"
+  log "Авто-подбор: ${_gpu_cnt}×${_gpu_mem} МБ VRAM → ${VLLM_MODEL}, tensor-parallel=${VLLM_TP}"
+else
+  log "Модель задана вручную: ${VLLM_MODEL}, TP=${VLLM_TP}"
+fi
+
+# ----- 0c. интерактивный выбор модели (терминал; пропуск при заданном VLLM_MODEL) --
+if [ -z "${_USER_MODEL}" ] && [ -t 0 ]; then
+  echo
+  echo "============================================================"
+  echo "  Выбор модели генерации (vLLM ${VLLM_IMAGE##*:})"
+  echo "  Обнаружено GPU: ${_gpu_cnt} × ${_gpu_mem} МБ VRAM"
+  echo "  Рекомендуется:  ${VLLM_MODEL}  (карт: ${VLLM_TP})"
+  echo "------------------------------------------------------------"
+  echo "  Qwen3.6:"
+  echo "   1) QuantTrio/Qwen3.6-27B-AWQ        ~15 ГБ  — плотная 27B (24–48 ГБ)"
+  echo "   2) QuantTrio/Qwen3.6-35B-A3B-AWQ    ~20 ГБ  — MoE 35B/3B актив. (24 ГБ+; реком.)"
+  echo "   3) Qwen/Qwen3.6-27B-FP8             ~28 ГБ  — выше точность (нужно 48 ГБ)"
+  echo "  GLM (Zhipu):"
+  echo "   4) QuantTrio/GLM-4.7-Flash-AWQ      ~18 ГБ  — MoE 30B/3B актив., быстрая (24–48 ГБ) ✅"
+  echo "   5) QuantTrio/GLM-4.6-AWQ            ~176 ГБ — 357B MoE (нужно ~4×48 ГБ)"
+  echo "   6) cyankiwi/GLM-5.2-AWQ-INT4        ~372 ГБ — 744B MoE (нужно ~4×H200/5×A100)"
+  echo "  Прочее:"
+  echo "   7) Ввести свою модель (HF-идентификатор)"
+  echo "   0) Рекомендованную (Enter)"
+  echo "============================================================"
+  printf "Выбор [0-7]: "; read -r _ans || _ans=""
+  case "${_ans}" in
+    1) VLLM_MODEL="QuantTrio/Qwen3.6-27B-AWQ";     VLLM_TP=1 ;;
+    2) VLLM_MODEL="QuantTrio/Qwen3.6-35B-A3B-AWQ"; if [ "${_gpu_cnt}" -ge 2 ]; then VLLM_TP=2; else VLLM_TP=1; fi ;;
+    3) VLLM_MODEL="Qwen/Qwen3.6-27B-FP8";          VLLM_TP=1 ;;
+    4) VLLM_MODEL="QuantTrio/GLM-4.7-Flash-AWQ";   VLLM_TP=1
+       echo "  GLM-4.7-Flash — 30B/3B MoE (~18 ГБ), нужен образ vLLM ≥0.14 (у нас ${VLLM_IMAGE##*:})." ;;
+    5) VLLM_MODEL="QuantTrio/GLM-4.6-AWQ";         VLLM_TP="${_gpu_cnt}"
+       echo "  ВНИМАНИЕ: GLM-4.6 — 357B, ~176 ГБ в AWQ (нужно ~4×48 ГБ). На 3×48 может не влезть." ;;
+    6) VLLM_MODEL="cyankiwi/GLM-5.2-AWQ-INT4";     VLLM_TP="${_gpu_cnt}"
+       echo "  ВНИМАНИЕ: GLM-5.2 — 744B, ~372 ГБ даже в AWQ INT4 (нужно ~4×H200). На малом железе не загрузится." ;;
+    7) printf "HF-идентификатор: "; read -r _cm || _cm=""
+       [ -n "${_cm}" ] && VLLM_MODEL="${_cm}"
+       echo "  Очень новым моделям может понадобиться свежее образа vLLM (VLLM_IMAGE в .env)." ;;
+    *) : ;;
+  esac
+  if [ "${_gpu_cnt}" -ge 2 ]; then
+    printf "Сколько карт задействовать (tensor-parallel) [%s из %s]: " "${VLLM_TP}" "${_gpu_cnt}"; read -r _tp || _tp=""
+    [ -n "${_tp}" ] && VLLM_TP="${_tp}"
+  fi
+  log "Выбрано: ${VLLM_MODEL}, карт (TP)=${VLLM_TP}"
+fi
 
 # ----- 1. системные пакеты + Docker + NVIDIA toolkit ------------------------
 log "Системные пакеты..."
@@ -64,7 +135,7 @@ upd(){ grep -q "^$1=" "${PROJECT_DIR}/.env" \
         && sed -i "s|^$1=.*|$1=$2|" "${PROJECT_DIR}/.env" \
         || echo "$1=$2" >> "${PROJECT_DIR}/.env"; }
 upd LLM_MODEL "${VLLM_MODEL}"; upd VLLM_MODEL "${VLLM_MODEL}"
-upd VLLM_MAX_LEN "${VLLM_MAX_LEN}"; upd VLLM_TP "${VLLM_TP}"
+upd VLLM_MAX_LEN "${VLLM_MAX_LEN}"; upd VLLM_TP "${VLLM_TP}"; upd VLLM_IMAGE "${VLLM_IMAGE}"
 upd API_PORT "${API_PORT}"; upd ADMIN_TOKEN "${ADMIN_TOKEN}"
 ln -sf "${PROJECT_DIR}/.env" "${ROOT_DIR}/.env"
 

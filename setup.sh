@@ -12,6 +12,7 @@ set -euo pipefail
 #   24 ГБ   : qwen3.6:35b-a3b, qwen2.5:32b, gemma3:27b
 #   48–96 ГБ: qwen2.5:72b, qwen3.6:27b, llama3.3:70b   (Mac Studio)
 #   CPU/слаб: qwen3:1.7b–qwen3:4b, llama3.2:3b
+_USER_LLM="${LLM_MODEL:-}"                          # если задана через env — меню пропускаем
 LLM_MODEL="${LLM_MODEL:-qwen3.6:35b-a3b-q4_K_M}"   # основная модель генерации (MoE, быстрая)
 EMBED_MODEL_HF="${EMBED_MODEL_HF:-BAAI/bge-m3}"          # эмбеддинги (многоязычные, сильный RU)
 RERANK_MODEL_HF="${RERANK_MODEL_HF:-BAAI/bge-reranker-v2-m3}"
@@ -51,6 +52,34 @@ brew install ollama || true
 log "Запускаю Ollama как фоновый сервис..."
 brew services start ollama || ollama serve >/dev/null 2>&1 &
 sleep 5
+# Интерактивный выбор модели Ollama (терминал; пропуск при заданной LLM_MODEL)
+if [ -z "${_USER_LLM}" ] && [ -t 0 ]; then
+  echo
+  echo "============================================================"
+  echo "  Выбор модели генерации (Ollama). Рекомендуется: ${LLM_MODEL}"
+  echo "------------------------------------------------------------"
+  echo "  1) qwen2.5:7b-instruct           ~4.7 ГБ  — быстрая"
+  echo "  2) qwen2.5:14b-instruct          ~9 ГБ    — баланс"
+  echo "  3) qwen2.5:32b-instruct-q4_K_M   ~20 ГБ   — сильный RU"
+  echo "  4) qwen3:8b                      ~5 ГБ    — reasoning, лёгкая"
+  echo "  5) qwen3.6:35b-a3b-q4_K_M        ~20 ГБ   — MoE 35B, топ (мощный Mac)"
+  echo "  6) glm4:9b                       ~6 ГБ    — GLM-4 (Zhipu), RU/CN"
+  echo "  7) Ввести свою (ollama-тег)"
+  echo "  0) Рекомендованную (Enter)"
+  echo "============================================================"
+  printf "Выбор [0-7]: "; read -r _lm || _lm=""
+  case "${_lm}" in
+    1) LLM_MODEL="qwen2.5:7b-instruct" ;;
+    2) LLM_MODEL="qwen2.5:14b-instruct" ;;
+    3) LLM_MODEL="qwen2.5:32b-instruct-q4_K_M" ;;
+    4) LLM_MODEL="qwen3:8b" ;;
+    5) LLM_MODEL="qwen3.6:35b-a3b-q4_K_M" ;;
+    6) LLM_MODEL="glm4:9b" ;;
+    7) printf "ollama-тег: "; read -r _ct || _ct=""; [ -n "${_ct}" ] && LLM_MODEL="${_ct}" ;;
+    *) : ;;
+  esac
+  log "Модель: ${LLM_MODEL}"
+fi
 log "Скачиваю LLM: ${LLM_MODEL} (это надолго при первом запуске)..."
 ollama pull "${LLM_MODEL}"
 

@@ -104,6 +104,34 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     }
 }
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
+    # интерактивный выбор модели (если -LlmModel не задан явно и есть консоль)
+    if (-not $PSBoundParameters.ContainsKey('LlmModel') -and [Environment]::UserInteractive) {
+        Write-Host ""
+        Write-Host "============================================================" -ForegroundColor Cyan
+        Write-Host "  Выбор модели генерации (Ollama). Рекомендуется: $LlmModel" -ForegroundColor Cyan
+        Write-Host "------------------------------------------------------------" -ForegroundColor Cyan
+        Write-Host "  1) qwen2.5:7b-instruct           ~4.7 ГБ  - быстрая (CPU/слабый GPU)"
+        Write-Host "  2) qwen2.5:14b-instruct          ~9 ГБ    - баланс"
+        Write-Host "  3) qwen2.5:32b-instruct-q4_K_M   ~20 ГБ   - сильный RU (24 ГБ+ GPU)"
+        Write-Host "  4) qwen3:8b                      ~5 ГБ    - reasoning, лёгкая"
+        Write-Host "  5) qwen3.6:35b-a3b-q4_K_M        ~20 ГБ   - MoE 35B, топ (мощный сервер)"
+        Write-Host "  6) glm4:9b                       ~6 ГБ    - GLM-4 (Zhipu), RU/CN"
+        Write-Host "  7) Ввести свою (ollama-тег)"
+        Write-Host "  0) Рекомендованную (Enter)"
+        Write-Host "============================================================" -ForegroundColor Cyan
+        $sel = Read-Host "Выбор [0-7]"
+        switch ($sel) {
+            '1' { $LlmModel = 'qwen2.5:7b-instruct' }
+            '2' { $LlmModel = 'qwen2.5:14b-instruct' }
+            '3' { $LlmModel = 'qwen2.5:32b-instruct-q4_K_M' }
+            '4' { $LlmModel = 'qwen3:8b' }
+            '5' { $LlmModel = 'qwen3.6:35b-a3b-q4_K_M' }
+            '6' { $LlmModel = 'glm4:9b' }
+            '7' { $ct = Read-Host "ollama-тег"; if ($ct) { $LlmModel = $ct } }
+            default { }
+        }
+        Log "Модель: $LlmModel"
+    }
     Log "Скачиваю модель Ollama: $LlmModel (при первом запуске долго)..."
     $pulled = $false
     for ($i = 0; $i -lt 6; $i++) {

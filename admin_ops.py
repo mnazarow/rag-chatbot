@@ -2837,6 +2837,8 @@ _OLLAMA_CATALOG = [
     {"name": "llama3.2:3b-instruct-q4_K_M", "note": "~2 ГБ · лёгкая"},
     {"name": "llama3.1:8b-instruct-q4_K_M", "note": "~4.9 ГБ"},
     {"name": "llama3.3:70b-instruct-q4_K_M", "note": "~42 ГБ · топ Llama"},
+    # --- GLM (Zhipu) — то, что есть в Ollama ---
+    {"name": "glm4:9b", "note": "~6 ГБ · GLM-4 9B (Zhipu), хороший RU/CN"},
     # --- Многоязычные / RAG-ориентированные ---
     {"name": "aya-expanse:8b", "note": "~5 ГБ · многоязычная (Cohere), хороший RU"},
     {"name": "aya-expanse:32b", "note": "~18 ГБ · многоязычная, сильный RU"},
@@ -2865,10 +2867,19 @@ _OLLAMA_CATALOG = [
     {"name": "mxbai-embed-large", "note": "эмбеддинги · качественные (англ.)"},
 ]
 _VLLM_CATALOG = [
-    # --- Qwen3.6 (новейшие, 256K контекст) ---
+    # --- Qwen3.6 AWQ (готовые кванты для vLLM ≥0.19 — из меню установщика) ---
+    {"name": "QuantTrio/Qwen3.6-35B-A3B-AWQ", "note": "MoE 35B/3B · AWQ · ~20 ГБ VRAM (vLLM ≥0.19) ✅"},
+    {"name": "QuantTrio/Qwen3.6-27B-AWQ", "note": "плотная 27B · AWQ · ~15 ГБ (vLLM ≥0.19)"},
+    {"name": "Qwen/Qwen3.6-27B-FP8", "note": "27B · FP8 · ~28 ГБ (48 ГБ карта)"},
+    # --- Qwen3.6 (базовые) ---
     {"name": "Qwen/Qwen3.6-35B-A3B", "note": "MoE 35B/3B · 24 ГБ VRAM (Q4) · 256K"},
     {"name": "Qwen/Qwen3.6-27B", "note": "плотная 27B · ~17 ГБ (Q4)"},
     {"name": "nvidia/Qwen3.6-35B-A3B-NVFP4", "note": "NVFP4-квант (NVIDIA), компактная"},
+    # --- GLM (Zhipu) ---
+    {"name": "QuantTrio/GLM-4.7-Flash-AWQ", "note": "MoE 30B/3B · AWQ ~18 ГБ · 24–48 ГБ · vLLM ≥0.14 ✅"},
+    {"name": "cyankiwi/GLM-4.7-Flash-AWQ-8bit", "note": "MoE 30B/3B · AWQ 8-bit · ~32 ГБ (точнее)"},
+    {"name": "QuantTrio/GLM-4.6-AWQ", "note": "357B MoE/28B актив · AWQ ~176 ГБ · ~4×48 ГБ"},
+    {"name": "cyankiwi/GLM-5.2-AWQ-INT4", "note": "744B MoE · AWQ ~372 ГБ · 4×H200/5×A100"},
     # --- Qwen3 ---
     {"name": "Qwen/Qwen3-8B", "note": "24 ГБ VRAM · гибрид reasoning"},
     {"name": "Qwen/Qwen3-14B", "note": "32 ГБ VRAM"},

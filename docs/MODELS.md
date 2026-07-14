@@ -29,6 +29,11 @@
 | 24 ГБ             | `qwen3.6:35b-a3b` ✅ (баланс RU/скорость), `qwen2.5:32b`, `gemma3:27b` |
 | 48–96 ГБ (Mac Studio) | `qwen2.5:72b`, `qwen3.6:27b`, `llama3.3:70b` |
 | Слабый сервер/CPU | `qwen3:1.7b`–`qwen3:4b`, `llama3.2:3b` |
+| GLM (Zhipu) | `glm4:9b` (GLM-4 9B, RU/CN) |
+
+Установщики Ollama (`docker_variant/start.sh`, `setup.sh`, `start_windows_docker.ps1`) при
+запуске показывают **меню выбора модели** (qwen2.5/qwen3/qwen3.6/glm4 или свой тег). GLM-4.6/
+5.2/4.7-Flash — это модели для vLLM (GPU), в Ollama их нет.
 
 ### 1.2. vLLM — выбор по VRAM
 
@@ -36,9 +41,20 @@
 
 | VRAM | Рекомендуемые модели |
 |------|----------------------|
-| 24 ГБ (RTX 3090/4090) | `Qwen/Qwen2.5-14B-Instruct-AWQ` ✅, `Qwen/Qwen3-8B`, `Qwen/Qwen3.6-35B-A3B` (MoE Q4) |
-| 48 ГБ (A6000 / 2×24)  | `Qwen/Qwen2.5-32B-Instruct-AWQ`, `Qwen/Qwen3-32B-AWQ`, `google/gemma-3-27b-it` |
-| 80 ГБ (A100/H100)     | `Qwen/Qwen2.5-72B-Instruct-AWQ`, `Qwen/Qwen3-32B`, `hugging-quants/Meta-Llama-3.1-70B-Instruct-AWQ-INT4` |
+| 24 ГБ (RTX 3090/4090) | `QuantTrio/Qwen3.6-27B-AWQ`, `QuantTrio/GLM-4.7-Flash-AWQ` (30B/3B), `Qwen/Qwen2.5-14B-Instruct-AWQ` ✅ |
+| 48 ГБ (A6000 / 2×24)  | `QuantTrio/Qwen3.6-35B-A3B-AWQ` ✅, `Qwen/Qwen3.6-27B-FP8`, `Qwen/Qwen2.5-32B-Instruct-AWQ` |
+| 80 ГБ (A100/H100)     | `Qwen/Qwen2.5-72B-Instruct-AWQ`, `QuantTrio/Qwen3.6-35B-A3B-AWQ` (TP=2) |
+| 4×48–4×H200           | `QuantTrio/GLM-4.6-AWQ` (357B, ~176 ГБ), `cyankiwi/GLM-5.2-AWQ-INT4` (744B, ~372 ГБ) |
+
+**Выбор модели при установке.** Скрипты `gpu_variant/setup_gpu.sh` и `run_gpu.sh` при запуске
+**определяют VRAM/число GPU, рекомендуют модель и показывают меню выбора** (Qwen3.6, GLM-4.7-Flash,
+GLM-4.6, GLM-5.2 или своя). Меню пропускается при заданной `VLLM_MODEL` или неинтерактивном
+запуске. Все эти модели также есть в веб-каталоге (Администратор → «Каталог моделей»).
+
+**Версия vLLM.** Задаётся `VLLM_IMAGE` в `gpu_variant/.env` (по умолчанию
+`vllm/vllm-openai:v0.19.0`). Именно ≥0.19 нужна для Qwen3.6 (`qwen3_5_moe`) и GLM-5.2;
+GLM-4.7-Flash требует ≥0.14. Старый v0.6.6 новые архитектуры не грузит. Для GLM/некоторых
+сборок в команду vLLM добавлен `--trust-remote-code`.
 
 Параметры контейнера vLLM:
 
@@ -46,6 +62,7 @@
   но выше расход VRAM. Для RAG разумно 8192–16384.
 - `VLLM_TP` — tensor-parallel: число GPU, между которыми «распилена» модель. 1 для одной
   карты, 2+ для крупных моделей на нескольких GPU.
+- `VLLM_IMAGE` — версия образа vLLM (см. выше).
 
 ### 1.3. По задаче
 

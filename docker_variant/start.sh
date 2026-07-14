@@ -17,8 +17,40 @@ red(){ printf '\033[31m%s\033[0m\n' "$1"; }
 log(){ printf '\033[36m==> %s\033[0m\n' "$1"; }
 
 OS="$(uname -s)"
+_USER_LLM="${LLM_MODEL:-}"                       # если задана через env — меню пропускаем
 LLM_MODEL="${LLM_MODEL:-qwen3.6:35b-a3b-q4_K_M}"
 AUTO="${NO_AUTOINSTALL:-0}"
+
+# Интерактивный выбор модели Ollama (терминал; пропуск при заданной LLM_MODEL)
+choose_ollama_model(){
+  [ -n "${_USER_LLM}" ] && return 0
+  [ -t 0 ] || return 0
+  echo
+  echo "============================================================"
+  echo "  Выбор модели генерации (Ollama). Рекомендуется: ${LLM_MODEL}"
+  echo "------------------------------------------------------------"
+  echo "  1) qwen2.5:7b-instruct           ~4.7 ГБ  — быстрая (CPU/слабый GPU)"
+  echo "  2) qwen2.5:14b-instruct          ~9 ГБ    — баланс"
+  echo "  3) qwen2.5:32b-instruct-q4_K_M   ~20 ГБ   — сильный RU (24 ГБ+ GPU)"
+  echo "  4) qwen3:8b                      ~5 ГБ    — reasoning, лёгкая"
+  echo "  5) qwen3.6:35b-a3b-q4_K_M        ~20 ГБ   — MoE 35B, топ (мощный сервер)"
+  echo "  6) glm4:9b                       ~6 ГБ    — GLM-4 (Zhipu), RU/CN"
+  echo "  7) Ввести свою (ollama-тег)"
+  echo "  0) Рекомендованную (Enter)"
+  echo "============================================================"
+  printf "Выбор [0-7]: "; read -r _lm || _lm=""
+  case "${_lm}" in
+    1) LLM_MODEL="qwen2.5:7b-instruct" ;;
+    2) LLM_MODEL="qwen2.5:14b-instruct" ;;
+    3) LLM_MODEL="qwen2.5:32b-instruct-q4_K_M" ;;
+    4) LLM_MODEL="qwen3:8b" ;;
+    5) LLM_MODEL="qwen3.6:35b-a3b-q4_K_M" ;;
+    6) LLM_MODEL="glm4:9b" ;;
+    7) printf "ollama-тег: "; read -r _ct || _ct=""; [ -n "${_ct}" ] && LLM_MODEL="${_ct}" ;;
+    *) : ;;
+  esac
+  log "Модель: ${LLM_MODEL}"
+}
 SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
 
 # ----- 0. базовые утилиты (нужны для установки Docker/Ollama и git-обновлений) -----
@@ -88,6 +120,7 @@ fi
 if command -v ollama >/dev/null 2>&1; then
   # поднять сервер, если не запущен
   curl -fs http://localhost:11434/api/tags >/dev/null 2>&1 || (ollama serve >/dev/null 2>&1 &) ; sleep 2
+  choose_ollama_model               # интерактивный выбор модели (если терминал)
   log "Скачиваю модель Ollama: $LLM_MODEL (при первом запуске долго)…"
   ollama pull "$LLM_MODEL" || yellow "Модель не скачалась — выполните позже: ollama pull $LLM_MODEL"
 else

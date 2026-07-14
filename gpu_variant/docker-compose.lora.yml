@@ -9,11 +9,12 @@ services:
     volumes:
       - ../finetune/adapter:/adapter:ro
     command: >
-      --model ${VLLM_MODEL:-Qwen/Qwen3.6-35B-A3B}
-      --served-model-name ${VLLM_MODEL:-Qwen/Qwen3.6-35B-A3B}
+      --model ${VLLM_MODEL:-QuantTrio/Qwen3.6-35B-A3B-AWQ}
+      --served-model-name ${VLLM_MODEL:-QuantTrio/Qwen3.6-35B-A3B-AWQ}
       --max-model-len ${VLLM_MAX_LEN:-16384}
       --tensor-parallel-size ${VLLM_TP:-1}
       --gpu-memory-utilization 0.90
+      --trust-remote-code
       --enable-lora
       --max-lora-rank 32
       --lora-modules ${FINETUNED_MODEL:-company-lora}=/adapter
