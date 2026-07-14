@@ -208,15 +208,34 @@ pip install torch --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
 pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
 # headless-браузер для парсинга JS-сайтов (браузер + системные зависимости)
 python -m playwright install --with-deps chromium 2>/dev/null || python -m playwright install chromium 2>/dev/null || true
-# XTTS (клонирование голоса, coqui-tts) — тяжёлый и опциональный. Ставим по возможности,
-# не роняя установку и БЕЗ понижения уже поставленного torch. Отключить: INSTALL_XTTS=0.
-if [ "${INSTALL_XTTS:-1}" = "1" ]; then
-  log "Ставлю coqui-tts (XTTS, клонирование голоса) — опционально, тяжёлый..."
-  pip install -q "coqui-tts>=0.24.0" 2>/dev/null \
-    || echo "[!] coqui-tts (XTTS) не установился — опционально; можно позже кнопкой «Установить XTTS» в админке."
+# XTTS (клонирование голоса) — ОТДЕЛЬНЫЙ venv .venv-xtts + микросервис (systemd rag-xtts ниже).
+# Так coqui-tts (transformers>=4.57) не конфликтует с ядром RAG (.venv, transformers==4.44.2).
+# Приложение общается с сервисом по HTTP (XTTS_URL). Отключить: INSTALL_XTTS=0.
+XTTS_PORT="${XTTS_PORT:-8020}"
+INSTALL_XTTS="${INSTALL_XTTS:-1}"
+if [ "${INSTALL_XTTS}" = "1" ]; then
+  log "Ставлю XTTS в отдельное окружение .venv-xtts (изолированно от ядра)..."
+  if ( cd "${ROOT_DIR}" \
+        && "${PYBIN}" -m venv .venv-xtts \
+        && .venv-xtts/bin/pip install -q --upgrade pip wheel \
+        && .venv-xtts/bin/pip install -q torch --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}" \
+        && .venv-xtts/bin/pip install -q "coqui-tts>=0.24.0" "fastapi" "uvicorn[standard]" ); then
+    log "XTTS-окружение готово (сервис будет на 127.0.0.1:${XTTS_PORT})."
+  else
+    warn "XTTS-окружение не собралось — голос-клон будет недоступен (остальное работает)."
+    INSTALL_XTTS=0
+  fi
 fi
 # приложение читает .env из текущей папки — кладём симлинк на gpu-конфиг
 ln -sf "${PROJECT_DIR}/.env" "${ROOT_DIR}/.env"
+# адрес сервиса XTTS в .env (приложение направит синтез голоса-клона на него по HTTP)
+if [ "${INSTALL_XTTS}" = "1" ]; then
+  if grep -qE '^XTTS_URL=' "${PROJECT_DIR}/.env" 2>/dev/null; then
+    sed -i "s|^XTTS_URL=.*|XTTS_URL=http://127.0.0.1:${XTTS_PORT}|" "${PROJECT_DIR}/.env"
+  else
+    echo "XTTS_URL=http://127.0.0.1:${XTTS_PORT}" >> "${PROJECT_DIR}/.env"
+  fi
+fi
 
 # ----- 7. прогрев эмбеддера/реранкера на CUDA ------------------------------
 log "Прогреваю эмбеддинги и реранк на GPU..."
@@ -244,8 +263,18 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl enable --now rag-api
   log "Жду готовности веб-интерфейса (загрузка эмбеддера/реранка — до ~1–2 мин)..."
   for i in {1..40}; do curl -sf "http://localhost:${API_PORT}/health" >/dev/null 2>&1 && { log "Веб-интерфейс поднялся."; break; }; sleep 3; done
+  # микросервис XTTS (клонирование голоса) — отдельный юнит rag-xtts из .venv-xtts
+  if [ "${INSTALL_XTTS}" = "1" ] && [ -x "${ROOT_DIR}/.venv-xtts/bin/python" ]; then
+    log "Регистрирую и запускаю systemd-сервис rag-xtts (клонирование голоса)..."
+    sed -e "s|__USER__|${SVC_USER}|g" -e "s|__ROOT__|${ROOT_DIR}|g" \
+        -e "s|__PORT__|${XTTS_PORT}|g" -e "s|__GPU__|1|g" \
+        "${PROJECT_DIR}/rag-xtts.service.tpl" > /etc/systemd/system/rag-xtts.service
+    systemctl daemon-reload
+    systemctl enable --now rag-xtts
+  fi
 else
   log "systemd не найден — запустите вручную: ${ROOT_DIR}/.venv/bin/uvicorn app:app --host 0.0.0.0 --port ${API_PORT}"
+  [ "${INSTALL_XTTS}" = "1" ] && log "И сервис XTTS: ${ROOT_DIR}/.venv-xtts/bin/python ${ROOT_DIR}/xtts_service.py (порт ${XTTS_PORT})"
 fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"

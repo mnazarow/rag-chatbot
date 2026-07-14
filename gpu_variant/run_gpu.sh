@@ -201,11 +201,23 @@ sudo -u "${RUN_USER}" ./.venv/bin/pip install -q ezdxf rawpy pytesseract Pillow 
 # сам браузер — в кэш пользователя сервиса (иначе приложение его не найдёт)
 "${ROOT_DIR}/.venv/bin/python" -m playwright install-deps chromium 2>/dev/null || true
 sudo -u "${RUN_USER}" ./.venv/bin/python -m playwright install chromium 2>/dev/null || true
-# XTTS (клонирование голоса, coqui-tts) — тяжёлый и опциональный. Отключить: INSTALL_XTTS=0.
-if [ "${INSTALL_XTTS:-1}" = "1" ]; then
-  log "Ставлю coqui-tts (XTTS, клонирование голоса) — опционально, тяжёлый..."
-  sudo -u "${RUN_USER}" ./.venv/bin/pip install -q "coqui-tts>=0.24.0" 2>/dev/null \
-    || echo "[!] coqui-tts (XTTS) не установился — опционально; можно позже кнопкой «Установить XTTS» в админке."
+# XTTS (клонирование голоса) — ОТДЕЛЬНЫЙ venv .venv-xtts + микросервис (systemd rag-xtts ниже),
+# чтобы coqui-tts (transformers>=4.57) не конфликтовал с ядром (.venv, transformers==4.44.2).
+# Приложение обращается к сервису по HTTP (XTTS_URL). Отключить: INSTALL_XTTS=0.
+XTTS_PORT="${XTTS_PORT:-8020}"
+INSTALL_XTTS="${INSTALL_XTTS:-1}"
+if [ "${INSTALL_XTTS}" = "1" ]; then
+  log "Ставлю XTTS в отдельное окружение .venv-xtts (изолированно от ядра)..."
+  if sudo -u "${RUN_USER}" "${PYBIN}" -m venv .venv-xtts \
+      && sudo -u "${RUN_USER}" ./.venv-xtts/bin/pip install -q --upgrade pip wheel \
+      && sudo -u "${RUN_USER}" ./.venv-xtts/bin/pip install -q torch --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}" \
+      && sudo -u "${RUN_USER}" ./.venv-xtts/bin/pip install -q "coqui-tts>=0.24.0" "fastapi" "uvicorn[standard]"; then
+    upd XTTS_URL "http://127.0.0.1:${XTTS_PORT}"
+    log "XTTS-окружение готово (сервис будет на 127.0.0.1:${XTTS_PORT})."
+  else
+    log "[!] XTTS-окружение не собралось — голос-клон будет недоступен (остальное работает)."
+    INSTALL_XTTS=0
+  fi
 fi
 chmod +x "${PROJECT_DIR}/apply_llm.sh"
 
@@ -215,6 +227,16 @@ sed -e "s|__USER__|${RUN_USER}|g" -e "s|__ROOT__|${ROOT_DIR}|g" -e "s|__PORT__|$
     "${PROJECT_DIR}/rag-api.service.tpl" > /etc/systemd/system/rag-api.service
 systemctl daemon-reload
 systemctl enable --now rag-api
+
+# микросервис XTTS (клонирование голоса) — отдельный юнит rag-xtts из .venv-xtts
+if [ "${INSTALL_XTTS}" = "1" ] && [ -x "${ROOT_DIR}/.venv-xtts/bin/python" ]; then
+  log "Регистрирую systemd-сервис rag-xtts (клонирование голоса)..."
+  sed -e "s|__USER__|${RUN_USER}|g" -e "s|__ROOT__|${ROOT_DIR}|g" \
+      -e "s|__PORT__|${XTTS_PORT}|g" -e "s|__GPU__|1|g" \
+      "${PROJECT_DIR}/rag-xtts.service.tpl" > /etc/systemd/system/rag-xtts.service
+  systemctl daemon-reload
+  systemctl enable --now rag-xtts
+fi
 
 IP="$(hostname -I | awk '{print $1}')"
 cat <<EOF

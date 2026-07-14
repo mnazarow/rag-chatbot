@@ -260,6 +260,10 @@ XTTS_MODEL = os.getenv("XTTS_MODEL", "tts_models/multilingual/multi-dataset/xtts
 XTTS_SAMPLE = os.getenv("XTTS_SAMPLE", "")        # путь к WAV-образцу голоса (16 кГц моно)
 XTTS_LANGUAGE = os.getenv("XTTS_LANGUAGE", "ru")  # язык синтеза (ru/en/…)
 XTTS_USE_GPU = _bool("XTTS_USE_GPU", False)       # использовать GPU (CUDA) при синтезе
+# Адрес отдельного микросервиса XTTS (свой venv с coqui-tts + transformers>=4.57, чтобы не
+# конфликтовать с ядром RAG на transformers==4.44.2). Если задан — синтез идёт по HTTP на этот
+# сервис; если пусто — пытается синтезировать in-process (coqui-tts в этом же venv, не рекоменд.).
+XTTS_URL = os.getenv("XTTS_URL", "")              # напр. http://127.0.0.1:8020
 
 # --- Парсинг сайтов в базу знаний ---
 # Глубина обхода ссылок (0 = только указанная страница), лимит страниц на сайт,

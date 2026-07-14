@@ -68,13 +68,17 @@ def sample_info() -> dict:
 
 
 def xtts_status() -> dict:
-    """Готовность клонирования голоса: пакет, образец, ffmpeg."""
+    """Готовность клонирования голоса: сервис/пакет, образец, ffmpeg."""
     info = sample_info()
+    url = (settings.get("XTTS_URL") or "").strip()
+    # «установлен», если есть отдельный сервис (XTTS_URL) или пакет в этом venv
+    installed = bool(url) or _xtts_importable()
     return {
-        "installed": _xtts_importable(),
+        "installed": installed,
+        "service_url": url,
         "sample": info,
         "ffmpeg": bool(_which("ffmpeg")),
-        "ready": _xtts_importable() and info["exists"] and bool(_which("ffmpeg")),
+        "ready": installed and info["exists"] and bool(_which("ffmpeg")),
         "language": (settings.get("XTTS_LANGUAGE") or "ru"),
         "gpu": bool(settings.get("XTTS_USE_GPU")),
     }
@@ -119,12 +123,56 @@ def _load_xtts():
         return None
 
 
+def _wav_to_ogg(wav: str, out_ogg: str) -> bool:
+    """Конвертировать WAV → OGG/Opus (для Телеграма) и убрать временный WAV."""
+    try:
+        if not os.path.exists(wav):
+            return False
+        ok = _run(["ffmpeg", "-y", "-i", wav, "-c:a", "libopus", "-b:a", "32k", out_ogg])
+        return ok and os.path.exists(out_ogg)
+    finally:
+        if os.path.exists(wav):
+            try:
+                os.remove(wav)
+            except Exception:
+                pass
+
+
+def _synth_xtts_service(text: str, sample: str, out_ogg: str) -> bool:
+    """Синтез через ОТДЕЛЬНЫЙ микросервис XTTS (свой venv, без конфликта transformers).
+    XTTS_URL указывает на сервис (напр. http://127.0.0.1:8020)."""
+    url = (settings.get("XTTS_URL") or "").strip()
+    if not url:
+        return False
+    wav = out_ogg + ".wav"
+    try:
+        import httpx
+        r = httpx.post(url.rstrip("/") + "/tts", timeout=180, json={
+            "text": text, "sample_path": sample,
+            "language": (settings.get("XTTS_LANGUAGE") or "ru").strip() or "ru"})
+        if r.status_code != 200:
+            print(f"[tts] xtts-сервис вернул HTTP {r.status_code}: {r.text[:200]}")
+            return False
+        with open(wav, "wb") as f:
+            f.write(r.content)
+    except Exception as e:
+        print(f"[tts] xtts-сервис недоступен ({url}): {e}")
+        return False
+    return _wav_to_ogg(wav, out_ogg)
+
+
 def _synth_xtts(text: str, out_ogg: str) -> bool:
-    """Синтез голосом-клоном (XTTS) → WAV → OGG/Opus."""
+    """Синтез голосом-клоном (XTTS) → WAV → OGG/Opus.
+    Приоритет — отдельный микросервис (XTTS_URL); иначе in-process (если coqui-tts стоит
+    в этом же venv, что не рекомендуется из-за конфликта transformers с ядром)."""
     sample = clone_sample_path()
     if not (sample and os.path.exists(sample)):
         print("[tts] xtts: не задан образец голоса (XTTS_SAMPLE)")
         return False
+    # 1) сервисный режим (рекомендуется)
+    if (settings.get("XTTS_URL") or "").strip():
+        return _synth_xtts_service(text, sample, out_ogg)
+    # 2) in-process (fallback)
     model = _load_xtts()
     if model is None:
         return False
@@ -137,17 +185,7 @@ def _synth_xtts(text: str, out_ogg: str) -> bool:
     except Exception as e:
         print(f"[tts] xtts синтез не удался: {e}")
         return False
-    try:
-        if not os.path.exists(wav):
-            return False
-        ok = _run(["ffmpeg", "-y", "-i", wav, "-c:a", "libopus", "-b:a", "32k", out_ogg])
-        return ok and os.path.exists(out_ogg)
-    finally:
-        if os.path.exists(wav):
-            try:
-                os.remove(wav)
-            except Exception:
-                pass
+    return _wav_to_ogg(wav, out_ogg)
 
 
 # Варианты голоса espeak-ng (один язык → разные тембры) — даёт «много голосов»
@@ -223,9 +261,11 @@ def available() -> dict:
     if eng == "off":
         return {"ok": False, "engine": None, "candidates": [], "ffmpeg": ff}
     cand = []
-    # xtts (клонирование голоса) — только если пакет установлен и задан образец;
-    # в режиме auto используется, когда всё готово (лучшее качество + нужный голос)
-    _xr = _xtts_importable() and sample_info().get("exists")
+    # xtts (клонирование голоса) — доступен, если задан образец И либо настроен отдельный
+    # микросервис (XTTS_URL), либо coqui-tts стоит в этом venv (in-process fallback).
+    # В режиме auto используется, когда всё готово (лучшее качество + нужный голос).
+    _xtts_backend = bool((settings.get("XTTS_URL") or "").strip()) or _xtts_importable()
+    _xr = _xtts_backend and sample_info().get("exists")
     if eng == "xtts" or (eng == "auto" and _xr):
         cand.append("xtts")
     if eng in ("auto", "piper") and _which("piper"):

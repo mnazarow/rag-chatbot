@@ -101,11 +101,24 @@ pip install -r requirements.txt
 pip install -q ezdxf rawpy pytesseract Pillow matplotlib extract-msg py7zr rarfile psutil || true   # DWG/DXF + OCR (RAW/фото) + Outlook .msg + архивы + метрики сервера
 # headless-браузер для парсинга JS-сайтов (на macOS зависимости идут с браузером)
 python -m playwright install chromium 2>/dev/null || true
-# XTTS (клонирование голоса, coqui-tts) — тяжёлый и опциональный. Отключить: INSTALL_XTTS=0.
-if [ "${INSTALL_XTTS:-1}" = "1" ]; then
-  log "Ставлю coqui-tts (XTTS, клонирование голоса) — опционально, тяжёлый..."
-  pip install -q "coqui-tts>=0.24.0" 2>/dev/null \
-    || echo "[!] coqui-tts (XTTS) не установился — опционально; можно позже кнопкой «Установить XTTS» в админке."
+# XTTS (клонирование голоса) — ОТДЕЛЬНЫЙ venv .venv-xtts + микросервис (launchd com.rag.xtts
+# ниже), чтобы coqui-tts (transformers>=4.57) не конфликтовал с ядром RAG (.venv,
+# transformers==4.44.2). Приложение обращается к сервису по HTTP (XTTS_URL). Отключить: INSTALL_XTTS=0.
+XTTS_PORT="${XTTS_PORT:-8020}"
+INSTALL_XTTS="${INSTALL_XTTS:-1}"
+if [ "${INSTALL_XTTS}" = "1" ]; then
+  log "Ставлю XTTS в отдельное окружение .venv-xtts (изолированно от ядра)..."
+  if ( deactivate 2>/dev/null; cd "${PROJECT_DIR}" \
+        && ${PYTHON_BIN} -m venv .venv-xtts \
+        && ./.venv-xtts/bin/pip install -q --upgrade pip wheel \
+        && ./.venv-xtts/bin/pip install -q "coqui-tts>=0.24.0" "fastapi" "uvicorn[standard]" ); then
+    log "XTTS-окружение готово (сервис будет на 127.0.0.1:${XTTS_PORT})."
+  else
+    warn "XTTS-окружение не собралось — голос-клон будет недоступен (остальное работает)."
+    INSTALL_XTTS=0
+  fi
+  # вернуться в основной venv (мы могли из него выйти в подоболочке — на всякий случай)
+  source .venv/bin/activate 2>/dev/null || true
 fi
 
 # ----- 6. .env --------------------------------------------------------------
@@ -113,6 +126,14 @@ if [[ ! -f "${PROJECT_DIR}/.env" ]]; then
   cp "${PROJECT_DIR}/.env.example" "${PROJECT_DIR}/.env"
   sed -i '' "s|^LLM_MODEL=.*|LLM_MODEL=${LLM_MODEL}|" "${PROJECT_DIR}/.env"
   log "Создан .env (папка документов по умолчанию: /opt/db)."
+fi
+# адрес сервиса XTTS (клонирование голоса) — приложение шлёт синтез сюда по HTTP
+if [ "${INSTALL_XTTS}" = "1" ]; then
+  if grep -qE '^XTTS_URL=' "${PROJECT_DIR}/.env" 2>/dev/null; then
+    sed -i '' "s|^XTTS_URL=.*|XTTS_URL=http://127.0.0.1:${XTTS_PORT}|" "${PROJECT_DIR}/.env"
+  else
+    echo "XTTS_URL=http://127.0.0.1:${XTTS_PORT}" >> "${PROJECT_DIR}/.env"
+  fi
 fi
 
 # папка документов по умолчанию /opt/db (в /opt нужны права sudo)
@@ -146,6 +167,16 @@ if [[ -f "$TPL" ]]; then
   log "Сервис rag-api зарегистрирован и запущен (автозапуск при входе в систему)."
 else
   warn "Шаблон launchd не найден — автозапуск не настроен; запускайте вручную uvicorn."
+fi
+
+# микросервис XTTS (клонирование голоса) — отдельный launchd-агент com.rag.xtts
+XTTS_TPL="${PROJECT_DIR}/mac_variant/com.rag.xtts.plist.tpl"
+if [ "${INSTALL_XTTS}" = "1" ] && [ -x "${PROJECT_DIR}/.venv-xtts/bin/python" ] && [ -f "$XTTS_TPL" ]; then
+  XPLIST="$HOME/Library/LaunchAgents/com.rag.xtts.plist"
+  sed -e "s|__ROOT__|${PROJECT_DIR}|g" -e "s|__PORT__|${XTTS_PORT}|g" "$XTTS_TPL" > "$XPLIST"
+  launchctl unload "$XPLIST" 2>/dev/null || true
+  launchctl load "$XPLIST"
+  log "Сервис клонирования голоса (rag-xtts) зарегистрирован (порт ${XTTS_PORT})."
 fi
 
 cat <<EOF
