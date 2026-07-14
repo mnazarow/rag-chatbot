@@ -38,7 +38,7 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "EMPTY")
 # Очередь к LLM: максимум одновременных запросов к модели (генерация, vision и т. п.).
 # Остальные ждут своей очереди. 0 — без ограничения. Защищает перегруженную модель/GPU.
 LLM_MAX_CONCURRENCY = _int("LLM_MAX_CONCURRENCY", 0)
-LLM_QUEUE_TIMEOUT = _int("LLM_QUEUE_TIMEOUT", 120)   # макс. ожидание в очереди, с (0 — без лимита)
+LLM_QUEUE_TIMEOUT = _int("LLM_QUEUE_TIMEOUT", 600)   # макс. ожидание в очереди, с (0 — без лимита)
 # Минимальная пауза между началами запросов к LLM (с). Запросы стартуют не чаще,
 # чем раз в LLM_REQUEST_DELAY секунд. 0 — без паузы. Бережёт модель/GPU от «пиков».
 LLM_REQUEST_DELAY = _float("LLM_REQUEST_DELAY", 0.0)
@@ -47,7 +47,7 @@ LLM_REQUEST_DELAY = _float("LLM_REQUEST_DELAY", 0.0)
 # блок <think>…</think>), из-за чего видимый ответ появляется с большой задержкой или
 # «молчит». False (по умолчанию) — просить модель отвечать сразу, без размышлений;
 # True — оставить размышления (медленнее, но иногда точнее на сложных вопросах).
-LLM_THINK = _bool("LLM_THINK", False)
+LLM_THINK = _bool("LLM_THINK", True)
 
 # Qdrant
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -80,18 +80,20 @@ MILVUS_NLIST = _int("MILVUS_NLIST", 1024)                    # IVF: число �
 MILVUS_NPROBE = _int("MILVUS_NPROBE", 16)                    # IVF: сколько кластеров смотреть при поиске
 
 # RAG-параметры
-CHUNK_SIZE = _int("CHUNK_SIZE", 900)
-CHUNK_OVERLAP = _int("CHUNK_OVERLAP", 150)
+CHUNK_SIZE = _int("CHUNK_SIZE", 1800)
+CHUNK_OVERLAP = _int("CHUNK_OVERLAP", 360)
 # Предохранитель от «разбухания»: максимум чанков на один файл/архив. Если файл
 # (например огромный архив с тысячами моделей) даёт больше — лишнее отбрасывается
 # с предупреждением. 0 — без ограничения.
-INGEST_MAX_CHUNKS = _int("INGEST_MAX_CHUNKS", 20000)
+INGEST_MAX_CHUNKS = _int("INGEST_MAX_CHUNKS", 2000000)
 # Путь к ODA File Converter (конвертер DWG→DXF, запасной к dwg2dxf). Пусто —
 # искать автоматически (PATH и типовые места установки, вкл. .app на macOS).
 ODA_CONVERTER_PATH = os.getenv("ODA_CONVERTER_PATH", "")
-TOP_K_RETRIEVE = _int("TOP_K_RETRIEVE", 20)
+TOP_K_RETRIEVE = _int("TOP_K_RETRIEVE", 60)
 TOP_K_RERANK = _int("TOP_K_RERANK", 6)
-MIN_SCORE = _float("MIN_SCORE", 0.30)
+MIN_SCORE = _float("MIN_SCORE", 0.15)
+# Авто-фильтр по категории вопроса — теперь управляется и через .env (по умолч. включён).
+AUTO_FILTER = _bool("AUTO_FILTER", True)
 
 # Телефония: голосовой мост к АТС через Asterisk AudioSocket (STT→RAG→TTS).
 SIP_ENABLED = os.getenv("SIP_ENABLED", "0") not in ("0", "false", "")
@@ -138,7 +140,7 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo
 # vLLM (GPU-вариант): параметры контейнера генерации
 VLLM_MODEL = os.getenv("VLLM_MODEL", "Qwen/Qwen3.6-35B-A3B")
 VLLM_MAX_LEN = _int("VLLM_MAX_LEN", 16384)
-VLLM_TP = _int("VLLM_TP", 1)
+VLLM_TP = _int("VLLM_TP", 2)
 
 # Дообучение (QLoRA): базовая fp16-модель. Пусто = берётся из VLLM_MODEL
 # (с отбрасыванием суффиксов квантизации -AWQ/-GPTQ/-Int4).
@@ -178,7 +180,7 @@ INDEX_LLM_DESCRIBE = _bool("INDEX_LLM_DESCRIBE", False)
 INDEX_LLM_DESCRIBE_MAXCHARS = _int("INDEX_LLM_DESCRIBE_MAXCHARS", 6000)  # сколько текста слать LLM
 # Дедуп документов по содержимому при индексации: файлы с одинаковым извлечённым
 # текстом (SHA-256) индексируются один раз (последующие копии пропускаются). По умолч. выкл.
-INDEX_DEDUP = _bool("INDEX_DEDUP", False)
+INDEX_DEDUP = _bool("INDEX_DEDUP", True)
 # Автоматическая инкрементальная переиндексация папки по расписанию (off|hourly|daily|
 # weekly|Nh, напр. 6h). Индексируются только новые/изменённые файлы. Крутит monitor.py.
 REINDEX_SCHEDULE = os.getenv("REINDEX_SCHEDULE", "off")
@@ -187,10 +189,10 @@ REINDEX_SCHEDULE = os.getenv("REINDEX_SCHEDULE", "off")
 # Контекстные чанки: перед эмбеддингом добавлять к чанку заголовок документа и тему
 # (contextual retrieval) — повышает и полноту, и точность. В базе хранится исходный
 # текст для показа; обогащается только то, что кодируется в вектор.
-INDEX_CONTEXTUAL = _bool("INDEX_CONTEXTUAL", False)
+INDEX_CONTEXTUAL = _bool("INDEX_CONTEXTUAL", True)
 # Small-to-big: для каждого чанка хранить «родительский» фрагмент (окно соседних чанков).
 # Поиск/реранк — по маленькому точному чанку, а в LLM подаётся более крупный контекст.
-INDEX_PARENT_CONTEXT = _bool("INDEX_PARENT_CONTEXT", False)
+INDEX_PARENT_CONTEXT = _bool("INDEX_PARENT_CONTEXT", True)
 # Сколько соседних чанков с каждой стороны включать в «родительский» фрагмент.
 PARENT_WINDOW = _int("PARENT_WINDOW", 1)
 
@@ -202,15 +204,15 @@ ANSWER_VERIFY = os.getenv("ANSWER_VERIFY", "off")
 
 # Структурное чанкование: резать документ по заголовкам/абзацам, таблицы и списки
 # держать целиком; крупные блоки — по предложениям. Осмысленнее фиксированного размера.
-STRUCTURE_CHUNK = _bool("STRUCTURE_CHUNK", False)
+STRUCTURE_CHUNK = _bool("STRUCTURE_CHUNK", True)
 # Инлайн-цитаты: просить модель ставить [Фрагмент N] у каждого утверждения в ответе.
-INLINE_CITATIONS = _bool("INLINE_CITATIONS", False)
+INLINE_CITATIONS = _bool("INLINE_CITATIONS", True)
 # Защита от промпт-инъекций: добавлять в промпт указание считать контекст ДАННЫМИ, а не
 # инструкциями (важно, т.к. в контекст попадает содержимое спарсенных сайтов/документов).
 PROMPT_INJECTION_GUARD = _bool("PROMPT_INJECTION_GUARD", True)
 # Разрешение контекста диалога: переписывать follow-up-вопрос в самостоятельный
 # (с учётом истории) перед поиском. Генерация ответа — по оригиналу и истории.
-DIALOG_REWRITE = _bool("DIALOG_REWRITE", False)
+DIALOG_REWRITE = _bool("DIALOG_REWRITE", True)
 VISION_MODEL = os.getenv("VISION_MODEL", "")   # vision-модель (пусто = основная LLM)
 VISION_TIMEOUT = _int("VISION_TIMEOUT", 180)   # таймаут запроса к vision-модели, сек
 VISION_RETRIES = _int("VISION_RETRIES", 2)     # число попыток описать изображение
@@ -228,7 +230,7 @@ TELEGRAM_AUTO_APPROVE = _bool("TELEGRAM_AUTO_APPROVE", False)
 # Прокси для доступа к api.telegram.org (где Telegram заблокирован). Поддерживаются
 # socks5://, socks5h://, http://, https:// (можно с user:pass@). ВНИМАНИЕ: MTProto-прокси
 # (tg://proxy-ссылки) — для клиентов Telegram и НЕ работают с Bot API; нужен SOCKS5/HTTP.
-TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")
+TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "socks5h://10.0.0.2:1080")
 # Голосовые сообщения бота: распознавание входящих (Whisper) и ответ голосом (TTS).
 TELEGRAM_VOICE_IN = _bool("TELEGRAM_VOICE_IN", True)     # распознавать голосовые запросы
 TELEGRAM_VOICE_OUT = _bool("TELEGRAM_VOICE_OUT", False)  # отвечать голосом на голосовые
@@ -270,14 +272,14 @@ XTTS_URL = os.getenv("XTTS_URL", "")              # напр. http://127.0.0.1:8
 # ходить ли только по тому же домену.
 # Фолбэк, когда обычный поиск не нашёл ответа: лексический (полнотекст/имена файлов),
 # затем «глубокий» (LLM выбирает файлы по списку имён). По умолчанию выключен.
-NO_ANSWER_FALLBACK = _bool("NO_ANSWER_FALLBACK", False)
+NO_ANSWER_FALLBACK = _bool("NO_ANSWER_FALLBACK", True)
 # Не показывать источники/«дополнительные документы», если ответ — честное
 # «В доступных документах нет точного ответа на этот вопрос».
-HIDE_SOURCES_IF_NO_ANSWER = _bool("HIDE_SOURCES_IF_NO_ANSWER", False)
+HIDE_SOURCES_IF_NO_ANSWER = _bool("HIDE_SOURCES_IF_NO_ANSWER", True)
 
-WEB_CRAWL_DEPTH = _int("WEB_CRAWL_DEPTH", 1)
-WEB_MAX_PAGES = _int("WEB_MAX_PAGES", 20)
-WEB_MAX_FILES = _int("WEB_MAX_FILES", 5000)       # лимит скачиваемых файлов на сайт
+WEB_CRAWL_DEPTH = _int("WEB_CRAWL_DEPTH", 14)
+WEB_MAX_PAGES = _int("WEB_MAX_PAGES", 200000)
+WEB_MAX_FILES = _int("WEB_MAX_FILES", 500000)       # лимит скачиваемых файлов на сайт
 WEB_SAME_DOMAIN = _bool("WEB_SAME_DOMAIN", True)
 # Рендерить страницы headless-браузером (Playwright Chromium) — для сайтов на
 # JavaScript. Если Playwright/браузер не установлены — мягкий откат на обычную загрузку.
@@ -290,7 +292,7 @@ WEB_JS_AUTO = _bool("WEB_JS_AUTO", True)
 # Условие готовности страницы в браузере: domcontentloaded (быстро, по умолчанию),
 # load (дождаться ресурсов) или networkidle (дождаться простоя сети — самый медленный,
 # многие сайты с аналитикой/поллингом не «затихают» и упираются в таймаут).
-WEB_JS_WAIT = os.getenv("WEB_JS_WAIT", "domcontentloaded")
+WEB_JS_WAIT = os.getenv("WEB_JS_WAIT", "load")
 # Доп. пауза после загрузки JS-страницы (мс) — чтобы догрузился динамический контент.
 WEB_JS_WAIT_MS = _int("WEB_JS_WAIT_MS", 0)
 # Не загружать в браузере картинки/стили/шрифты/медиа — на текст не влияет, но сильно
@@ -316,7 +318,7 @@ WEB_USE_SITEMAP = _bool("WEB_USE_SITEMAP", True)
 WEB_RESPECT_ROBOTS = _bool("WEB_RESPECT_ROBOTS", True)
 # Соблюдать паузу Crawl-delay из robots.txt вообще. False — игнорировать задержку
 # (Disallow всё равно учитывается, если включён robots). Быстрый тумблер «задержки».
-WEB_RESPECT_CRAWL_DELAY = _bool("WEB_RESPECT_CRAWL_DELAY", True)
+WEB_RESPECT_CRAWL_DELAY = _bool("WEB_RESPECT_CRAWL_DELAY", False)
 # Верхний предел паузы Crawl-delay из robots.txt (сек). Некоторые сайты задают 20+ с,
 # из-за чего обход идёт ~1 стр./20 с и кажется зависшим. robots соблюдается, но не
 # медленнее этого предела. 0 — не ограничивать (полностью доверять robots).
@@ -324,7 +326,7 @@ WEB_CRAWL_DELAY_MAX = _float("WEB_CRAWL_DELAY_MAX", 5.0)
 # Сколько САЙТОВ парсить одновременно (каждый — в своём потоке, со своим браузером).
 # 1 — последовательно (как раньше). Больше — быстрее на нескольких сайтах, но каждый
 # параллельный сайт поднимает свой Chromium (расход памяти).
-WEB_SITE_CONCURRENCY = _int("WEB_SITE_CONCURRENCY", 1)
+WEB_SITE_CONCURRENCY = _int("WEB_SITE_CONCURRENCY", 3)
 # Инкрементальный парсинг: условными запросами (ETag/Last-Modified) пропускать
 # неизменённые страницы и файлы — быстрый ежедневный автопарсинг.
 WEB_INCREMENTAL = _bool("WEB_INCREMENTAL", True)

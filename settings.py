@@ -61,7 +61,7 @@ FIELDS: list[dict] = [
      "desc": "Сколько наиболее релевантных фрагментов из прайс-папки добавлять в контекст ответа на "
              "ценовой вопрос. Больше — полнее, но длиннее контекст. Рекомендация: 6–10."},
     {"key": "AUTO_FILTER", "label": "Авто-фильтр по категории вопроса", "group": "Поиск и генерация",
-     "type": "bool", "scope": "live", "default": True,
+     "type": "bool", "scope": "live", "default": config.AUTO_FILTER,
      "desc": "Угадывать категорию вопроса по ключевым словам (цена/обучение/презентация) и искать только "
              "внутри неё. Включено — точнее для явно «категорийных» вопросов, но может «отрезать» ответ из "
              "другой категории. Рекомендация: включено, если документы аккуратно разложены по типам; "
@@ -497,10 +497,13 @@ FIELDS: list[dict] = [
     {"key": "VISION_MODEL", "label": "Vision-модель для описания изображений",
      "group": "OCR (распознавание текста)", "type": "text", "scope": "reindex",
      "default": config.VISION_MODEL,
-     "desc": "Имя мультимодальной модели для описания картинок (напр. <code>llava</code>, "
-             "<code>llama3.2-vision</code>, <code>qwen2-vl</code> в Ollama; для vLLM — "
-             "vision-совместимая модель). Пусто = использовать основную LLM (если она "
-             "поддерживает изображения)."},
+     "desc": "Имя мультимодальной модели для описания картинок. Мультимодальны, например: "
+             "<code>Qwen/Qwen3.6-27B</code>, <code>Qwen/Qwen3.6-35B-A3B</code>, "
+             "<code>Qwen/Qwen2.5-VL-7B-Instruct</code>, <code>google/gemma-3-27b-it</code> (vLLM); "
+             "<code>qwen2.5vl</code>, <code>llava</code>, <code>llama3.2-vision</code>, "
+             "<code>gemma3</code> (Ollama). Имя должно совпадать с тем, что реально обслуживает "
+             "vLLM/Ollama (для vLLM это одна обслуживаемая модель — см. примечание ниже). "
+             "Пусто = основная LLM, если она с поддержкой изображений."},
     {"key": "VISION_TIMEOUT", "label": "Таймаут vision-модели, сек",
      "group": "OCR (распознавание текста)", "type": "int", "scope": "live",
      "default": config.VISION_TIMEOUT,

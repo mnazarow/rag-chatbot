@@ -3901,6 +3901,28 @@ function renderField(f,val,tokenSet){
       <button class="act ghost" type="button" onclick="loadFinetuneFieldModels()">🔄 Обновить список моделей</button>
       <div class="note" style="width:100%">Выберите базовую fp16-модель для QLoRA из списка (или впишите свою). Затем «Сохранить настройки» и «Запустить дообучение».</div>
     </div>`;
+  else if(f.key==='VISION_MODEL') inp=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input type="text" id="f_${f.key}" value="${esc(String(val))}" placeholder="пусто = основная LLM" style="flex:1;min-width:220px">
+      <select onchange="if(this.value!==undefined&&this.value!=='__')document.getElementById('f_VISION_MODEL').value=this.value" style="min-width:260px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);font:inherit">
+        <option value="__">— выбрать vision-модель —</option>
+        <option value="">— основная LLM (по умолчанию) —</option>
+        <optgroup label="vLLM (мультимодальные)">
+          <option>Qwen/Qwen3.6-27B</option>
+          <option>Qwen/Qwen3.6-35B-A3B</option>
+          <option>Qwen/Qwen2.5-VL-7B-Instruct</option>
+          <option>Qwen/Qwen2.5-VL-32B-Instruct-AWQ</option>
+          <option>google/gemma-3-12b-it</option>
+          <option>google/gemma-3-27b-it</option>
+        </optgroup>
+        <optgroup label="Ollama (мультимодальные)">
+          <option>qwen2.5vl</option>
+          <option>llava</option>
+          <option>llama3.2-vision</option>
+          <option>gemma3</option>
+        </optgroup>
+      </select>
+      <div class="note" style="width:100%">Выберите мультимодальную модель для описания картинок (или впишите своё имя). Пусто = основная LLM, если она с поддержкой изображений (Qwen3.6 — мультимодальна). Имя должно совпадать с тем, что реально обслуживает vLLM/Ollama.</div>
+    </div>`;
   else inp=`<input type="text" id="f_${f.key}" value="${esc(String(val))}">`;
   return `<div class="field">${lab}${inp}${desc}</div>`;
 }

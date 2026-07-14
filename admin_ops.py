@@ -2872,8 +2872,8 @@ _VLLM_CATALOG = [
     {"name": "QuantTrio/Qwen3.6-27B-AWQ", "note": "плотная 27B · AWQ · ~15 ГБ (vLLM ≥0.19)"},
     {"name": "Qwen/Qwen3.6-27B-FP8", "note": "27B · FP8 · ~28 ГБ (48 ГБ карта)"},
     # --- Qwen3.6 (базовые) ---
-    {"name": "Qwen/Qwen3.6-35B-A3B", "note": "MoE 35B/3B · 24 ГБ VRAM (Q4) · 256K"},
-    {"name": "Qwen/Qwen3.6-27B", "note": "плотная 27B · ~17 ГБ (Q4)"},
+    {"name": "Qwen/Qwen3.6-35B-A3B", "note": "MoE 35B/3B · 🖼 мультимодальная (vision) · полн. точность, 2×48 ГБ (TP=2)"},
+    {"name": "Qwen/Qwen3.6-27B", "note": "плотная 27B · 🖼 мультимодальная (vision) · полн. точность, 2×48 ГБ (TP=2)"},
     {"name": "nvidia/Qwen3.6-35B-A3B-NVFP4", "note": "NVFP4-квант (NVIDIA), компактная"},
     # --- GLM (Zhipu) ---
     {"name": "QuantTrio/GLM-4.7-Flash-AWQ", "note": "MoE 30B/3B · AWQ ~18 ГБ · 24–48 ГБ · vLLM ≥0.14 ✅"},

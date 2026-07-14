@@ -15,7 +15,7 @@ set -euo pipefail
 _USER_MODEL="${VLLM_MODEL:-}"; _USER_TP="${VLLM_TP:-}"      # пусто = авто-подбор
 VLLM_MODEL="${VLLM_MODEL:-QuantTrio/Qwen3.6-35B-A3B-AWQ}"
 VLLM_MAX_LEN="${VLLM_MAX_LEN:-16384}"
-VLLM_TP="${VLLM_TP:-1}"
+VLLM_TP="${VLLM_TP:-2}"                                      # по умолчанию 2 карты (tensor-parallel)
 VLLM_IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.19.0}"        # ≥0.19 нужна для Qwen3.6/GLM-5.2
 TORCH_CUDA="${TORCH_CUDA:-cu124}"
 API_PORT="${API_PORT:-8000}"
@@ -80,30 +80,42 @@ if [ -z "${_USER_MODEL}" ] && [ -t 0 ]; then
   echo "  Обнаружено GPU: ${_gpu_cnt} × ${_gpu_mem} МБ VRAM"
   echo "  Рекомендуется:  ${VLLM_MODEL}  (карт: ${VLLM_TP})"
   echo "------------------------------------------------------------"
-  echo "  Qwen3.6:"
-  echo "   1) QuantTrio/Qwen3.6-27B-AWQ        ~15 ГБ  — плотная 27B (24–48 ГБ)"
-  echo "   2) QuantTrio/Qwen3.6-35B-A3B-AWQ    ~20 ГБ  — MoE 35B/3B актив. (24 ГБ+; реком.)"
-  echo "   3) Qwen/Qwen3.6-27B-FP8             ~28 ГБ  — выше точность (нужно 48 ГБ)"
+  echo "  Qwen3.6 — МУЛЬТИМОДАЛЬНЫЕ (описывают картинки, vision ✅; базовые, полная точность):"
+  echo "   1) Qwen/Qwen3.6-35B-A3B            MoE 35B/3B · vision · нужно 2×48 ГБ (TP=2)"
+  echo "   2) Qwen/Qwen3.6-27B                плотная 27B · vision · нужно 2×48 ГБ (TP=2)"
+  echo "  Qwen3.6 — квантованные (компактные, обычно ТОЛЬКО текст):"
+  echo "   3) QuantTrio/Qwen3.6-35B-A3B-AWQ    ~20 ГБ  — MoE 35B/3B (24 ГБ+; реком. для текста)"
+  echo "   4) QuantTrio/Qwen3.6-27B-AWQ        ~15 ГБ  — плотная 27B (24–48 ГБ)"
+  echo "   5) Qwen/Qwen3.6-27B-FP8             ~28 ГБ  — выше точность (нужно 48 ГБ)"
   echo "  GLM (Zhipu):"
-  echo "   4) QuantTrio/GLM-4.7-Flash-AWQ      ~18 ГБ  — MoE 30B/3B актив., быстрая (24–48 ГБ) ✅"
-  echo "   5) QuantTrio/GLM-4.6-AWQ            ~176 ГБ — 357B MoE (нужно ~4×48 ГБ)"
-  echo "   6) cyankiwi/GLM-5.2-AWQ-INT4        ~372 ГБ — 744B MoE (нужно ~4×H200/5×A100)"
+  echo "   6) QuantTrio/GLM-4.7-Flash-AWQ      ~18 ГБ  — MoE 30B/3B актив., быстрая (24–48 ГБ)"
+  echo "   7) QuantTrio/GLM-4.6-AWQ            ~176 ГБ — 357B MoE (нужно ~4×48 ГБ)"
+  echo "   8) cyankiwi/GLM-5.2-AWQ-INT4        ~372 ГБ — 744B MoE (нужно ~4×H200/5×A100)"
   echo "  Прочее:"
-  echo "   7) Ввести свою модель (HF-идентификатор)"
+  echo "   9) Ввести свою модель (HF-идентификатор)"
   echo "   0) Рекомендованную (Enter)"
+  echo "------------------------------------------------------------"
+  echo "  Для описания картинок при индексации выбирайте 1 или 2 (vision)."
   echo "============================================================"
-  printf "Выбор [0-7]: "; read -r _ans || _ans=""
+  printf "Выбор [0-9]: "; read -r _ans || _ans=""
+  _mm_tp=1; [ "${_gpu_cnt}" -ge 2 ] && _mm_tp=2   # базовым мультимодальным нужен TP=2
   case "${_ans}" in
-    1) VLLM_MODEL="QuantTrio/Qwen3.6-27B-AWQ";     VLLM_TP=1 ;;
-    2) VLLM_MODEL="QuantTrio/Qwen3.6-35B-A3B-AWQ"; if [ "${_gpu_cnt}" -ge 2 ]; then VLLM_TP=2; else VLLM_TP=1; fi ;;
-    3) VLLM_MODEL="Qwen/Qwen3.6-27B-FP8";          VLLM_TP=1 ;;
-    4) VLLM_MODEL="QuantTrio/GLM-4.7-Flash-AWQ";   VLLM_TP=1
+    1) VLLM_MODEL="Qwen/Qwen3.6-35B-A3B";          VLLM_TP="${_mm_tp}"
+       echo "  Мультимодальная (vision). Полная точность — нужно 2×48 ГБ (TP=2), vLLM ≥0.19 + --trust-remote-code (включён)."
+       [ "${_gpu_cnt}" -lt 2 ] && echo "  ВНИМАНИЕ: одной карты 48 ГБ базовой 35B-A3B, скорее всего, мало. Возьмите AWQ (п.3) или добавьте GPU." ;;
+    2) VLLM_MODEL="Qwen/Qwen3.6-27B";              VLLM_TP="${_mm_tp}"
+       echo "  Мультимодальная (vision). Плотная 27B в полной точности — нужно 2×48 ГБ (TP=2)."
+       [ "${_gpu_cnt}" -lt 2 ] && echo "  ВНИМАНИЕ: одной карты 48 ГБ базовой 27B мало. Возьмите AWQ (п.4) или добавьте GPU." ;;
+    3) VLLM_MODEL="QuantTrio/Qwen3.6-35B-A3B-AWQ"; if [ "${_gpu_cnt}" -ge 2 ]; then VLLM_TP=2; else VLLM_TP=1; fi ;;
+    4) VLLM_MODEL="QuantTrio/Qwen3.6-27B-AWQ";     VLLM_TP=1 ;;
+    5) VLLM_MODEL="Qwen/Qwen3.6-27B-FP8";          VLLM_TP=1 ;;
+    6) VLLM_MODEL="QuantTrio/GLM-4.7-Flash-AWQ";   VLLM_TP=1
        echo "  GLM-4.7-Flash — 30B/3B MoE (~18 ГБ), нужен образ vLLM ≥0.14 (у нас ${VLLM_IMAGE##*:})." ;;
-    5) VLLM_MODEL="QuantTrio/GLM-4.6-AWQ";         VLLM_TP="${_gpu_cnt}"
+    7) VLLM_MODEL="QuantTrio/GLM-4.6-AWQ";         VLLM_TP="${_gpu_cnt}"
        echo "  ВНИМАНИЕ: GLM-4.6 — 357B, ~176 ГБ в AWQ (нужно ~4×48 ГБ). На 3×48 может не влезть." ;;
-    6) VLLM_MODEL="cyankiwi/GLM-5.2-AWQ-INT4";     VLLM_TP="${_gpu_cnt}"
+    8) VLLM_MODEL="cyankiwi/GLM-5.2-AWQ-INT4";     VLLM_TP="${_gpu_cnt}"
        echo "  ВНИМАНИЕ: GLM-5.2 — 744B, ~372 ГБ даже в AWQ INT4 (нужно ~4×H200). На малом железе не загрузится." ;;
-    7) printf "HF-идентификатор: "; read -r _cm || _cm=""
+    9) printf "HF-идентификатор: "; read -r _cm || _cm=""
        [ -n "${_cm}" ] && VLLM_MODEL="${_cm}"
        echo "  Очень новым моделям может понадобиться свежее образа vLLM (VLLM_IMAGE в .env)." ;;
     *) : ;;
@@ -172,6 +184,23 @@ upd(){ grep -q "^$1=" "${PROJECT_DIR}/.env" \
 upd LLM_MODEL "${VLLM_MODEL}"; upd VLLM_MODEL "${VLLM_MODEL}"
 upd VLLM_MAX_LEN "${VLLM_MAX_LEN}"; upd VLLM_TP "${VLLM_TP}"; upd VLLM_IMAGE "${VLLM_IMAGE}"
 upd API_PORT "${API_PORT}"; upd ADMIN_TOKEN "${ADMIN_TOKEN}"
+
+# ----- Профиль настроек по умолчанию (при установке/переустановке) -----------
+# Записываются в .env. Правки из админки (runtime_config.json) имеют приоритет, поэтому
+# после ручной настройки в панели эти значения не мешают. Отключить: APPLY_DEFAULTS=0.
+if [ "${APPLY_DEFAULTS:-1}" = "1" ]; then
+  upd TOP_K_RETRIEVE 60;            upd MIN_SCORE 0.15;            upd AUTO_FILTER true
+  upd NO_ANSWER_FALLBACK true;      upd HIDE_SOURCES_IF_NO_ANSWER true
+  upd INLINE_CITATIONS true;        upd DIALOG_REWRITE true;      upd LLM_THINK true
+  upd LLM_QUEUE_TIMEOUT 600
+  upd CHUNK_SIZE 1800;             upd CHUNK_OVERLAP 360;         upd INGEST_MAX_CHUNKS 2000000
+  upd STRUCTURE_CHUNK true;         upd INDEX_CONTEXTUAL true
+  upd INDEX_PARENT_CONTEXT true;    upd INDEX_DEDUP true
+  upd TELEGRAM_PROXY "socks5h://10.0.0.2:1080"
+  upd WEB_CRAWL_DEPTH 14;           upd WEB_MAX_PAGES 200000;      upd WEB_MAX_FILES 500000
+  upd WEB_JS_WAIT load;             upd WEB_RESPECT_CRAWL_DELAY false; upd WEB_SITE_CONCURRENCY 3
+  log "Профиль настроек по умолчанию записан в .env."
+fi
 
 # Redis (кэш агрегатов + семантический кэш) — ставим и включаем по умолчанию (INSTALL_REDIS=0 — отключить)
 if [ "${INSTALL_REDIS:-1}" = "1" ]; then
@@ -248,6 +277,20 @@ chmod +x "${PROJECT_DIR}/apply_llm.sh"
 log "Регистрирую systemd-сервис rag-api..."
 sed -e "s|__USER__|${RUN_USER}|g" -e "s|__ROOT__|${ROOT_DIR}|g" -e "s|__PORT__|${API_PORT}|g" \
     "${PROJECT_DIR}/rag-api.service.tpl" > /etc/systemd/system/rag-api.service
+# Эмбеддер/реранкер грузятся на GPU. vLLM (TP) уже занимает часть карт (обычно cuda:0/1),
+# и эмбеддер, лезущий на cuda:0, ловит CUDA OOM. Направляем его на самую СВОБОДНУЮ карту
+# через CUDA_VISIBLE_DEVICES (systemd drop-in). Ingest из админки — подпроцесс сервиса —
+# наследует это же окружение. Только при >=2 GPU (иначе делить нечего).
+if command -v nvidia-smi >/dev/null 2>&1 && [ "$(nvidia-smi -L 2>/dev/null | wc -l)" -ge 2 ]; then
+  _free_gpu="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null \
+                | sort -t, -k2 -n -r | head -1 | awk -F, '{gsub(/ /,"",$1); print $1}')"
+  if [ -n "${_free_gpu}" ]; then
+    mkdir -p /etc/systemd/system/rag-api.service.d
+    printf '[Service]\nEnvironment=CUDA_VISIBLE_DEVICES=%s\n' "${_free_gpu}" \
+      > /etc/systemd/system/rag-api.service.d/10-embed-gpu.conf
+    log "Эмбеддер/реранкер → GPU ${_free_gpu} (самая свободная; CUDA_VISIBLE_DEVICES)."
+  fi
+fi
 systemctl daemon-reload
 systemctl enable --now rag-api
 
