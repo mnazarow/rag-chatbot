@@ -101,6 +101,12 @@ pip install -r requirements.txt
 pip install -q ezdxf rawpy pytesseract Pillow matplotlib extract-msg py7zr rarfile psutil || true   # DWG/DXF + OCR (RAW/фото) + Outlook .msg + архивы + метрики сервера
 # headless-браузер для парсинга JS-сайтов (на macOS зависимости идут с браузером)
 python -m playwright install chromium 2>/dev/null || true
+# XTTS (клонирование голоса, coqui-tts) — тяжёлый и опциональный. Отключить: INSTALL_XTTS=0.
+if [ "${INSTALL_XTTS:-1}" = "1" ]; then
+  log "Ставлю coqui-tts (XTTS, клонирование голоса) — опционально, тяжёлый..."
+  pip install -q "coqui-tts>=0.24.0" 2>/dev/null \
+    || echo "[!] coqui-tts (XTTS) не установился — опционально; можно позже кнопкой «Установить XTTS» в админке."
+fi
 
 # ----- 6. .env --------------------------------------------------------------
 if [[ ! -f "${PROJECT_DIR}/.env" ]]; then

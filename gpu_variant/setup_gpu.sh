@@ -117,7 +117,15 @@ log "Устанавливаю базовые пакеты..."
 apt-get update -y
 apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates gnupg git
 apt-get install -y libgl1 libglib2.0-0 espeak-ng 2>/dev/null || true   # OpenCV/pymupdf/rawpy + TTS (espeak)
-apt-get install -y tesseract-ocr tesseract-ocr-rus libredwg-tools antiword p7zip-full unar poppler-utils 2>/dev/null || true   # OCR (rus) + DWG + .doc + архивы + PDF→картинки
+# критичные пакеты извлечения контента: OCR + .doc + архивы + PDF→картинки.
+# Ставим НЕ молча (с повтором), затем проверяем бинарники и явно предупреждаем, если
+# что-то не встало (напр. когда-то не хватило места) — чтобы это не оставалось незамеченным.
+_content_pkgs="tesseract-ocr tesseract-ocr-rus antiword p7zip-full unar poppler-utils"
+apt-get install -y ${_content_pkgs} || { apt-get update -y; apt-get install -y ${_content_pkgs} || true; }
+apt-get install -y libredwg-tools 2>/dev/null || true   # DWG→DXF (может отсутствовать в репо — необязательно)
+for _b in tesseract antiword 7z unar pdftoppm; do
+  command -v "${_b}" >/dev/null 2>&1 || echo "[!] системный пакет для '${_b}' не установился — доставьте вручную: sudo apt install -y ${_content_pkgs}"
+done
 # ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb
 bash "${ROOT_DIR}/scripts/install_oda.sh" "${ROOT_DIR}" || true
 # Python для приложения: нужен 3.10–3.13 (под 3.14+ ещё НЕТ колёс PyTorch). Системный
@@ -200,6 +208,13 @@ pip install torch --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
 pip install -r "${PROJECT_DIR}/requirements-gpu.txt"
 # headless-браузер для парсинга JS-сайтов (браузер + системные зависимости)
 python -m playwright install --with-deps chromium 2>/dev/null || python -m playwright install chromium 2>/dev/null || true
+# XTTS (клонирование голоса, coqui-tts) — тяжёлый и опциональный. Ставим по возможности,
+# не роняя установку и БЕЗ понижения уже поставленного torch. Отключить: INSTALL_XTTS=0.
+if [ "${INSTALL_XTTS:-1}" = "1" ]; then
+  log "Ставлю coqui-tts (XTTS, клонирование голоса) — опционально, тяжёлый..."
+  pip install -q "coqui-tts>=0.24.0" 2>/dev/null \
+    || echo "[!] coqui-tts (XTTS) не установился — опционально; можно позже кнопкой «Установить XTTS» в админке."
+fi
 # приложение читает .env из текущей папки — кладём симлинк на gpu-конфиг
 ln -sf "${PROJECT_DIR}/.env" "${ROOT_DIR}/.env"
 

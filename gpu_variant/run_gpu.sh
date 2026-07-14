@@ -114,10 +114,13 @@ apt-get install -y python3 python3-venv python3-pip ffmpeg curl ca-certificates 
 apt-get install -y libgl1 libglib2.0-0 2>/dev/null || true   # зависимости OpenCV/pymupdf/rawpy (загрузка изображений)
 apt-get install -y espeak-ng 2>/dev/null || true   # синтез речи для голосовых ответов (TTS)
 apt-get install -y libredwg-tools 2>/dev/null || true   # dwg2dxf: конвертация DWG (необязательно)
-apt-get install -y tesseract-ocr tesseract-ocr-rus 2>/dev/null || true   # OCR для CR2/фото
-apt-get install -y antiword 2>/dev/null || true   # чтение старого .doc
-apt-get install -y p7zip-full unar 2>/dev/null || true   # распаковка архивов (.7z/.rar)
-apt-get install -y poppler-utils 2>/dev/null || true   # рендер страниц PDF в картинки (pdftoppm)
+# критичные пакеты извлечения контента: OCR + .doc + архивы + PDF→картинки.
+# Ставим НЕ молча (с повтором), затем проверяем и явно предупреждаем, если не встало.
+_content_pkgs="tesseract-ocr tesseract-ocr-rus antiword p7zip-full unar poppler-utils"
+apt-get install -y ${_content_pkgs} || { apt-get update -y; apt-get install -y ${_content_pkgs} || true; }
+for _b in tesseract antiword 7z unar pdftoppm; do
+  command -v "${_b}" >/dev/null 2>&1 || echo "[!] системный пакет для '${_b}' не установился — доставьте: sudo apt install -y ${_content_pkgs}"
+done
 # ODA File Converter (запасной конвертер DWG→DXF) из локального дистрибутива vendor/oda/*.deb + xvfb
 bash "${ROOT_DIR}/scripts/install_oda.sh" "${ROOT_DIR}" || true
 # Нужен Python 3.10–3.13 (под 3.14+ ещё НЕТ колёс PyTorch). Если системный слишком новый —
@@ -198,6 +201,12 @@ sudo -u "${RUN_USER}" ./.venv/bin/pip install -q ezdxf rawpy pytesseract Pillow 
 # сам браузер — в кэш пользователя сервиса (иначе приложение его не найдёт)
 "${ROOT_DIR}/.venv/bin/python" -m playwright install-deps chromium 2>/dev/null || true
 sudo -u "${RUN_USER}" ./.venv/bin/python -m playwright install chromium 2>/dev/null || true
+# XTTS (клонирование голоса, coqui-tts) — тяжёлый и опциональный. Отключить: INSTALL_XTTS=0.
+if [ "${INSTALL_XTTS:-1}" = "1" ]; then
+  log "Ставлю coqui-tts (XTTS, клонирование голоса) — опционально, тяжёлый..."
+  sudo -u "${RUN_USER}" ./.venv/bin/pip install -q "coqui-tts>=0.24.0" 2>/dev/null \
+    || echo "[!] coqui-tts (XTTS) не установился — опционально; можно позже кнопкой «Установить XTTS» в админке."
+fi
 chmod +x "${PROJECT_DIR}/apply_llm.sh"
 
 # ----- 5. systemd-сервис API (автозапуск + Restart=always) ------------------
