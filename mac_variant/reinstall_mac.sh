@@ -16,15 +16,18 @@ if [[ "${CONFIRM:-}" != "yes" ]]; then
   [[ "${ans:-}" =~ ^[Yy]$ ]] || { echo "Отменено."; exit 0; }
 fi
 
-echo "[reinstall-mac] Останавливаю сервис и контейнеры..."
+echo "[reinstall-mac] Останавливаю сервисы и контейнеры..."
 launchctl unload "$HOME/Library/LaunchAgents/com.rag.api.plist" 2>/dev/null || true
+launchctl unload "$HOME/Library/LaunchAgents/com.rag.xtts.plist" 2>/dev/null || true
 docker compose -f docker-compose.yml down 2>/dev/null || true
 
 echo "[reinstall-mac] Удаляю окружение и данные..."
-rm -rf .venv graph_storage finetune/adapter finetune/data \
+# .venv-xtts — отдельное окружение микросервиса XTTS (пересоздаст setup.sh при INSTALL_XTTS=1)
+rm -rf .venv .venv-xtts graph_storage finetune/adapter finetune/data \
        runtime_config.json ingest_stats.json rag_logs.db rag_logs.db-journal qdrant_storage
 
 echo "[reinstall-mac] Запускаю установку заново..."
 ./setup.sh
 launchctl load "$HOME/Library/LaunchAgents/com.rag.api.plist" 2>/dev/null || true
+launchctl load "$HOME/Library/LaunchAgents/com.rag.xtts.plist" 2>/dev/null || true
 echo "[reinstall-mac] Готово."

@@ -18,12 +18,14 @@ if [[ "${CONFIRM:-}" != "yes" ]]; then
   [[ "${ans:-}" =~ ^[Yy]$ ]] || { echo "Отменено."; exit 0; }
 fi
 
-echo "[reinstall-server] Останавливаю сервис и контейнеры..."
+echo "[reinstall-server] Останавливаю сервисы и контейнеры..."
 systemctl stop rag-api 2>/dev/null || true
+systemctl stop rag-xtts 2>/dev/null || true
 docker compose -f gpu_variant/docker-compose.gpu.yml down 2>/dev/null || true
 
 echo "[reinstall-server] Удаляю окружение и данные..."
-rm -rf .venv graph_storage finetune/adapter finetune/data \
+# .venv-xtts — отдельное окружение микросервиса XTTS (пересоздаст run_gpu.sh при INSTALL_XTTS=1)
+rm -rf .venv .venv-xtts graph_storage finetune/adapter finetune/data \
        runtime_config.json ingest_stats.json rag_logs.db rag_logs.db-journal \
        gpu_variant/qdrant_storage
 

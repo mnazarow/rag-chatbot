@@ -28,14 +28,24 @@ else
   ./.venv/bin/pip install -r requirements.txt
 fi
 
-# перезапуск сервиса (systemd или launchd)
+# XTTS (клонирование голоса) живёт в отдельном окружении .venv-xtts и не зависит от ядра —
+# пересоздание .venv его не трогает. Если окружение уже есть, просто перезапустим сервис ниже.
+# (Полная переустановка XTTS выполняется установщиком setup_gpu.sh/run_gpu.sh/setup.sh.)
+
+# перезапуск сервисов (systemd или launchd)
 if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^rag-api'; then
   log "Перезапуск systemd-сервиса rag-api..."
   (sudo systemctl restart rag-api 2>/dev/null || systemctl restart rag-api 2>/dev/null) || \
     log "Не удалось перезапустить автоматически — выполните: sudo systemctl restart rag-api"
+  if systemctl list-unit-files 2>/dev/null | grep -q '^rag-xtts'; then
+    log "Перезапуск systemd-сервиса rag-xtts (клонирование голоса)..."
+    (sudo systemctl restart rag-xtts 2>/dev/null || systemctl restart rag-xtts 2>/dev/null) || true
+  fi
 elif [ -f "$HOME/Library/LaunchAgents/com.rag.api.plist" ]; then
   log "Перезапуск launchd-агента..."
   launchctl kickstart -k "gui/$(id -u)/com.rag.api" 2>/dev/null || true
+  [ -f "$HOME/Library/LaunchAgents/com.rag.xtts.plist" ] && \
+    launchctl kickstart -k "gui/$(id -u)/com.rag.xtts" 2>/dev/null || true
 fi
 
 log "Готово. Окружение переустановлено."

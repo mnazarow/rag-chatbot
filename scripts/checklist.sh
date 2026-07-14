@@ -140,7 +140,7 @@ PY
         PIL) label="Pillow (изображения)";;
         multipart) label="python-multipart (загрузка файлов)";;
         pyVoIP) label="pyVoIP (SIP-регистрация, опц.)";;
-        TTS) label="coqui-tts / XTTS (клонирование голоса, опц.)";;
+        TTS) label="coqui-tts в ядре (XTTS in-process, обычно не нужен — есть сервис)";;
         redis) label="redis (общий кэш, опц.)";;
         lightrag) label="LightRAG (граф-RAG, опц.)";;
         networkx) label="networkx (граф, опц.)";;
@@ -182,6 +182,17 @@ fi
 PORT="$(envval API_PORT)"; PORT="${PORT:-8000}"
 if http_ok "http://localhost:${PORT}/health" 4; then ok "Веб-интерфейс отвечает" "http://localhost:${PORT}"; \
 else warn "Веб-интерфейс не отвечает" "http://localhost:${PORT}/health — сервис ещё стартует или не запущен"; fi
+
+# Микросервис XTTS (клонирование голоса) — отдельное окружение .venv-xtts + сервис (опц.)
+XURL="$(envval XTTS_URL)"
+if [[ -n "$XURL" ]]; then
+  if http_ok "${XURL%/}/health" 4; then ok "Сервис XTTS отвечает (клонирование голоса)" "$XURL"; \
+  else warn "Сервис XTTS не отвечает" "$XURL — проверьте: systemctl status rag-xtts (или launchctl / com.rag.xtts)"; fi
+elif [[ -x "${ROOT}/.venv-xtts/bin/python" ]]; then
+  warn "Окружение XTTS есть, но XTTS_URL не задан" "пропишите XTTS_URL=http://127.0.0.1:8020 в .env"
+else
+  warn "XTTS (клонирование голоса) не установлен (опционально)" "ставится установщиком при INSTALL_XTTS=1 (отдельный сервис)"
+fi
 
 # ============================ Итог ==========================================
 printf "\n${C_C}============================================================${C_0}\n"
