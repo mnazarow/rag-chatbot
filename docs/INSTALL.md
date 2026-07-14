@@ -398,7 +398,7 @@ python query_lightrag.py "вопрос" --mode mix
 | `DB_BACKEND`      | БД журнала/настроек: `sqlite`/`mysql`/`postgresql` | `sqlite`                     |
 | `MYSQL_HOST` … `MYSQL_DB` | Подключение к MySQL/MariaDB (нужен PyMySQL) | пусто / `rag`                 |
 | `PG_HOST` … `PG_DB` | Подключение к PostgreSQL (нужен psycopg2)   | пусто / `rag`                      |
-| `REDIS_ENABLED`   | Кэш агрегатов в Redis (нужен redis)          | `0` (выкл)                         |
+| `REDIS_ENABLED`   | Кэш агрегатов + семантический кэш (Redis). Установщики ставят и включают Redis по умолчанию (отключить: `INSTALL_REDIS=0`). Без Redis приложение работает (общий учёт vision — через `rag_logs.db`). | `true` (в примерах `.env`) |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` | Подключение к Redis           | `127.0.0.1` / `6379` / `0`         |
 | `ADMIN_TOKEN`     | Пароль админ-панели (пусто = без пароля)      | пусто                              |
 | `API_PORT`        | Порт веб-сервиса                              | `8000`                             |

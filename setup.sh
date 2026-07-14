@@ -47,11 +47,17 @@ brew install p7zip unar || true  # распаковка архивов (.7z/.rar
 brew install espeak || true      # синтез речи (TTS); на macOS есть и системный `say`
 brew install --cask docker || true          # для Qdrant (Docker Desktop)
 brew install ollama || true
+[ "${INSTALL_REDIS:-1}" = "1" ] && brew install redis || true   # кэш агрегатов + семантический кэш
 
 # ----- 3. Ollama сервис + модель генерации ---------------------------------
 log "Запускаю Ollama как фоновый сервис..."
 brew services start ollama || ollama serve >/dev/null 2>&1 &
 sleep 5
+# Redis — запускаем как фоновый сервис (кэш агрегатов + семантический кэш)
+if [ "${INSTALL_REDIS:-1}" = "1" ] && command -v redis-server >/dev/null 2>&1; then
+  log "Запускаю Redis (кэш)..."
+  brew services start redis 2>/dev/null || redis-server --daemonize yes >/dev/null 2>&1 || true
+fi
 # Интерактивный выбор модели Ollama (терминал; пропуск при заданной LLM_MODEL)
 if [ -z "${_USER_LLM}" ] && [ -t 0 ]; then
   echo
@@ -134,6 +140,12 @@ if [ "${INSTALL_XTTS}" = "1" ]; then
   else
     echo "XTTS_URL=http://127.0.0.1:${XTTS_PORT}" >> "${PROJECT_DIR}/.env"
   fi
+fi
+# Redis включён по умолчанию (кэш агрегатов + семантический кэш), если сервер отвечает
+if [ "${INSTALL_REDIS:-1}" = "1" ] && (redis-cli ping >/dev/null 2>&1); then
+  _envset(){ if grep -qE "^$1=" "${PROJECT_DIR}/.env"; then sed -i '' "s|^$1=.*|$1=$2|" "${PROJECT_DIR}/.env"; else echo "$1=$2" >> "${PROJECT_DIR}/.env"; fi; }
+  _envset REDIS_ENABLED true; _envset REDIS_HOST 127.0.0.1; _envset REDIS_PORT 6379
+  log "Redis работает — REDIS_ENABLED=true."
 fi
 
 # папка документов по умолчанию /opt/db (в /opt нужны права sudo)

@@ -181,6 +181,21 @@ upd VLLM_MAX_LEN "${VLLM_MAX_LEN}"
 upd VLLM_TP "${VLLM_TP}"
 upd VLLM_IMAGE "${VLLM_IMAGE}"
 
+# ----- 4b. Redis (кэш агрегатов + семантический кэш) — ставим и включаем по умолчанию -----
+# Отключить: INSTALL_REDIS=0.
+if [ "${INSTALL_REDIS:-1}" = "1" ]; then
+  log "Устанавливаю и запускаю Redis (кэш)..."
+  apt-get install -y -o DPkg::Lock::Timeout=120 redis-server 2>/dev/null \
+    || { apt-get update -y; apt-get install -y redis-server 2>/dev/null || true; }
+  systemctl enable --now redis-server 2>/dev/null || systemctl enable --now redis 2>/dev/null || true
+  if redis-cli ping >/dev/null 2>&1; then
+    upd REDIS_ENABLED true; upd REDIS_HOST 127.0.0.1; upd REDIS_PORT 6379
+    log "Redis работает — REDIS_ENABLED=true (кэш агрегатов, семантический кэш, общий учёт vision)."
+  else
+    warn "Redis не поднялся — приложение работает и без него (кэш в памяти / через rag_logs.db)."
+  fi
+fi
+
 # ----- 5. поднимаем vLLM + Qdrant ------------------------------------------
 log "Запускаю vLLM + Qdrant (первый старт качает веса модели — долго)..."
 cd "${PROJECT_DIR}"

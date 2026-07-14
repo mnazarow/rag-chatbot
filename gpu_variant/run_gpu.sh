@@ -26,6 +26,15 @@ ROOT_DIR="$(cd "${PROJECT_DIR}/.." && pwd)"
 
 log(){ printf "\033[1;32m[run-gpu]\033[0m %s\n" "$*"; }
 
+# Пользователь сервиса/установки должен иметь доступ к рабочей папке. Частый случай:
+# проект в /root (домашняя root, права 700), а SUDO_USER — обычный пользователь → нет
+# доступа к /root. Тогда и venv (sudo -u RUN_USER), и systemd (CHDIR) падают на Permission
+# denied. Проверяем ДО первого использования RUN_USER; если доступа нет — работаем от root.
+if [ "${RUN_USER}" != "root" ] && ! sudo -u "${RUN_USER}" test -x "${ROOT_DIR}" 2>/dev/null; then
+  log "[!] Пользователь ${RUN_USER} не имеет доступа к ${ROOT_DIR} (проект в /root?) — установка и сервис будут от root."
+  RUN_USER="root"
+fi
+
 [[ $EUID -eq 0 ]] || { echo "Запустите через sudo (нужны установка пакетов и systemd)."; exit 1; }
 if ! command -v nvidia-smi >/dev/null 2>&1; then
   echo "nvidia-smi не найден — этот скрипт для сервера с видеокартой NVIDIA (vLLM на CUDA)."
@@ -163,6 +172,20 @@ upd(){ grep -q "^$1=" "${PROJECT_DIR}/.env" \
 upd LLM_MODEL "${VLLM_MODEL}"; upd VLLM_MODEL "${VLLM_MODEL}"
 upd VLLM_MAX_LEN "${VLLM_MAX_LEN}"; upd VLLM_TP "${VLLM_TP}"; upd VLLM_IMAGE "${VLLM_IMAGE}"
 upd API_PORT "${API_PORT}"; upd ADMIN_TOKEN "${ADMIN_TOKEN}"
+
+# Redis (кэш агрегатов + семантический кэш) — ставим и включаем по умолчанию (INSTALL_REDIS=0 — отключить)
+if [ "${INSTALL_REDIS:-1}" = "1" ]; then
+  log "Устанавливаю и запускаю Redis (кэш)..."
+  apt-get install -y -o DPkg::Lock::Timeout=120 redis-server 2>/dev/null \
+    || { apt-get update -y; apt-get install -y redis-server 2>/dev/null || true; }
+  systemctl enable --now redis-server 2>/dev/null || systemctl enable --now redis 2>/dev/null || true
+  if redis-cli ping >/dev/null 2>&1; then
+    upd REDIS_ENABLED true; upd REDIS_HOST 127.0.0.1; upd REDIS_PORT 6379
+    log "Redis работает — REDIS_ENABLED=true."
+  else
+    log "[!] Redis не поднялся — приложение работает и без него (кэш в памяти / через rag_logs.db)."
+  fi
+fi
 ln -sf "${PROJECT_DIR}/.env" "${ROOT_DIR}/.env"
 
 # папка документов по умолчанию
@@ -220,14 +243,6 @@ if [ "${INSTALL_XTTS}" = "1" ]; then
   fi
 fi
 chmod +x "${PROJECT_DIR}/apply_llm.sh"
-
-# Сервис-пользователь должен иметь доступ к рабочей папке, иначе systemd падает на шаге
-# CHDIR (status=200/CHDIR) и бесконечно перезапускается. Частый случай: проект в /root
-# (домашняя root, права 700), а SUDO_USER — обычный пользователь → доступа в /root нет.
-if [ "${RUN_USER}" != "root" ] && ! sudo -u "${RUN_USER}" test -x "${ROOT_DIR}" 2>/dev/null; then
-  log "[!] Пользователь ${RUN_USER} не имеет доступа к ${ROOT_DIR} (проект в /root?) — сервис будет от root."
-  RUN_USER="root"
-fi
 
 # ----- 5. systemd-сервис API (автозапуск + Restart=always) ------------------
 log "Регистрирую systemd-сервис rag-api..."
