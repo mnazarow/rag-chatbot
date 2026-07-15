@@ -41,6 +41,14 @@ services:
     image: qdrant/qdrant:v1.12.4
     container_name: rag_qdrant
     restart: unless-stopped
+    # Лимит открытых файлов: на больших коллекциях RocksDB держит МНОГО файлов сегментов
+    # (.log/.sst). Дефолтный ulimit ~1024 исчерпывается → «Too many open files» → 500/обрывы
+    # записи. Поднимаем до 1M (рекомендация Qdrant). Применяется при пересоздании контейнера
+    # (docker compose up -d), не при docker restart.
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
     ports:
       - "6333:6333"
       - "6334:6334"
