@@ -599,6 +599,26 @@ def delete(flt: dict) -> None:
     (_m_delete if is_milvus() else _q_delete)(flt)
 
 
+def qdrant_bulk_indexing(enabled: bool) -> None:
+    """Вкл/выкл фоновую HNSW-индексацию коллекции Qdrant (режим массовой загрузки).
+    Во время bulk-ingest индексацию отключаем (indexing_threshold=0), иначе построение
+    HNSW на пороге ~20000 конкурирует с записью и Qdrant отдаёт 500/рвёт соединение на
+    больших файлах. После загрузки включаем обратно — Qdrant строит индекс один раз.
+    Для Milvus — no-op."""
+    if is_milvus():
+        return
+    base, coll = _qbase(), _qcoll()
+    thr = 20000 if enabled else 0        # 0 = индексация отключена (только хранение векторов)
+    try:
+        r = httpx.patch(f"{base}/collections/{coll}", timeout=60,
+                        json={"optimizers_config": {"indexing_threshold": thr}})
+        r.raise_for_status()
+        print(f"[vectorstore] Qdrant indexing_threshold={thr} "
+              f"({'индексация включена' if enabled else 'индексация отключена (bulk-load)'})")
+    except Exception as e:
+        print(f"[vectorstore] не удалось изменить indexing_threshold={thr}: {e}")
+
+
 def collection_info(backend_name: str | None = None) -> dict:
     b = backend_name or backend()
     if b != "milvus":

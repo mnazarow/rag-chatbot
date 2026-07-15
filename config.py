@@ -62,6 +62,10 @@ QDRANT_INGEST_TIMEOUT = _int("QDRANT_INGEST_TIMEOUT", 480)  # таймаут и�
 # каждая партия применяется синхронно, внутренняя очередь Qdrant не переполняется на огромных
 # файлах (иначе «Server disconnected»/500 «queue full»). ВЫКЛ — быстрее, но рискованно на больших.
 QDRANT_UPSERT_WAIT = _bool("QDRANT_UPSERT_WAIT", True)
+# Режим массовой загрузки: на время индексации отключать HNSW-индексацию Qdrant
+# (indexing_threshold=0) и включать в конце — иначе на больших файлах построение индекса
+# на пороге ~20000 конкурирует с записью и Qdrant отдаёт 500. По умолчанию включено.
+QDRANT_BULK_INDEXING = _bool("QDRANT_BULK_INDEXING", True)
 
 # --- Векторная база: активный бэкенд (qdrant | milvus) ---
 # Весь поиск/индексация идут через vectorstore.py. По умолчанию — qdrant. Milvus

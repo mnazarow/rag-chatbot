@@ -271,6 +271,17 @@ def main():
         raise SystemExit(f"FATAL: не удалось подключиться к векторной базе "
                          f"({_vb}: {_tgt}): {e}")
 
+    # Режим массовой загрузки: отключаем HNSW-индексацию Qdrant на время ingest (иначе
+    # построение индекса на пороге ~20000 конкурирует с записью → Qdrant 500 на больших
+    # файлах). Включаем обратно в конце и через atexit (на случай прерывания). Отключить —
+    # QDRANT_BULK_INDEXING=0.
+    _bulk_idx = (_vb != "milvus") and (settings.get("QDRANT_BULK_INDEXING") is None
+                                       or bool(settings.get("QDRANT_BULK_INDEXING")))
+    if _bulk_idx:
+        import atexit
+        vectorstore.qdrant_bulk_indexing(False)
+        atexit.register(vectorstore.qdrant_bulk_indexing, True)   # бэкстоп при прерывании
+
     print(f"Загружаю эмбеддер {embed_model} на {device} ...")
     try:
         embedder = SentenceTransformer(embed_model, device=device)
@@ -644,6 +655,9 @@ def main():
 
     if tmpdir:
         shutil.rmtree(tmpdir, ignore_errors=True)
+    # Включаем индексацию обратно — Qdrant построит HNSW один раз (после массовой загрузки)
+    if _bulk_idx:
+        vectorstore.qdrant_bulk_indexing(True)
     _write_progress(total_work, total_work, phase="done")
 
     wall = max(1, int((time.time() - run_start) * 1000))
