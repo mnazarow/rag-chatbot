@@ -407,6 +407,7 @@ def _dwg_to_dxf(path: Path):
     # запасной конвертер — ODA File Converter (директория→директория)
     oda = find_oda_converter()
     if oda:
+        ind = outd = None
         try:
             ind, outd = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
             shutil.copy(path, ind / path.name)
@@ -422,6 +423,10 @@ def _dwg_to_dxf(path: Path):
                 return out
         except Exception:
             pass
+        finally:                            # не оставляем временные папки ODA (утечка при массе DWG)
+            for _d in (ind, outd):
+                if _d is not None:
+                    shutil.rmtree(_d, ignore_errors=True)
     return None
 
 

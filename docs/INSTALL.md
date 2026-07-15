@@ -140,7 +140,22 @@ bash gpu_variant/manage.sh status      # статус сервиса и конт
 bash gpu_variant/manage.sh logs        # логи API (journalctl)
 bash gpu_variant/manage.sh vllm-logs   # логи vLLM
 bash gpu_variant/manage.sh restart|stop|start
+
+# перезапустить ВЕСЬ стек одной командой (Qdrant + vLLM → Redis → rag-api → rag-xtts)
+sudo bash gpu_variant/restart_all.sh          # ждёт готовности и печатает статус
+sudo bash gpu_variant/restart_all.sh --app    # только приложение (после правки .env)
 ```
+
+**Заметки по GPU-серверу:**
+- `manage.sh restart` перезапускает только `rag-api`; для полного цикла (в т.ч. Qdrant/vLLM/Redis)
+  используйте `restart_all.sh`.
+- Эмбеддер/реранкер автоматически направляются на самую свободную GPU через
+  `CUDA_VISIBLE_DEVICES` (systemd drop-in `10-embed-gpu.conf`), чтобы не конкурировать с vLLM
+  за память.
+- Память vLLM — `VLLM_GPU_UTIL` в `gpu_variant/.env` (по умолч. 0.90); для мультимодальных
+  моделей при индексации картинок снижайте до ~0.82, чтобы оставить запас под vision.
+- При индексации картинок держите `LLM_MAX_CONCURRENCY`=1–2 (очередь к LLM), иначе пачка
+  vision-запросов может уронить движок vLLM.
 
 ---
 

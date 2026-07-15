@@ -19,6 +19,10 @@ import time
 
 FINISHED_TTL = 30.0     # сек показывать завершённые в «живом» списке
 RUNNING_TTL = 1800      # сек авто-уборки «зависших» выполняющихся (Redis safety)
+# «running»-запись старше этого времени считаем зависшей/осиротевшей (процесс убит до _act_end):
+# реальный вызов не идёт так долго (vision-таймаут ~180 c × попытки). Такие не показываем как
+# активные и не учитываем в счётчике «выполняется», чтобы призраки не путали дашборд.
+STALE_RUNNING_S = 600
 KEEP_RECENT = 25        # минимум последних завершённых в снимке (память)
 MAX_ITEMS = 400
 # Полный текст запроса (для раскрытия строки) храним ДОЛЬШЕ, чем строка живёт в списке:
@@ -390,7 +394,19 @@ def get(cid) -> dict:
 
 def _assemble(items: list[dict], limit: int, calls: int, errors: int,
               ptok: int = 0, ctok: int = 0, genms: int = 0) -> dict:
-    running = [v for v in items if not v.get("done")]
+    _now = time.time()
+    # Порог «зависшего» вызова: не меньше STALE_RUNNING_S, но и не короче реального максимума
+    # одного vision-вызова (таймаут × попытки + запас), чтобы не прятать легитимно долгие.
+    _stale = STALE_RUNNING_S
+    try:
+        import settings as _s
+        _stale = max(_stale, int(float(_s.get("VISION_TIMEOUT") or 180)
+                                 * max(1, int(_s.get("VISION_RETRIES") or 1))) + 120)
+    except Exception:
+        pass
+    # «running» старше порога — зависший призрак от убитого процесса: не показываем
+    running = [v for v in items if not v.get("done")
+               and (_now - v.get("started", _now)) < _stale]
     finished = [v for v in items if v.get("done")]
     running.sort(key=lambda x: x.get("started", 0))
     finished.sort(key=lambda x: x.get("finished", 0), reverse=True)

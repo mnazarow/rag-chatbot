@@ -163,7 +163,9 @@ def _q_upsert(points, wait) -> None:
     last = None
     for attempt in range(3):
         _wait = wait or attempt > 0                 # повтор → wait=true (backpressure)
-        url = f"{base}/collections/{coll}/points" + ("" if _wait else "?wait=false")
+        # ВАЖНО: у Qdrant дефолт wait=false, поэтому wait=true надо указывать ЯВНО,
+        # иначе обратное давление не работает и очередь переполняется на больших файлах.
+        url = f"{base}/collections/{coll}/points?wait=" + ("true" if _wait else "false")
         try:
             r = httpx.put(url, json=body, timeout=to)
             r.raise_for_status()

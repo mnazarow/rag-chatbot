@@ -23,7 +23,8 @@ TORCH_CUDA="${TORCH_CUDA:-cu124}"                            # cu121 / cu124 ...
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${PROJECT_DIR}/.." && pwd)"                  # код приложения в корне
 
-log() { printf "\033[1;32m[setup-gpu]\033[0m %s\n" "$*"; }
+log()  { printf "\033[1;32m[setup-gpu]\033[0m %s\n" "$*"; }
+warn() { printf "\033[1;33m[setup-gpu]\033[0m %s\n" "$*"; }   # использовалась, но не была объявлена
 
 # ----- 0. проверка GPU ------------------------------------------------------
 if ! command -v nvidia-smi >/dev/null 2>&1; then

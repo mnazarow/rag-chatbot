@@ -325,8 +325,23 @@ def acquire() -> str:
 def release(tok: str | None) -> None:
     if not tok:
         return
+    # Снимаем слот со ВСЕХ уровней (Redis + общий SQLite + локальный), а не только с
+    # «текущего»: acquire мог занять слот на одном уровне (напр. локальном при сбое SQLite),
+    # а release — искать на другом, из-за чего токен «подвисал» бы до TTL. Best-effort.
     c = _redis()
-    _rem(c, _ACTIVE, _local_active, tok)
+    if c is not None:
+        try:
+            c.zrem(_ACTIVE, tok)
+        except Exception:
+            pass
+    conn = _sql()
+    if conn is not None:
+        try:
+            _sql_rem(conn, "active", tok)
+        except Exception:
+            pass
+    with _lock:
+        _local_active.pop(tok, None)
 
 
 class slot:
