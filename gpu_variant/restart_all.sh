@@ -55,11 +55,20 @@ if [ "${APP_ONLY}" -eq 0 ]; then
     warn "docker не найден — пропускаю Qdrant/vLLM"
   fi
 
-  # ---- 2. Redis (кэш) ----
-  if systemctl list-unit-files 2>/dev/null | grep -qE '^redis(-server)?\.service'; then
-    log "Перезапускаю Redis..."
-    ${SUDO} systemctl restart redis-server 2>/dev/null || ${SUDO} systemctl restart redis 2>/dev/null \
-      || warn "не удалось перезапустить Redis"
+  # ---- 2. Redis (кэш) — перезапуск и systemd, и docker-контейнера (best-effort) ----
+  log "Перезапускаю Redis..."
+  _redis_done=0
+  if command -v systemctl >/dev/null 2>&1; then
+    if ${SUDO} systemctl restart redis-server 2>/dev/null; then _redis_done=1; ok "redis-server (systemd)"
+    elif ${SUDO} systemctl restart redis 2>/dev/null; then _redis_done=1; ok "redis (systemd)"; fi
+  fi
+  if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^rag_redis$'; then
+    docker restart rag_redis >/dev/null 2>&1 && { _redis_done=1; ok "rag_redis (docker)"; }
+  fi
+  if [ "${_redis_done}" -eq 1 ]; then
+    for i in $(seq 1 10); do redis-cli ping >/dev/null 2>&1 && { ok "redis-cli ping: PONG"; break; }; sleep 1; done
+  else
+    warn "Redis не найден (ни systemd redis-server/redis, ни docker rag_redis) — пропуск"
   fi
 fi
 
