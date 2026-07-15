@@ -58,6 +58,10 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "company_kb")
 QDRANT_TIMEOUT = _int("QDRANT_TIMEOUT", 60)            # таймаут запросов (чат), с
 QDRANT_INGEST_TIMEOUT = _int("QDRANT_INGEST_TIMEOUT", 480)  # таймаут индексации, с
+# Ждать применения точек Qdrant (wait=true) при записи. ВКЛ (по умолч.) — обратное давление:
+# каждая партия применяется синхронно, внутренняя очередь Qdrant не переполняется на огромных
+# файлах (иначе «Server disconnected»/500 «queue full»). ВЫКЛ — быстрее, но рискованно на больших.
+QDRANT_UPSERT_WAIT = _bool("QDRANT_UPSERT_WAIT", True)
 
 # --- Векторная база: активный бэкенд (qdrant | milvus) ---
 # Весь поиск/индексация идут через vectorstore.py. По умолчанию — qdrant. Milvus

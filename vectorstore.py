@@ -582,7 +582,14 @@ def count(flt: dict | None = None) -> int:
         return 0
 
 
-def upsert(points, wait: bool = False) -> None:
+def upsert(points, wait: bool | None = None) -> None:
+    # wait=None → берём из настройки QDRANT_UPSERT_WAIT (по умолч. True — обратное давление,
+    # чтобы огромные файлы не переполняли очередь Qdrant и не роняли его).
+    if wait is None:
+        try:
+            wait = bool(settings.get("QDRANT_UPSERT_WAIT"))
+        except Exception:
+            wait = True
     (_m_upsert if is_milvus() else _q_upsert)(points, wait)
 
 

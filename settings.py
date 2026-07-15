@@ -227,6 +227,12 @@ FIELDS: list[dict] = [
      "type": "int", "scope": "restart", "default": config.QDRANT_TIMEOUT},
     {"key": "QDRANT_INGEST_TIMEOUT", "label": "Таймаут индексации Qdrant, с", "group": "Хранилище",
      "type": "int", "scope": "reindex", "default": config.QDRANT_INGEST_TIMEOUT},
+    {"key": "QDRANT_UPSERT_WAIT", "label": "Ждать применения точек Qdrant (обратное давление)",
+     "group": "Хранилище", "type": "bool", "scope": "reindex", "default": config.QDRANT_UPSERT_WAIT,
+     "desc": "Записывать точки синхронно (wait=true): каждая партия применяется до отправки "
+             "следующей — очередь Qdrant не переполняется на огромных файлах (иначе «Server "
+             "disconnected»/500). Включено по умолчанию. Выключите ради скорости, только если "
+             "файлы небольшие и Qdrant стабилен."},
 
     # --- Векторная база (Milvus) ---
     {"key": "MILVUS_MODE", "label": "Режим Milvus", "group": "Векторная база (Milvus)",
