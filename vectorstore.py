@@ -155,15 +155,15 @@ def _q_upsert(points, wait) -> None:
     base, coll = _qbase(), _qcoll()
     body = {"points": [{"id": p["id"], "vector": list(p["vector"]),
                         "payload": p.get("payload") or {}} for p in points]}
-    url = f"{base}/collections/{coll}/points"
-    if not wait:
-        url += "?wait=false"
     to = int(settings.get("QDRANT_INGEST_TIMEOUT") or 480)
     # Повтор при таймауте/временном сбое: под тяжёлой индексацией Qdrant может кратко
-    # «залипнуть» (индексация HNSW, всплеск памяти). 3 попытки с нарастающей паузой,
-    # прежде чем отдать ошибку выше (иначе один таймаут рушит запись всего файла).
+    # «залипнуть» (индексация HNSW, всплеск памяти) или переполнить внутреннюю очередь
+    # (wait=false) и вернуть 500. На повторах ПРИНУДИТЕЛЬНО wait=true — это обратное
+    # давление: Qdrant применит точки синхронно и очередь не переполнится.
     last = None
     for attempt in range(3):
+        _wait = wait or attempt > 0                 # повтор → wait=true (backpressure)
+        url = f"{base}/collections/{coll}/points" + ("" if _wait else "?wait=false")
         try:
             r = httpx.put(url, json=body, timeout=to)
             r.raise_for_status()

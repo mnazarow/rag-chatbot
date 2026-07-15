@@ -342,13 +342,16 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
         else:
             im = Image.open(image)
         im = im.convert("RGB")
-        # Уменьшаем большие изображения: гигантские фото/сканы дают очень много image-токенов
-        # и раздувают память vLLM — частая причина «Server disconnected» (краш воркера).
+        # Уменьшаем большие изображения (опция VISION_DOWNSCALE): гигантские фото/сканы дают
+        # очень много image-токенов и раздувают память vLLM — частая причина «Server
+        # disconnected» (краш воркера). Отключить — VISION_DOWNSCALE=выкл.
+        _ds = settings.get("VISION_DOWNSCALE")
+        _ds = True if _ds is None else bool(_ds)
         try:
             max_side = int(settings.get("VISION_MAX_SIDE") or 1536)
         except Exception:
             max_side = 1536
-        if max_side > 0 and max(im.size) > max_side:
+        if _ds and max_side > 0 and max(im.size) > max_side:
             im.thumbnail((max_side, max_side))
         buf = io.BytesIO()
         im.save(buf, format="PNG")
