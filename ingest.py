@@ -274,13 +274,23 @@ def main():
     # Режим массовой загрузки: отключаем HNSW-индексацию Qdrant на время ingest (иначе
     # построение индекса на пороге ~20000 конкурирует с записью → Qdrant 500 на больших
     # файлах). Включаем обратно в конце и через atexit (на случай прерывания). Отключить —
-    # QDRANT_BULK_INDEXING=0.
-    _bulk_idx = (_vb != "milvus") and (settings.get("QDRANT_BULK_INDEXING") is None
-                                       or bool(settings.get("QDRANT_BULK_INDEXING")))
+    # QDRANT_BULK_INDEXING=0. Ключ серверный (нет поля в админке), поэтому берём из config
+    # (settings.get вернёт None для ключей без FIELDS); если вынесут в UI — уважим и его.
+    _bulk_cfg = getattr(config, "QDRANT_BULK_INDEXING", True)
+    _bulk_sv = settings.get("QDRANT_BULK_INDEXING")
+    _bulk_idx = (_vb != "milvus") and (bool(_bulk_sv) if _bulk_sv is not None else bool(_bulk_cfg))
     if _bulk_idx:
         import atexit
+        import signal
+        import sys as _sys
         vectorstore.qdrant_bulk_indexing(False)
         atexit.register(vectorstore.qdrant_bulk_indexing, True)   # бэкстоп при прерывании
+        # SIGTERM (супервизор/остановка сервиса) → штатный выход, чтобы atexit успел вернуть
+        # индексацию (иначе indexing_threshold остался бы 0 до следующего прогона).
+        try:
+            signal.signal(signal.SIGTERM, lambda *_a: _sys.exit(0))
+        except Exception:
+            pass
 
     print(f"Загружаю эмбеддер {embed_model} на {device} ...")
     try:
