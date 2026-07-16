@@ -1211,6 +1211,8 @@
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
         <button class="act" onclick="reindex(false)">🔄 Переиндексировать</button>
         <button class="act ghost" onclick="reindex(true)">♻️ Переиндексировать с нуля</button>
+        <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="opsResetIndex()">🗑 Сбросить индекс</button>
+        <button class="act ghost" onclick="opsResetQueue()">🧹 Сбросить очередь LLM</button>
         <button class="act ghost" style="border-color:#ef4444;color:#f87171" onclick="stopReindex()">⏹ Остановить индексацию</button>
         <button class="act ghost" onclick="applyLLM()">🧠 Применить модель LLM (рестарт vLLM)</button>
         <button class="act ghost" onclick="restartSvc()">⏻ Перезапустить сервис</button>
@@ -5235,6 +5237,27 @@ async function clearHistory(){
   if(r.ok!==false){ histMsg('✓ '+(r.msg||'история очищена'));
     if(typeof loadStats==='function') loadStats(); }
   else histMsg('✗ '+(r.detail||'ошибка'),false);
+}
+async function opsResetQueue(){
+  // Снять зависшие/осиротевшие слоты очереди к LLM (когда «выполняется N/1» и висит)
+  opsMsg('сброс очереди LLM…');
+  try{
+    const r=await adminPost('/api/admin/queue/reset',{});
+    if(r.ok){ opsMsg('✓ очередь сброшена'+(r.cleared!=null?(' (снято слотов: '+r.cleared+')'):'')); }
+    else { opsMsg('✗ '+(r.detail||'ошибка')); }
+  }catch(e){ opsMsg('✗ '+e); }
+  loadOps();
+}
+async function opsResetIndex(){
+  // Сброс индекса из раздела «Состояние и операции» (то же /api/admin/reset targets=['index'])
+  if(!confirm('Сбросить индекс (коллекцию Qdrant)? Данные поиска будут удалены — потребуется «Переиндексировать». Действие необратимо.'))return;
+  opsMsg('сброс индекса…');
+  try{
+    const r=await adminPost('/api/admin/reset',{targets:['index']});
+    if(r.ok){ opsMsg('✓ индекс сброшен — нажмите «Переиндексировать»'); }
+    else { opsMsg('✗ '+((r.errors||[]).join('; ')||r.detail||'ошибка')); }
+  }catch(e){ opsMsg('✗ '+e); }
+  loadOps();
 }
 async function resetData(targets){
   const names={index:'индекс',graph:'граф',adapter:'адаптер',logs:'журнал',settings:'настройки',all:'ВСЁ'};

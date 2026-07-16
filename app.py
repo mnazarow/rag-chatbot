@@ -1830,6 +1830,15 @@ def admin_cache_clear(x_admin_token: str | None = Header(None)):
     return admin_ops.cache_clear()
 
 
+@app.post("/api/admin/queue/reset")
+def admin_queue_reset(x_admin_token: str | None = Header(None)):
+    """Сбросить очередь к LLM (снять зависшие/осиротевшие слоты) — когда очередь встала
+    («выполняется N/1, висит»)."""
+    _check_admin(x_admin_token)
+    import llm_queue
+    return llm_queue.reset()
+
+
 @app.post("/api/admin/redis/install")
 def admin_redis_install(x_admin_token: str | None = Header(None)):
     """Установить и запустить Redis-сервер средствами ОС, включить REDIS_ENABLED."""

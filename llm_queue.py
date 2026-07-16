@@ -148,11 +148,52 @@ def _prune_local(d: dict) -> None:
         d.pop(k, None)
 
 
+def _pid_of(tok) -> int | None:
+    """PID процесса-владельца из токена вида '<pid>-<uuid>'."""
+    try:
+        return int(str(tok).split("-", 1)[0])
+    except Exception:
+        return None
+
+
+def _pid_alive(pid) -> bool:
+    """Жив ли процесс с таким PID (на этом хосте). Неизвестно → считаем живым."""
+    if not pid:
+        return True
+    try:
+        os.kill(pid, 0)          # сигнал 0 — только проверка существования
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True              # процесс есть, но чужой пользователь
+    except Exception:
+        return True
+
+
+def _prune_dead(c, key: str) -> None:
+    """Убрать из zset слоты, чей процесс-владелец уже мёртв (release не отработал —
+    напр. процесс убит SIGKILL). Иначе «осиротевший» слот блокирует очередь до TTL.
+    Однохостовая эвристика (PID проверяется локально)."""
+    try:
+        for m in (c.zrange(key, 0, -1) or []):
+            tok = m.decode() if isinstance(m, (bytes, bytearray)) else m
+            pid = _pid_of(tok)
+            if pid and not _pid_alive(pid):
+                try:
+                    c.zrem(key, tok)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _active_count(c) -> int:
     now = time.time()
     if c is not None:
         try:
             c.zremrangebyscore(_ACTIVE, "-inf", now)
+            _prune_dead(c, _ACTIVE)     # снять слоты убитых процессов (осиротевшие)
             return int(c.zcard(_ACTIVE) or 0)
         except Exception:
             pass
@@ -173,6 +214,7 @@ def _waiting_count(c) -> int:
     if c is not None:
         try:
             c.zremrangebyscore(_WAIT, "-inf", now)
+            _prune_dead(c, _WAIT)       # снять ожидающих от убитых процессов
             return int(c.zcard(_WAIT) or 0)
         except Exception:
             pass
@@ -241,6 +283,8 @@ def _try_acquire(c, tok: str, m: int) -> bool:
     now = time.time()
     if c is not None:
         try:
+            c.zremrangebyscore(_ACTIVE, "-inf", now)   # снять истёкшие
+            _prune_dead(c, _ACTIVE)                     # и осиротевшие (процесс убит) — иначе затор
             return int(c.eval(_ACQ_LUA, 1, _ACTIVE, now, m, now + _HOLD_TTL, tok)) == 1
         except Exception:
             pass
@@ -342,6 +386,30 @@ def release(tok: str | None) -> None:
             pass
     with _lock:
         _local_active.pop(tok, None)
+
+
+def reset() -> dict:
+    """Полностью очистить очередь (активные + ожидающие слоты) на всех уровнях. Для сброса
+    «осиротевших» слотов из админки, когда очередь зависла («выполняется N/1, висит»)."""
+    n = 0
+    c = _redis()
+    if c is not None:
+        try:
+            n += int(c.zcard(_ACTIVE) or 0) + int(c.zcard(_WAIT) or 0)
+            c.delete(_ACTIVE, _WAIT)
+        except Exception:
+            pass
+    conn = _sql()
+    if conn is not None:
+        try:
+            conn.execute("DELETE FROM llm_queue")
+        except Exception:
+            pass
+    with _lock:
+        n += len(_local_active) + len(_local_wait)
+        _local_active.clear()
+        _local_wait.clear()
+    return {"ok": True, "cleared": n}
 
 
 class slot:
