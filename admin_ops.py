@@ -3125,6 +3125,7 @@ def apply_llm() -> dict:
         "VLLM_MODEL": settings.get("VLLM_MODEL"),
         "VLLM_MAX_LEN": settings.get("VLLM_MAX_LEN"),
         "VLLM_TP": settings.get("VLLM_TP"),
+        "VLLM_GPU_UTIL": settings.get("VLLM_GPU_UTIL"),
         "LLM_MODEL": settings.get("LLM_MODEL"),
     })
     try:
@@ -3169,6 +3170,7 @@ def apply_finetuned() -> dict:
         "VLLM_MODEL": settings.get("VLLM_MODEL"),
         "VLLM_MAX_LEN": settings.get("VLLM_MAX_LEN"),
         "VLLM_TP": settings.get("VLLM_TP"),
+        "VLLM_GPU_UTIL": settings.get("VLLM_GPU_UTIL"),
         "FINETUNED_MODEL": settings.get("FINETUNED_MODEL"),
     })
     try:

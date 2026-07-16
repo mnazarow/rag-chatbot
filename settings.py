@@ -156,6 +156,13 @@ FIELDS: list[dict] = [
     # --- vLLM контейнер (GPU) ---
     {"key": "VLLM_MODEL", "label": "Модель vLLM (контейнер)", "group": "vLLM (GPU)",
      "type": "text", "scope": "vllm", "default": config.VLLM_MODEL},
+    {"key": "VLLM_GPU_UTIL", "label": "Доля видеопамяти под vLLM (gpu-util)", "group": "vLLM (GPU)",
+     "type": "range", "scope": "vllm", "min": 0.5, "max": 0.98, "step": 0.01,
+     "default": config.VLLM_GPU_UTIL,
+     "desc": "Сколько VRAM отдать vLLM (0.5–0.98). Для мультимодальных моделей (описание "
+             "картинок) снижайте до ~0.80, чтобы оставить запас под vision-энкодер — иначе "
+             "движок может падать на картинках (OOM, «Server disconnected»). Применяется "
+             "кнопкой «Применить модель LLM (рестарт vLLM)»."},
     {"key": "VLLM_MAX_LEN", "label": "Макс. длина контекста", "group": "vLLM (GPU)",
      "type": "int", "scope": "vllm", "default": config.VLLM_MAX_LEN},
     {"key": "VLLM_TP", "label": "Tensor-parallel (число GPU)", "group": "vLLM (GPU)",

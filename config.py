@@ -153,6 +153,9 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo
 VLLM_MODEL = os.getenv("VLLM_MODEL", "Qwen/Qwen3.6-35B-A3B")
 VLLM_MAX_LEN = _int("VLLM_MAX_LEN", 16384)
 VLLM_TP = _int("VLLM_TP", 2)
+# Доля видеопамяти под vLLM (0.5–0.98). Ниже (напр. 0.80) — оставить запас под vision-энкодер
+# мультимодальных моделей, иначе на картинках движок может падать (OOM). По умолчанию 0.9.
+VLLM_GPU_UTIL = _float("VLLM_GPU_UTIL", 0.9)
 
 # Дообучение (QLoRA): базовая fp16-модель. Пусто = берётся из VLLM_MODEL
 # (с отбрасыванием суффиксов квантизации -AWQ/-GPTQ/-Int4).
