@@ -175,6 +175,9 @@ PARSE_CAD = _bool("PARSE_CAD", True)          # чертежи DXF/DWG и 3D-CAD
 # (как «глазами»): помогает по чертежам без текстовых надписей. Требуется мультимодальная
 # модель (VISION_MODEL или основная LLM) + matplotlib. По умолчанию выкл. (тяжело/медленно).
 CAD_LLM_DESCRIBE = _bool("CAD_LLM_DESCRIBE", False)
+# Отдельно: если DWG НЕ конвертируется в DXF (нет libredwg/ODA или новая версия формата) —
+# описать его по встроенному в файл превью-изображению через vision-модель. По умолч. выкл.
+CAD_DWG_DESCRIBE = _bool("CAD_DWG_DESCRIBE", False)
 TRANSCRIBE_AV = _bool("TRANSCRIBE_AV", True)  # транскрибация аудио/видео (Whisper, минуты на файл)
 FILE_PARSE_TIMEOUT = _int("FILE_PARSE_TIMEOUT", 0)  # лимит времени на файл, c (0 = без лимита)
 # Параллельное извлечение файлов при индексации (парсинг/OCR/конвертация в несколько

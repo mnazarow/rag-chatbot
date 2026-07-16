@@ -539,6 +539,112 @@ def _render_cad_image(doc):
         return None
 
 
+# Сентинел начала секции «Image Data» (превью) в DWG (R13…R2018), 16 байт.
+_DWG_IMG_SENTINEL = bytes(
+    (0x1F, 0x25, 0x6D, 0x07, 0xD4, 0xDF, 0x43, 0xB1,
+     0x8A, 0x3F, 0x4C, 0xDE, 0x35, 0x5C, 0x65, 0xEB))
+
+
+def _dwg_preview_image(path):
+    """Достать встроенное превью-изображение из DWG (когда сам чертёж не
+    конвертируется). Современный AutoCAD хранит превью как PNG, старый — как BMP
+    (DIB без файлового заголовка). Возвращает PIL.Image (RGB) или None.
+
+    Сначала парсим секцию Image Data по сентинелу, при неудаче — грубо ищем
+    сигнатуру PNG в файле (версионно-независимый фолбэк)."""
+    import struct
+    try:
+        from PIL import Image
+        import io as _io
+    except Exception:
+        return None
+    try:
+        data = Path(path).read_bytes()
+    except Exception:
+        return None
+
+    def _open(buf):
+        try:
+            im = Image.open(_io.BytesIO(buf))
+            im.load()
+            if im.width < 8 or im.height < 8:      # заглушка/битое превью
+                return None
+            return im.convert("RGB")
+        except Exception:
+            return None
+
+    # --- способ 1: разбор секции Image Data по сентинелу ---
+    try:
+        p = data.find(_DWG_IMG_SENTINEL)
+        if p >= 0:
+            q = p + 16 + 4                          # +сентинел +overall size(RL)
+            count = data[q]; q += 1
+            for _ in range(count):
+                code = data[q]; q += 1
+                start, size = struct.unpack_from("<II", data, q); q += 8
+                if size <= 0 or start + size > len(data):
+                    continue
+                blob = data[start:start + size]
+                if code == 6:                      # PNG — готовый файл
+                    im = _open(blob)
+                    if im is not None:
+                        return im
+                elif code == 2:                    # BMP как DIB — добавляем файл-заголовок
+                    try:
+                        hsize = struct.unpack_from("<I", blob, 0)[0]
+                        bits = struct.unpack_from("<H", blob, 14)[0]
+                        clr = struct.unpack_from("<I", blob, 32)[0]
+                        if clr == 0 and bits <= 8:
+                            clr = 1 << bits
+                        px = 14 + hsize + clr * 4
+                        fh = b"BM" + struct.pack("<IHHI", 14 + size, 0, 0, px)
+                        im = _open(fh + blob)
+                        if im is not None:
+                            return im
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # --- способ 2 (фолбэк): найти PNG-сигнатуру и вырезать до IEND ---
+    try:
+        sig = b"\x89PNG\r\n\x1a\n"
+        i = data.find(sig)
+        if i >= 0:
+            j = data.find(b"IEND", i)
+            if j >= 0:
+                im = _open(data[i:j + 8])          # IEND + 4 байта CRC
+                if im is not None:
+                    return im
+    except Exception:
+        pass
+    return None
+
+
+def _describe_dwg_preview(path):
+    """Описать неконвертируемый DWG по встроенному превью через vision-модель.
+    → {'text','vision_desc'} или None."""
+    if not _vision_available():
+        return None
+    img = _dwg_preview_image(path)
+    if img is None:
+        print(f"  ~ CAD: {path.name} — встроенное превью в DWG не найдено, "
+              f"описать изображением нечем")
+        return None
+    try:
+        import llm_backend
+        desc = llm_backend.describe_image(img, prompt=_CAD_VISION_PROMPT)
+        _vision_result(bool(desc and desc.strip()))
+        if desc and desc.strip():
+            print(f"  ~ CAD: {path.name} — DWG описан vision-моделью по встроенному превью")
+            return {"text": "Описание чертежа DWG (vision-модель, встроенное превью):\n"
+                    + desc.strip(), "page": None, "vision_desc": True}
+    except Exception as e:
+        _vision_result(False)
+        print(f"  ~ CAD: {path.name} — описание превью DWG моделью не удалось: {e}")
+    return None
+
+
 def _describe_cad_part(doc):
     """Отрисовать чертёж и описать vision-моделью → {'text','vision_desc'} или None."""
     if not _vision_available():
@@ -582,9 +688,15 @@ def _load_cad(path: Path):
                       f"аварийное извлечение текста из бинарника")
                 yield {"text": "Текст чертежа DWG (аварийное извлечение):\n" + scraped,
                        "page": None}
-            else:
+            elif not _enabled("CAD_DWG_DESCRIBE"):
                 print(f"  ~ CAD: {path.name} — DWG не конвертируется и текст не найден "
                       f"(нужен libredwg/ODA или сохраните как DXF/PDF); пропуск")
+            # Неконвертируемый DWG → описать по встроенному превью vision-моделью
+            # (опция CAD_DWG_DESCRIBE). Работает и когда текст не извлёкся.
+            if _enabled("CAD_DWG_DESCRIBE"):
+                d = _describe_dwg_preview(path)
+                if d:
+                    yield d
             return
     try:
         doc = None
