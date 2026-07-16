@@ -573,40 +573,68 @@ def _dwg_preview_image(path):
         except Exception:
             return None
 
-    # --- способ 1: разбор секции Image Data по сентинелу ---
-    try:
-        p = data.find(_DWG_IMG_SENTINEL)
-        if p >= 0:
-            q = p + 16 + 4                          # +сентинел +overall size(RL)
+    def _from_entry(code, start, size):
+        if size <= 0 or start <= 0 or start + size > len(data):
+            return None
+        blob = data[start:start + size]
+        if code == 6:                              # PNG — готовый файл
+            return _open(blob)
+        if code == 2:                              # BMP как DIB — добавляем файл-заголовок
+            try:
+                hsize = struct.unpack_from("<I", blob, 0)[0]
+                bits = struct.unpack_from("<H", blob, 14)[0]
+                clr = struct.unpack_from("<I", blob, 32)[0]
+                if clr == 0 and bits <= 8:
+                    clr = 1 << bits
+                px = 14 + hsize + clr * 4
+                fh = b"BM" + struct.pack("<IHHI", 14 + size, 0, 0, px)
+                return _open(fh + blob)
+            except Exception:
+                return None
+        return None
+
+    def _parse_section(p):
+        """Разобрать секцию Image Data начиная со смещения p (на сентинел)."""
+        try:
+            # sentinel — 16 байт; проверяем только сигнатуру начала (1F 25 6D 07 D4)
+            if data[p:p + 5] != _DWG_IMG_SENTINEL[:5]:
+                return None
+            q = p + 16 + 4                         # +сентинел +overall size(RL)
             count = data[q]; q += 1
+            if not (0 < count < 16):
+                return None
             for _ in range(count):
                 code = data[q]; q += 1
                 start, size = struct.unpack_from("<II", data, q); q += 8
-                if size <= 0 or start + size > len(data):
-                    continue
-                blob = data[start:start + size]
-                if code == 6:                      # PNG — готовый файл
-                    im = _open(blob)
-                    if im is not None:
-                        return im
-                elif code == 2:                    # BMP как DIB — добавляем файл-заголовок
-                    try:
-                        hsize = struct.unpack_from("<I", blob, 0)[0]
-                        bits = struct.unpack_from("<H", blob, 14)[0]
-                        clr = struct.unpack_from("<I", blob, 32)[0]
-                        if clr == 0 and bits <= 8:
-                            clr = 1 << bits
-                        px = 14 + hsize + clr * 4
-                        fh = b"BM" + struct.pack("<IHHI", 14 + size, 0, 0, px)
-                        im = _open(fh + blob)
-                        if im is not None:
-                            return im
-                    except Exception:
-                        pass
+                im = _from_entry(code, start, size)
+                if im is not None:
+                    return im
+        except Exception:
+            return None
+        return None
+
+    # --- способ 1: адрес превью из заголовка DWG (RL @ 0x0D), R2000+ ---
+    try:
+        addr = struct.unpack_from("<I", data, 0x0D)[0]
+        if 0 < addr < len(data) - 32:
+            im = _parse_section(addr)
+            if im is not None:
+                return im
     except Exception:
         pass
 
-    # --- способ 2 (фолбэк): найти PNG-сигнатуру и вырезать до IEND ---
+    # --- способ 2: поиск сентинела секции Image Data по файлу ---
+    try:
+        p = data.find(_DWG_IMG_SENTINEL[:5])
+        while p >= 0:
+            im = _parse_section(p)
+            if im is not None:
+                return im
+            p = data.find(_DWG_IMG_SENTINEL[:5], p + 1)
+    except Exception:
+        pass
+
+    # --- способ 3 (фолбэк): найти PNG-сигнатуру и вырезать до IEND ---
     try:
         sig = b"\x89PNG\r\n\x1a\n"
         i = data.find(sig)
@@ -1243,6 +1271,37 @@ def _load_archive(path: Path, depth: int):
 
 
 _FASTER_WHISPER = None  # ленивый кеш модели faster-whisper
+_WHISPER_DEV = None     # на каком устройстве собрана кэш-модель ("cuda"/"cpu")
+
+
+def _is_cuda_oom(e) -> bool:
+    s = str(e).lower()
+    return ("out of memory" in s or "cuda failed" in s or "cublas" in s
+            or "cudnn" in s or "cuda error" in s)
+
+
+def _empty_cuda() -> None:
+    """Отпустить кэш VRAM (после OOM/смены устройства), чтобы не тормозить эмбеддер."""
+    try:
+        import gc
+        import torch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _free_whisper() -> None:
+    global _FASTER_WHISPER
+    _FASTER_WHISPER = None
+    _empty_cuda()
+
+
+def _faster_whisper_model(model, device):
+    from faster_whisper import WhisperModel
+    compute = "float16" if device == "cuda" else "int8"
+    return WhisperModel(model, device=device, compute_type=compute)
 
 
 def _av_windows(segments):
@@ -1294,14 +1353,43 @@ def _load_av(path: Path):
     device = settings.get("DEVICE")
     model = settings.get("WHISPER_MODEL")
     if settings.get("WHISPER_BACKEND") == "faster":
-        global _FASTER_WHISPER
-        if _FASTER_WHISPER is None:
-            from faster_whisper import WhisperModel
-            compute = "float16" if device == "cuda" else "int8"
-            _FASTER_WHISPER = WhisperModel(model, device=device, compute_type=compute)
-        segments, _ = _FASTER_WHISPER.transcribe(str(path))
-        segs = ({"start": s.start, "end": s.end, "text": s.text} for s in segments)
-        yield from _av_windows(segs)
+        global _FASTER_WHISPER, _WHISPER_DEV
+        # Устройство: настройка WHISPER_DEVICE (auto=следовать DEVICE; cpu|cuda).
+        wdev = (settings.get("WHISPER_DEVICE") or "auto").strip().lower()
+        want = "cuda" if device == "cuda" else "cpu"
+        if wdev in ("cpu", "cuda"):
+            want = wdev
+        # если уже вынужденно упали на CPU в этом прогоне — на GPU не возвращаемся
+        if _WHISPER_DEV == "cpu":
+            want = "cpu"
+        # порядок попыток: желаемое устройство, затем CPU (фолбэк при CUDA OOM)
+        tries = [want, "cpu"] if want == "cuda" else [want]
+        last = None
+        for dev in tries:
+            try:
+                if _FASTER_WHISPER is None or _WHISPER_DEV != dev:
+                    _free_whisper()
+                    _FASTER_WHISPER = _faster_whisper_model(model, dev)
+                    _WHISPER_DEV = dev
+                seg_iter, _info = _FASTER_WHISPER.transcribe(str(path))
+                # материализуем здесь: транскрибация ленивая, ошибка (в т.ч. CUDA OOM)
+                # возникает при итерации — ловим её ДО первого yield, чтобы фолбэк на CPU
+                # не продублировал уже выданные окна
+                segs = [{"start": s.start, "end": s.end, "text": s.text} for s in seg_iter]
+                yield from _av_windows(segs)
+                return
+            except Exception as e:
+                last = e
+                if dev == "cuda" and _is_cuda_oom(e):
+                    print("  ! Whisper: не хватает памяти GPU (её занял vLLM) — перехожу на "
+                          "CPU до конца индексации. Ускорить: запускать ingest на свободной "
+                          "GPU (CUDA_VISIBLE_DEVICES) или WHISPER_DEVICE=cpu.")
+                    _free_whisper()
+                    _WHISPER_DEV = "cpu"
+                    continue
+                raise
+        if last:
+            raise last
     else:  # mlx
         import mlx_whisper
         result = mlx_whisper.transcribe(str(path), path_or_hf_repo=model)

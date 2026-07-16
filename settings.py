@@ -615,6 +615,14 @@ FIELDS: list[dict] = [
      "type": "select", "scope": "reindex", "options": ["faster", "mlx"], "default": config.WHISPER_BACKEND},
     {"key": "WHISPER_MODEL", "label": "Модель Whisper", "group": "Транскрибация",
      "type": "text", "scope": "reindex", "default": config.WHISPER_MODEL},
+    {"key": "WHISPER_DEVICE", "label": "Устройство транскрибации", "group": "Транскрибация",
+     "type": "select", "scope": "reindex", "options": ["auto", "cpu", "cuda"],
+     "default": config.WHISPER_DEVICE,
+     "desc": "Где транскрибировать аудио/видео (бэкенд <code>faster</code>): <b>auto</b> — как основное "
+             "устройство (<code>DEVICE</code>); <b>cpu</b> — на процессоре (медленнее, но не конфликтует "
+             "с vLLM за VRAM); <b>cuda</b> — на GPU. На GPU-сервере, где память занята vLLM, транскрибация "
+             "на GPU часто падает с <code>CUDA out of memory</code> — тогда ставьте <b>cpu</b>. "
+             "При нехватке памяти система и сама переключится на CPU до конца индексации."},
 
     # --- Расширенный поиск (hybrid+) ---
     {"key": "LLM_METADATA", "label": "LLM-метаданные при индексации (продукт/тема/тип)",

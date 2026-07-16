@@ -153,6 +153,11 @@ PRICE_TOP_K = _int("PRICE_TOP_K", 6)            # сколько фрагмен�
 # Транскрибация
 WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "mlx")  # mlx (Apple) | faster (GPU/CPU)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
+# Устройство транскрибации (faster-whisper): auto = следовать DEVICE; cpu | cuda.
+# На GPU-сервере, где VRAM занят vLLM, транскрибация на cuda часто падает с CUDA OOM
+# и роняет индексацию — тогда ставьте cpu (медленнее, но стабильно). При OOM код всё
+# равно сам переключится на CPU до конца прогона.
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")  # auto | cpu | cuda
 
 # vLLM (GPU-вариант): параметры контейнера генерации
 VLLM_MODEL = os.getenv("VLLM_MODEL", "Qwen/Qwen3.6-35B-A3B")
