@@ -43,14 +43,19 @@ SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 
 if [ "${APP_ONLY}" -eq 0 ]; then
   # ---- 1. Векторная БД + LLM-движок (Docker) ----
-  if command -v docker >/dev/null 2>&1; then
-    log "Перезапускаю Qdrant + vLLM (Docker)..."
-    if [ -f "${COMPOSE}" ]; then
-      docker compose --env-file "${ENVF}" -f "${COMPOSE}" restart 2>/dev/null \
-        || docker restart rag_qdrant rag_vllm 2>/dev/null || warn "не удалось перезапустить контейнеры"
-    else
-      docker restart rag_qdrant rag_vllm 2>/dev/null || warn "контейнеры не найдены"
-    fi
+  if command -v docker >/dev/null 2>&1 && [ -f "${COMPOSE}" ]; then
+    # Qdrant: up -d — поднять/обновить (пересоздаст, если изменился compose, напр. ulimit)
+    log "Поднимаю/обновляю Qdrant (Docker)..."
+    ( cd "${DIR}" && docker compose --env-file .env -f docker-compose.gpu.yml up -d qdrant ) 2>/dev/null \
+      || docker restart rag_qdrant 2>/dev/null || warn "Qdrant не обновился"
+    # vLLM: --force-recreate — ПЕРЕСОЗДАТЬ, чтобы применились изменения .env (VLLM_GPU_UTIL,
+    # модель, TP, длина контекста); обычный restart их не подхватывает.
+    log "Пересоздаю vLLM с текущим .env (--force-recreate)..."
+    ( cd "${DIR}" && docker compose --env-file .env -f docker-compose.gpu.yml up -d --force-recreate vllm ) 2>/dev/null \
+      || docker restart rag_vllm 2>/dev/null || warn "vLLM не пересоздался"
+  elif command -v docker >/dev/null 2>&1; then
+    log "Перезапускаю контейнеры (compose-файл не найден)..."
+    docker restart rag_qdrant rag_vllm 2>/dev/null || warn "контейнеры не найдены"
   else
     warn "docker не найден — пропускаю Qdrant/vLLM"
   fi
