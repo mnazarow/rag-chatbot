@@ -41,7 +41,7 @@ LLM_MAX_CONCURRENCY = _int("LLM_MAX_CONCURRENCY", 0)
 LLM_QUEUE_TIMEOUT = _int("LLM_QUEUE_TIMEOUT", 600)   # макс. ожидание в очереди, с (0 — без лимита)
 # Минимальная пауза между началами запросов к LLM (с). Запросы стартуют не чаще,
 # чем раз в LLM_REQUEST_DELAY секунд. 0 — без паузы. Бережёт модель/GPU от «пиков».
-LLM_REQUEST_DELAY = _float("LLM_REQUEST_DELAY", 0.0)
+LLM_REQUEST_DELAY = _float("LLM_REQUEST_DELAY", 3.0)
 # «Размышления» гибридных моделей (Qwen3/3.6, DeepSeek-R1 и т. п.). Для таких моделей
 # Ollama по умолчанию генерирует длинную фазу рассуждений (поле message.thinking или
 # блок <think>…</think>), из-за чего видимый ответ появляется с большой задержкой или
