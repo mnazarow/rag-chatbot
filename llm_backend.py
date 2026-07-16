@@ -20,6 +20,17 @@ def _think() -> bool:
     return bool(settings.get("LLM_THINK"))
 
 
+def _llm_timeout():
+    """Таймаут httpx для запросов к LLM: без общего лимита (генерация бывает долгой), но с
+    таймаутом на ЧТЕНИЕ очередного куска (LLM_READ_TIMEOUT). Зависший движок прервётся и
+    освободит слот очереди, а активная генерация таймаут не трогает (сброс на каждом токене)."""
+    try:
+        read = float(settings.get("LLM_READ_TIMEOUT") or 0) or None
+    except Exception:
+        read = 180.0
+    return httpx.Timeout(read, connect=15.0, write=60.0, pool=15.0)
+
+
 # Кэш: какие модели Ollama поддерживают «thinking» (чтобы не слать параметр `think`
 # несовместимым моделям — иначе Ollama вернёт HTTP 400). TTL небольшой.
 _THINK_CAP: dict[str, bool] = {}
@@ -200,7 +211,7 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
             # vLLM с reasoning-моделью может печатать <think>…</think> прямо в content —
             # фильтруем, если размышления выключены (как в ollama-ветке)
             tf = _ThinkFilter() if _hide_think else None
-            async with httpx.AsyncClient(timeout=None) as c:
+            async with httpx.AsyncClient(timeout=_llm_timeout()) as c:
                 async with c.stream("POST", url, json=payload, headers=headers) as r:
                     async for line in r.aiter_lines():
                         line = line.strip()
@@ -237,7 +248,7 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
                        "stream": True, "options": {"temperature": temperature},
                        **_think_kw}
             tf = _ThinkFilter() if _hide_think else None
-            async with httpx.AsyncClient(timeout=None) as c:
+            async with httpx.AsyncClient(timeout=_llm_timeout()) as c:
                 async with c.stream("POST", url, json=payload) as r:
                     async for line in r.aiter_lines():
                         if not line.strip():
@@ -286,7 +297,7 @@ def chat(messages: list[dict], temperature: float = 0.1,
         ptok = ctok = gen_ms = 0
         if settings.get("LLM_BACKEND") == "openai":
             r = httpx.post(
-                f"{settings.get('LLM_BASE_URL')}/chat/completions", timeout=None,
+                f"{settings.get('LLM_BASE_URL')}/chat/completions", timeout=_llm_timeout(),
                 headers={"Authorization": f"Bearer {settings.get('LLM_API_KEY')}"},
                 json={"model": model, "messages": messages,
                       "stream": False, "temperature": temperature},
@@ -299,7 +310,7 @@ def chat(messages: list[dict], temperature: float = 0.1,
             ptok, ctok = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
         else:
             r = httpx.post(
-                f"{settings.get('OLLAMA_URL')}/api/chat", timeout=None,
+                f"{settings.get('OLLAMA_URL')}/api/chat", timeout=_llm_timeout(),
                 json={"model": model, "messages": messages,
                       "stream": False, "options": {"temperature": temperature},
                       **_ollama_think_payload(model)},
