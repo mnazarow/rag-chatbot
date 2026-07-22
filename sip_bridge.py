@@ -25,6 +25,7 @@ import time
 import wave
 
 import settings
+from sip_dialog import DialogSession
 
 try:
     import audioop  # noqa  (удалён в Python 3.13)
@@ -232,19 +233,47 @@ def _handle(sock) -> None:
     # счётчики calls/active увеличиваются при допуске соединения в _serve (под локом)
     expected_uuid = str(_cfg("SIP_AUDIOSOCKET_UUID", "")
                         or _cfg("SIP_AUDIOSOCKET_SECRET", "") or "").strip()
-    silence_ms = int(_cfg("SIP_SILENCE_MS", 700))
-    silence_rms = float(_cfg("SIP_SILENCE_RMS", 500))
-    max_utter = float(_cfg("SIP_MAX_UTTER_SEC", 15))
-    frame_ms = 20
-    need_silence = max(1, silence_ms // frame_ms)
-
     greeted = False
-    buf = bytearray()
-    voiced = False
-    sil = 0
-    utter_started = 0.0
-    last_rid = 0
-    await_comment = False
+
+    def _stage(stage, detail=None):
+        if aid is not None:
+            try:
+                import activity
+                activity.update(aid, stage=stage, detail=detail)
+            except Exception:
+                pass
+
+    def _echo_drain():
+        # Сброс накопившегося эха ограничиваем по «стенным часам»: Asterisk шлёт кадр
+        # каждые 20 мс непрерывно, поэтому без лимита цикл никогда не выйдет и «съест»
+        # речь абонента. Заодно ловим отбой (KIND_HANGUP), чтобы не потерять его.
+        drain_end = time.time() + float(_cfg("SIP_ECHO_DRAIN_SEC", 0.3) or 0.3)
+        sock.settimeout(0.05)
+        hung = False
+        try:
+            while time.time() < drain_end and not _stop.is_set():
+                k, _p = _read_msg(sock)
+                if k is None:
+                    break
+                if k == KIND_HANGUP:
+                    hung = True
+                    break
+        except Exception:
+            pass
+        sock.settimeout(60)
+        return hung
+
+    def _speak(text, beep=False, is_answer=False):
+        pcm = _tts_pcm(text)
+        if pcm:
+            _send_audio(sock, pcm)
+        if is_answer:
+            return _echo_drain()
+        return False
+
+    session = DialogSession(
+        cfg=_cfg, rms=_rms, stt=_stt, answer=lambda q: _answer(q),
+        feedback_intent=feedback_intent, speak=_speak, set_stage=_stage)
     try:
         while not _stop.is_set():
             kind, payload = _read_msg(sock)
@@ -273,99 +302,9 @@ def _handle(sock) -> None:
                 continue
             if kind != KIND_AUDIO or not payload:
                 continue
-            rms = _rms(payload)
-            if rms >= silence_rms:
-                if not voiced:
-                    utter_started = time.time()
-                voiced = True
-                sil = 0
-                buf += payload
-            elif voiced:
-                sil += 1
-                buf += payload
-
-            too_long = voiced and (time.time() - utter_started) > max_utter
-            if voiced and (sil >= need_silence or too_long):
-                pcm = bytes(buf)
-                buf = bytearray()
-                voiced = False
-                sil = 0
-                if aid is not None:
-                    try:
-                        import activity
-                        activity.update(aid, stage="распознавание")
-                    except Exception:
-                        pass
-                q = _stt(pcm)
-                if not q:
-                    continue
-
-                # голосовая обратная связь по предыдущему ответу
-                if await_comment and last_rid:
-                    try:
-                        import db
-                        db.set_comment(last_rid, q)
-                    except Exception:
-                        pass
-                    await_comment = False
-                    apcm = _tts_pcm("Комментарий сохранён. Спасибо.")
-                    if apcm:
-                        _send_audio(sock, apcm)
-                    continue
-                intent = feedback_intent(q) if last_rid else "ask"
-                if intent in ("good", "bad"):
-                    try:
-                        import db
-                        db.set_rating(last_rid, 1 if intent == "good" else -1)
-                    except Exception:
-                        pass
-                    apcm = _tts_pcm("Спасибо, оценка сохранена. Скажите «добавь "
-                                    "комментарий», если хотите оставить отзыв.")
-                    if apcm:
-                        _send_audio(sock, apcm)
-                    continue
-                if intent == "comment":
-                    await_comment = True
-                    apcm = _tts_pcm("Говорите комментарий.")
-                    if apcm:
-                        _send_audio(sock, apcm)
-                    continue
-
-                if aid is not None:
-                    try:
-                        import activity
-                        activity.update(aid, stage="ответ", detail=q[:60])
-                    except Exception:
-                        pass
-                ans, last_rid = _answer(q)
-                if not ans:
-                    ans = "Извините, не нашёл ответа в документах."
-                if _cfg("SIP_SPEAK_ANSWER", True):
-                    speak = ans
-                else:
-                    speak = _cfg("SIP_ACK_PHRASE", "Ваш запрос принят и записан. Спасибо.")
-                apcm = _tts_pcm(speak)
-                if apcm:
-                    _send_audio(sock, apcm)
-                # Сброс накопившегося эха ограничиваем по «стенным часам»: Asterisk шлёт
-                # кадр каждые 20 мс непрерывно, поэтому без лимита цикл никогда не выйдет и
-                # «съест» речь абонента. Также ловим отбой (KIND_HANGUP), чтобы не потерять его.
-                drain_end = time.time() + float(_cfg("SIP_ECHO_DRAIN_SEC", 0.3) or 0.3)
-                sock.settimeout(0.05)
-                hung = False
-                try:
-                    while time.time() < drain_end and not _stop.is_set():
-                        k, _p = _read_msg(sock)
-                        if k is None:
-                            break
-                        if k == KIND_HANGUP:
-                            hung = True
-                            break
-                except Exception:
-                    pass
-                sock.settimeout(60)
-                if hung:
-                    break
+            utter = session.feed(payload)
+            if utter is not None and session.process(utter):
+                break
     except Exception as e:
         print(f"[sip] звонок: {e}")
     finally:

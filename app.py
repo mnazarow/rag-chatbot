@@ -10,15 +10,28 @@ import json
 import os
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Optional
 
 import tempfile
 
 from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File, Form
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+
+import metrics
+import ratelimit
+
+# Тип содержимого Prometheus text exposition. prometheus_client не является
+# обязательной зависимостью — если он установлен, берём его константу, иначе
+# используем ручную (version=0.0.4). Сериализация всегда ручная (metrics.render_prometheus).
+try:
+    from prometheus_client import CONTENT_TYPE_LATEST as _PROM_CONTENT_TYPE  # type: ignore
+except Exception:
+    _PROM_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
 import activity
 import dns_override
@@ -89,6 +102,121 @@ try:
                        allow_methods=["*"], allow_headers=["*"])
 except Exception as _e:
     print(f"[cors] не подключён: {_e}")
+
+
+# ============================ RATE-LIMIT + МЕТРИКИ ============================
+# Публичные эндпоинты, которые лимитируем (по ключу = IP клиента). Админ-маршруты
+# и /health, /metrics НЕ лимитируем.
+_RL_PATHS = frozenset({
+    "/chat", "/chat-doc", "/api/v1/ask", "/api/transcribe", "/api/rate", "/api/comment",
+})
+# Единый лимитер процесса; конфиг подтягивается из настроек на каждом запросе.
+_RATE_LIMITER = ratelimit.RateLimiter(None, None)
+
+
+def _client_ip_from_scope(scope) -> str:
+    """IP клиента для ключа лимитера: первый адрес X-Forwarded-For (за прокси)
+    либо адрес соединения. Без разбора тела запроса (event loop не блокируем)."""
+    try:
+        for k, v in scope.get("headers") or ():
+            if k == b"x-forwarded-for" and v:
+                return v.decode("latin1").split(",")[0].strip() or "unknown"
+    except Exception:
+        pass
+    client = scope.get("client")
+    if client:
+        return str(client[0])
+    return "unknown"
+
+
+async def _send_429(send, retry_after: int) -> None:
+    body = json.dumps({"detail": "Слишком много запросов — попробуйте позже."},
+                      ensure_ascii=False).encode("utf-8")
+    await send({"type": "http.response.start", "status": 429, "headers": [
+        (b"content-type", b"application/json; charset=utf-8"),
+        (b"retry-after", str(int(retry_after)).encode("ascii")),
+        (b"content-length", str(len(body)).encode("ascii")),
+    ]})
+    await send({"type": "http.response.body", "body": body})
+
+
+class RateLimitMetricsMiddleware:
+    """Чистое ASGI-middleware (без буферизации тела — стриминг NDJSON не ломается):
+      1) для публичных эндпоинтов применяет per-IP лимит (429 + Retry-After);
+      2) для всех HTTP-запросов пишет метрики: счётчик по маршруту/методу/статусу
+         и гистограмму латентности (для GET /metrics).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "") or ""
+        method = scope.get("method", "GET")
+
+        # --- rate limit только для публичных POST-эндпоинтов (не OPTIONS-preflight) ---
+        if path in _RL_PATHS and method != "OPTIONS":
+            try:
+                _RATE_LIMITER.configure(settings.get("RATE_LIMIT_RPS") or None,
+                                        settings.get("RATE_LIMIT_BURST") or None)
+                if _RATE_LIMITER.enabled:
+                    allowed, retry = _RATE_LIMITER.check(_client_ip_from_scope(scope))
+                    if not allowed:
+                        ra = max(1, int(retry + 0.999))
+                        metrics.inc("http_requests_total", path=path, method=method,
+                                    status="429")
+                        await _send_429(send, ra)
+                        return
+            except Exception as _rle:
+                print(f"[ratelimit] пропускаю (сбой лимитера): {_rle}")
+
+        # --- метрики: считаем все, кроме статики (иначе много ярлыков на файлы) ---
+        track = not path.startswith("/static")
+        t0 = time.perf_counter()
+        status_box = {"code": 500}
+
+        async def _send(message):
+            if message.get("type") == "http.response.start":
+                status_box["code"] = message.get("status", 200)
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        finally:
+            if track:
+                try:
+                    dt = time.perf_counter() - t0
+                    metrics.inc("http_requests_total", path=path, method=method,
+                                status=str(status_box["code"]))
+                    metrics.observe("http_request_duration_seconds", dt,
+                                    path=path, method=method)
+                except Exception:
+                    pass
+
+
+try:
+    app.add_middleware(RateLimitMetricsMiddleware)
+except Exception as _e:
+    print(f"[ratelimit/metrics] middleware не подключён: {_e}")
+
+
+def _session_owns(session_id: str, rid) -> bool:
+    """Проверка владения: запись rid принадлежит сессии session_id (по журналу).
+
+    db.py не редактируем и прямого геттера владельца записи нет, поэтому берём
+    все записи сессии (session_history) и проверяем вхождение id. Дёшево при
+    типичном размере одной сессии.
+    """
+    if not session_id or rid is None:
+        return False
+    try:
+        rows = db.session_history(str(session_id))
+        return any(int(r.get("id")) == int(rid) for r in rows)
+    except Exception:
+        return False
 
 
 def _answer_sync(question: str, filters: dict | None = None) -> dict:
@@ -255,6 +383,46 @@ def health():
             "backend": settings.get("LLM_BACKEND")}
 
 
+@app.get("/metrics")
+def metrics_endpoint():
+    """Метрики в формате Prometheus text exposition (version 0.0.4).
+
+    Экспортирует: счётчики запросов и гистограмму латентности по маршрутам
+    (собираются middleware), кумулятивные счётчики компонентов конвейера
+    (metrics.record/timer), а также мгновенные gauge — глубину LLM-очереди и
+    состояние кэша (снимаются на момент scrape). Без внешних зависимостей —
+    сериализация ручная (prometheus_client опционален, влияет лишь на Content-Type).
+    """
+    # gauge: размер LLM-очереди (running/waiting/max)
+    try:
+        import llm_queue
+        qs = llm_queue.stats()
+        metrics.set_gauge("llm_queue_running", qs.get("running", 0) or 0)
+        metrics.set_gauge("llm_queue_waiting", qs.get("waiting", 0) or 0)
+        metrics.set_gauge("llm_queue_max", qs.get("max", 0) or 0)
+    except Exception:
+        pass
+    # gauge: попадания/промахи кэша ответов (Redis)
+    try:
+        import cache
+        cs = cache.status()
+        if cs.get("reachable"):
+            metrics.set_gauge("rag_cache_keys", cs.get("keys", 0) or 0)
+            if cs.get("hits") is not None:
+                metrics.set_gauge("rag_cache_hits_total", cs.get("hits") or 0)
+            if cs.get("misses") is not None:
+                metrics.set_gauge("rag_cache_misses_total", cs.get("misses") or 0)
+            if cs.get("hit_rate") is not None:
+                metrics.set_gauge("rag_cache_hit_rate", cs.get("hit_rate") or 0)
+    except Exception:
+        pass
+    try:
+        body = metrics.render_prometheus()
+    except Exception as e:
+        body = f"# ошибка сериализации метрик: {e}\n"
+    return Response(content=body, media_type=_PROM_CONTENT_TYPE)
+
+
 # ============================ ЧАТ ============================
 def _stg(key: str, status: str = "done", info: dict | None = None, ms: int = 0) -> str:
     """NDJSON-событие этапа конвейера (для анимации в интерфейсе)."""
@@ -324,6 +492,50 @@ def _answer_chunks(text: str, size: int = 40):
                          ensure_ascii=False) + "\n"
 
 
+# --- единый объект-результат конвейера и общий путь стриминга (M5) ----------
+@dataclass
+class PipelineResult:
+    """Единый результат одной «не-стримовой» ветки /chat (KAG / граф / кэш).
+
+    Ветка лишь СОБИРАЕТ этот объект; сериализацию в NDJSON, замер латентности,
+    вызов db.log_request и отправку meta делает общий генератор _pipeline_ndjson.
+    Формат провода сохраняется байт-в-байт: этапы (stages) ветка формирует сама
+    теми же _stg(...), ответ бьётся на чанки по 40 символов, sources проходит
+    через _visible_sources. debug_fn/log_fn получают latency (мс), измеренную в
+    ТОЧКЕ отправки — как было в исходных инлайн-генераторах.
+    """
+    engine: str
+    answer: str
+    sources: list
+    answered: bool = True
+    stages: list = field(default_factory=list)            # готовые NDJSON-строки этапов
+    debug_fn: Optional[Callable[[int], dict]] = None      # lat_ms -> info для debug (или None)
+    log_fn: Optional[Callable[[int], int]] = None         # lat_ms -> rid (db.log_request)
+    trace: list = field(default_factory=list)             # исходный trace (для справки)
+    meta: dict = field(default_factory=dict)
+
+
+async def _pipeline_ndjson(pr: "PipelineResult", t0: float, want_debug: bool):
+    """Общий сериализатор PipelineResult → NDJSON (единый «путь отправки»).
+
+    Порядок и байты идентичны прежним kstream/gstream/cached_stream:
+      [этапы] → [чанки ответа по 40] → sources → (debug?) → log_request → meta.
+    """
+    for line in pr.stages:
+        yield line
+    for chunk in _answer_chunks(pr.answer):
+        yield chunk
+    yield json.dumps({"type": "sources",
+                      "items": _visible_sources(pr.answer, pr.sources)},
+                     ensure_ascii=False) + "\n"
+    lat = int((time.time() - t0) * 1000)
+    if want_debug and pr.debug_fn is not None:
+        yield json.dumps({"type": "debug", "info": pr.debug_fn(lat)},
+                         ensure_ascii=False) + "\n"
+    rid = pr.log_fn(lat) if pr.log_fn else 0
+    yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest):
     t0 = time.time()
@@ -346,36 +558,36 @@ async def chat(req: ChatRequest):
                                    score=round(h.get("score", 0.0), 3),
                                    category=h.get("doc_category")) for h in khits]
 
-            async def kstream():
-                for s in ktrace:
-                    yield _stg(s["key"], "done", s.get("info"), s.get("ms", 0))
-                yield _stg("engine", "done", {
-                    "engine": "KAG (знание-усиленная генерация)",
-                    "hops": len(kres.get("sub", [])), "graph": kres.get("graph"),
-                    "model": settings.active_model()})
-                for _chunk in _answer_chunks(ktext):
-                    yield _chunk
-                yield json.dumps({"type": "sources",
-                                  "items": _visible_sources(ktext, ksources)},
-                                 ensure_ascii=False) + "\n"
-                lat = int((time.time() - t0) * 1000)
-                top = round(khits[0].get("score", 0.0), 3) if khits else 0.0
-                if req.debug:
-                    yield json.dumps({"type": "debug", "info": {
-                        "engine": "KAG", "sub_questions": kres.get("sub", []),
-                        "graph_used": kres.get("graph"),
-                        "mode": settings.current_mode(), "model": settings.active_model(),
-                        "backend": settings.get("LLM_BACKEND"),
-                        "timings": {"retrieve_ms": 0, "gen_ms": lat, "total_ms": lat},
-                        "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
-                rid = db.log_request(req.question, "kag", len(khits), top, lat,
-                                     len(ktext), kres.get("answered", True), ksources,
-                                     retrieve_ms=0, gen_ms=lat, session_id=req.session_id,
-                                     answer=ktext)
-                yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
+            # M5: ветка собирает единый PipelineResult; отправку/лог делает общий путь.
+            kstages = [_stg(s["key"], "done", s.get("info"), s.get("ms", 0))
+                       for s in ktrace]
+            kstages.append(_stg("engine", "done", {
+                "engine": "KAG (знание-усиленная генерация)",
+                "hops": len(kres.get("sub", [])), "graph": kres.get("graph"),
+                "model": settings.active_model()}))
 
+            def _kag_debug(lat: int) -> dict:
+                return {
+                    "engine": "KAG", "sub_questions": kres.get("sub", []),
+                    "graph_used": kres.get("graph"),
+                    "mode": settings.current_mode(), "model": settings.active_model(),
+                    "backend": settings.get("LLM_BACKEND"),
+                    "timings": {"retrieve_ms": 0, "gen_ms": lat, "total_ms": lat},
+                    "params": _debug_params(), "chunks": []}
+
+            def _kag_log(lat: int) -> int:
+                top = round(khits[0].get("score", 0.0), 3) if khits else 0.0
+                return db.log_request(req.question, "kag", len(khits), top, lat,
+                                      len(ktext), kres.get("answered", True), ksources,
+                                      retrieve_ms=0, gen_ms=lat,
+                                      session_id=req.session_id, answer=ktext)
+
+            _pr = PipelineResult(
+                engine="KAG (знание-усиленная генерация)", answer=ktext,
+                sources=ksources, answered=kres.get("answered", True),
+                stages=kstages, debug_fn=_kag_debug, log_fn=_kag_log, trace=ktrace)
             activity.update(aid, stage="KAG: генерация ответа")
-            return _ndjson(kstream(), aid)
+            return _ndjson(_pipeline_ndjson(_pr, t0, req.debug), aid)
         except Exception as e:
             print(f"KAG недоступен, фолбэк на вектор: {e}")
 
@@ -387,33 +599,34 @@ async def chat(req: ChatRequest):
             text = await graph_rag.answer(req.question)
             cat = "lightrag" if use_lightrag_all else "graph"
 
-            async def gstream():
-                yield _stg("engine", "done", {
-                    "engine": "LightRAG (граф)" if use_lightrag_all
-                    else "граф (hybrid, сводный вопрос)",
-                    "mode": settings.get("GRAPH_MODE"), "model": settings.active_model()})
-                for _chunk in _answer_chunks(text):
-                    yield _chunk
-                _gsrc = _visible_sources(
-                    text, [{"source": "граф знаний (LightRAG)", "page": None}])
-                yield json.dumps({"type": "sources", "items": _gsrc},
-                                 ensure_ascii=False) + "\n"
-                lat = int((time.time() - t0) * 1000)
-                if req.debug:
-                    yield json.dumps({"type": "debug", "info": {
-                        "engine": "LightRAG (граф)" if use_lightrag_all else "граф (hybrid, сводный вопрос)",
-                        "mode": settings.current_mode(), "model": settings.active_model(),
-                        "backend": settings.get("LLM_BACKEND"),
-                        "timings": {"retrieve_ms": 0, "gen_ms": lat, "total_ms": lat},
-                        "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
-                rid = db.log_request(req.question, cat, 1, 1.0, lat, len(text),
-                                     not prompts.is_no_answer(text), [],
-                                     retrieve_ms=0, gen_ms=lat,
-                                     session_id=req.session_id, answer=text)
-                yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
+            # M5: единый PipelineResult для графовой ветки.
+            _eng_label = ("LightRAG (граф)" if use_lightrag_all
+                          else "граф (hybrid, сводный вопрос)")
+            gstages = [_stg("engine", "done", {
+                "engine": _eng_label,
+                "mode": settings.get("GRAPH_MODE"), "model": settings.active_model()})]
 
+            def _graph_debug(lat: int) -> dict:
+                return {
+                    "engine": _eng_label,
+                    "mode": settings.current_mode(), "model": settings.active_model(),
+                    "backend": settings.get("LLM_BACKEND"),
+                    "timings": {"retrieve_ms": 0, "gen_ms": lat, "total_ms": lat},
+                    "params": _debug_params(), "chunks": []}
+
+            def _graph_log(lat: int) -> int:
+                return db.log_request(req.question, cat, 1, 1.0, lat, len(text),
+                                      not prompts.is_no_answer(text), [],
+                                      retrieve_ms=0, gen_ms=lat,
+                                      session_id=req.session_id, answer=text)
+
+            _pr = PipelineResult(
+                engine=_eng_label, answer=text,
+                sources=[{"source": "граф знаний (LightRAG)", "page": None}],
+                answered=not prompts.is_no_answer(text), stages=gstages,
+                debug_fn=_graph_debug, log_fn=_graph_log)
             activity.update(aid, stage="генерация ответа (граф)")
-            return _ndjson(gstream(), aid)
+            return _ndjson(_pipeline_ndjson(_pr, t0, req.debug), aid)
         except Exception as e:
             print(f"LightRAG недоступен, фолбэк на вектор: {e}")
 
@@ -446,33 +659,32 @@ async def chat(req: ChatRequest):
             except Exception:
                 cached = cached
         if cached:
-            async def cached_stream():
-                yield _stg("answer_cache", "done", {"hit": True})
-                # совместимость с кэшем из Телеграма/VoIP: там текст лежит в "text"
-                txt = cached.get("answer") or cached.get("text") or ""
-                for _chunk in _answer_chunks(txt):
-                    yield _chunk
-                yield json.dumps({"type": "sources",
-                                  "items": _visible_sources(txt, cached.get("sources", []))},
-                                 ensure_ascii=False) + "\n"
-                lat = int((time.time() - t0) * 1000)
-                if req.debug:
-                    yield json.dumps({"type": "debug", "info": {
-                        "engine": "векторный (ответ из кэша Redis)", "cached": True,
-                        "mode": settings.current_mode(), "model": settings.active_model(),
-                        "backend": settings.get("LLM_BACKEND"),
-                        "timings": {"retrieve_ms": 0, "gen_ms": 0, "total_ms": lat},
-                        "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
-                rid = db.log_request(req.question, cached.get("category"),
-                                     cached.get("n_hits", 0), cached.get("top_score", 0.0),
-                                     lat, len(txt), not prompts.is_no_answer(txt),
-                                     cached.get("sources", []),
-                                     retrieve_ms=0, gen_ms=0, session_id=req.session_id,
-                                     answer=txt)
-                yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
+            # совместимость с кэшем из Телеграма/VoIP: там текст лежит в "text"
+            _ctxt = cached.get("answer") or cached.get("text") or ""
+            _csrc = cached.get("sources", [])
+            cstages = [_stg("answer_cache", "done", {"hit": True})]
 
+            def _cache_debug(lat: int) -> dict:
+                return {
+                    "engine": "векторный (ответ из кэша Redis)", "cached": True,
+                    "mode": settings.current_mode(), "model": settings.active_model(),
+                    "backend": settings.get("LLM_BACKEND"),
+                    "timings": {"retrieve_ms": 0, "gen_ms": 0, "total_ms": lat},
+                    "params": _debug_params(), "chunks": []}
+
+            def _cache_log(lat: int, _txt=_ctxt, _src=_csrc) -> int:
+                return db.log_request(req.question, cached.get("category"),
+                                      cached.get("n_hits", 0), cached.get("top_score", 0.0),
+                                      lat, len(_txt), not prompts.is_no_answer(_txt), _src,
+                                      retrieve_ms=0, gen_ms=0, session_id=req.session_id,
+                                      answer=_txt)
+
+            _pr = PipelineResult(
+                engine="векторный (ответ из кэша Redis)", answer=_ctxt, sources=_csrc,
+                answered=not prompts.is_no_answer(_ctxt), stages=cstages,
+                debug_fn=_cache_debug, log_fn=_cache_log)
             activity.update(aid, stage="ответ из кэша")
-            return _ndjson(cached_stream(), aid)
+            return _ndjson(_pipeline_ndjson(_pr, t0, req.debug), aid)
 
     t_ret = time.time()
     trace = []
@@ -504,6 +716,10 @@ async def chat(req: ChatRequest):
     category = (req.filters or {}).get("doc_category") or infer_category(req.question)
 
     if not hits:
+        # FIXME(review): ветка «нет данных» НЕ переведена на PipelineResult — она
+        # структурно отличается (лог ДО стрима; ответ отдаётся одной строкой, а не
+        # чанками по 40; отдельный этап context; нет debug). Унификация без риска
+        # для байт-в-байт формата невозможна — оставлено на текущих хелперах.
         msg = "В доступных документах нет точного ответа на этот вопрос."
         rid = db.log_request(req.question, category, 0, 0.0,
                              int((time.time() - t0) * 1000), len(msg), False, [],
@@ -533,6 +749,10 @@ async def chat(req: ChatRequest):
                for h in hits]
     activity.update(aid, stage="генерация ответа")
 
+    # FIXME(review): основная векторная ветка отдаёт ответ ПОТОКОМ по токенам LLM
+    # (не статичный текст) + strict-верификация/CAVEAT/блок context. Обернуть в
+    # PipelineResult без риска для байт-в-байт wire-формата нельзя — оставлена как
+    # есть; общие хелперы (_visible_sources/_answer_chunks/_debug_*) уже применены.
     async def stream():
         # анимация конвейера: этапы поиска (измерены), затем контекст и генерация
         for s in trace:
@@ -652,6 +872,13 @@ def api_rate(payload: dict = Body(...)):
     rating = int(payload.get("rating", 0))
     if rid is None or rating not in (1, -1, 0):
         return {"ok": False}
+    # Привязка к сессии: если клиент прислал session_id — оценивать можно ТОЛЬКО
+    # свою запись журнала (чтобы нельзя было накрутить/сбить чужие оценки по id).
+    session_id = str(payload.get("session_id") or "").strip()
+    if session_id and not _session_owns(session_id, rid):
+        return {"ok": False, "error": "запись не принадлежит сессии"}
+    # FIXME(review): при отсутствии session_id (старые клиенты) строгая проверка
+    # владения невозможна — полагаемся на per-IP rate-limit (см. middleware).
     db.set_rating(int(rid), rating)
     try:
         integrations.fire("rating", {"id": int(rid), "rating": rating})
@@ -673,6 +900,11 @@ def api_comment(payload: dict = Body(...)):
     rid = payload.get("id")
     if rid is None:
         return {"ok": False}
+    # Привязка к сессии: комментировать можно только свою запись журнала.
+    session_id = str(payload.get("session_id") or "").strip()
+    if session_id and not _session_owns(session_id, rid):
+        return {"ok": False, "error": "запись не принадлежит сессии"}
+    # FIXME(review): без session_id владение не проверить — троттлинг per-IP.
     ok = db.set_comment(int(rid), payload.get("comment") or "")
     return {"ok": ok}
 
@@ -2501,8 +2733,19 @@ def admin_clear_history(x_admin_token: str | None = Header(None)):
 
 @app.get("/api/chat-history")
 def api_chat_history(session_id: str):
-    """История одного чата (по session_id) — для сохранения в файл."""
-    return {"session_id": session_id, "items": db.session_history(session_id)}
+    """История одного чата (по session_id) — для сохранения в файл.
+
+    Отдаём ТОЛЬКО записи запрошенного session_id (db.session_history фильтрует по
+    нему в SQL), т.е. без session_id вернётся пусто — чужие чаты не раскрываются.
+    FIXME(review): session_id здесь работает как bearer-capability (кто знает
+    непубличный UUID сессии, тот и читает её историю). Серверной привязки владельца
+    к аккаунту в db.py нет; для строгой авторизации нужен owner-геттер в db.py
+    (редактировать db.py в рамках задачи нельзя) либо подпись session_id.
+    """
+    sid = (session_id or "").strip()
+    if not sid:
+        return {"session_id": session_id, "items": []}
+    return {"session_id": session_id, "items": db.session_history(sid)}
 
 
 @app.get("/api/admin/check-updates")

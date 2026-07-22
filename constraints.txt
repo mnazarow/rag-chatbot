@@ -1,0 +1,31 @@
+# constraints.txt — пиннинг критичных транзитивных зависимостей.
+#
+# Это НЕ полный lock-файл: офлайн (без доступа к PyPI и без torch/CUDA-колёс)
+# полный резолв невозможен. Здесь зафиксированы только те транзитивные пакеты,
+# несовместимость которых чаще всего ломает ядро RAG. Версии обоснованы
+# ограничениями зависимостей из requirements.txt (см. комментарии), а не выбраны
+# наугад. Полный lock генерируйте на машине с доступом к индексам — см.
+# tests/README.md (uv pip compile / pip-tools).
+#
+# Использование:
+#     pip install -r requirements.txt -c constraints.txt
+#
+# ─────────────────────────── ML-ядро (жёстко зафиксировано) ───────────────────────────
+# transformers запинен в requirements.txt на 4.44.2 (см. также setup.sh: XTTS вынесен
+# в отдельный venv именно чтобы не тянуть transformers>=4.57 в ядро). Всё ниже —
+# транзитивные пакеты, версии которых обязаны быть совместимы с transformers==4.44.2.
+transformers==4.44.2
+# transformers 4.44.2 требует tokenizers>=0.19,<0.20 → единственная совместимая линия 0.19.x
+tokenizers==0.19.1
+# transformers 4.44.2 требует huggingface-hub>=0.23.2; 0.24.6 совместим и с
+# sentence-transformers 3.3.1 (requirements.txt)
+huggingface-hub==0.24.6
+# transformers 4.44.2 требует safetensors>=0.4.1
+safetensors==0.4.5
+
+# ─────────────────────────── уже запинено в requirements.txt (дублируем как гарантию) ──
+# Нижняя граница torch: CVE-2025-32434 (RCE в torch.load, weights_only) исправлена в 2.6.0.
+# Конкретную сборку (CPU/CUDA/MPS) ставит соответствующий requirements(-gpu).txt.
+torch>=2.6.0
+# Pillow: 11.0.0 уязвим — ядро требует >=11.3.0 (requirements.txt).
+Pillow>=11.3.0

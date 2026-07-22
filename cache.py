@@ -17,6 +17,31 @@ _last_check = 0.0           # когда последний раз провер�
 _HEALTH_EVERY = 10.0        # как часто перепроверять живость (сек)
 _lock = threading.Lock()
 
+# --- наблюдаемость: логгер + дедуп предупреждений о сбоях Redis (не спамить) --- #
+_warn_lock = threading.Lock()
+_last_warn_ts = 0.0
+_WARN_EVERY = 30.0          # логировать сбой Redis не чаще раза в N секунд
+
+
+def _log():
+    import obs
+    return obs.get_logger("cache")
+
+
+def _warn_redis(msg: str, exc: BaseException) -> None:
+    """Залогировать сбой Redis не чаще раза в _WARN_EVERY сек (дедуп от спама)."""
+    global _last_warn_ts
+    now = time.time()
+    with _warn_lock:
+        if now - _last_warn_ts < _WARN_EVERY:
+            return
+        _last_warn_ts = now
+    try:
+        import obs
+        obs.log_exc(_log(), msg, exc)
+    except Exception:
+        pass
+
 
 def _cfg():
     import settings
@@ -81,8 +106,9 @@ def client():
             c.ping()
             _client, _client_key, _last_check = c, key, now
             return c
-        except Exception:
+        except Exception as e:
             _client = None
+            _warn_redis("Redis недоступен (подключение)", e)
             return None
 
 
@@ -123,21 +149,32 @@ def _key(name: str, ns: str) -> str:
 def get_or_set(name: str, ttl: int, producer, ns: str = "stats"):
     """Вернуть кэш по ключу name или вычислить producer() и закэшировать на ttl сек.
     ns — пространство имён инвалидации (stats|index|embed|live)."""
+    import metrics
     c = client()
     if not c:
+        metrics.inc("rag_cache_get_total", op="get_or_set", result="disabled")
         return producer()
     key = _key(name, ns)
     try:
+        _t0 = time.perf_counter()
         v = c.get(key)
+        metrics.observe("rag_redis_op_seconds", time.perf_counter() - _t0, op="get")
         if v is not None:
-            return json.loads(v)
-    except Exception:
+            out = json.loads(v)
+            metrics.inc("rag_cache_get_total", op="get_or_set", result="hit")
+            return out
+    except Exception as e:
+        metrics.inc("rag_cache_get_total", op="get_or_set", result="error")
+        _warn_redis("Redis get_or_set чтение", e)
         return producer()
+    metrics.inc("rag_cache_get_total", op="get_or_set", result="miss")
     val = producer()
     try:
+        _t1 = time.perf_counter()
         c.setex(key, ttl, json.dumps(val, ensure_ascii=False))
-    except Exception:
-        pass
+        metrics.observe("rag_redis_op_seconds", time.perf_counter() - _t1, op="setex")
+    except Exception as e:
+        _warn_redis("Redis get_or_set запись", e)
     return val
 
 
@@ -207,12 +244,16 @@ def answer_sem_find(emb, threshold: float, flt=None):
     """Найти ключ похожего вопроса (косинус ≥ threshold) с ТЕМИ ЖЕ фильтрами flt, или None.
     → {key, sim}. Записи с иными фильтрами игнорируются, чтобы ответ под одними условиями
     не «утекал» на вопрос с другими/без фильтров."""
+    import metrics
     c = client()
     if not c or not emb:
         return None
     try:
+        _t0 = time.perf_counter()
         rows = c.lrange(_anssem_key(), 0, _ANS_SEM_MAX - 1)
-    except Exception:
+        metrics.observe("rag_redis_op_seconds", time.perf_counter() - _t0, op="lrange")
+    except Exception as e:
+        _warn_redis("Redis answer_sem_find чтение", e)
         return None
     n = len(emb)
     want = _flt_sig(flt)
@@ -234,7 +275,9 @@ def answer_sem_find(emb, threshold: float, flt=None):
         if dot > best:
             best, bkey = dot, d.get("k")
     if bkey and best >= float(threshold):
+        metrics.inc("rag_answer_sem_total", result="hit")
         return {"key": bkey, "sim": round(best, 3)}
+    metrics.inc("rag_answer_sem_total", result="miss")
     return None
 
 

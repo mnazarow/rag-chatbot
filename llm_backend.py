@@ -87,6 +87,12 @@ def _close_clients() -> None:
         _async_clients.clear()
 
 
+def _log():
+    """Ленивый структурный логгер (obs импортируется лениво — избегаем циклов)."""
+    import obs
+    return obs.get_logger("llm_backend")
+
+
 def _redact(s: str) -> str:
     """Убрать секреты (API-ключ LLM) из текста ошибки/лога, чтобы не утёк в журнал/дашборд."""
     try:
@@ -333,6 +339,9 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
     ptok = ctok = gen_ms = 0
     ok = True
     err = None
+    import time as _time
+    _backend = settings.get("LLM_BACKEND")
+    _t0 = _time.perf_counter()
     try:
         if settings.get("LLM_BACKEND") == "openai":
             url = f"{settings.get('LLM_BASE_URL')}/chat/completions"
@@ -423,9 +432,24 @@ async def chat_stream(messages: list[dict], temperature: float = 0.1,
     except Exception as e:
         ok = False
         err = _redact(str(e))
+        try:
+            _log().warning("LLM stream error: %s", err,
+                           extra={"backend": _backend, "model": model, "kind": kind})
+        except Exception:
+            pass
         raise
     finally:
         _act_end(cid, ok=ok, chars=nchars, error=err, ptok=ptok, ctok=ctok, gen_ms=gen_ms)
+        try:
+            import metrics
+            metrics.observe("rag_llm_seconds", _time.perf_counter() - _t0,
+                            backend=_backend, kind=kind)
+            metrics.inc("rag_llm_requests_total", backend=_backend, model=model,
+                        kind=kind, result=("ok" if ok else "fail"))
+            if not ok:
+                metrics.inc("rag_llm_errors_total", backend=_backend, model=model)
+        except Exception:
+            pass
         try:
             llm_queue.release(_qtok)
         except Exception:
@@ -443,6 +467,10 @@ def chat(messages: list[dict], temperature: float = 0.1,
     _qtok = llm_queue.acquire()
     cid = _act_begin(kind, model, label or _label_from_messages(messages),
                      _full_request(messages))
+    import time as _time
+    _backend = settings.get("LLM_BACKEND")
+    _t0 = _time.perf_counter()
+    _ok = True
     try:
         ptok = ctok = gen_ms = 0
         # H6: stream=False — весь ответ приходит одним куском в конце генерации, поэтому
@@ -478,9 +506,25 @@ def chat(messages: list[dict], temperature: float = 0.1,
         _act_end(cid, ok=True, chars=len(out or ""), ptok=ptok, ctok=ctok, gen_ms=gen_ms)
         return out
     except Exception as e:
+        _ok = False
         _act_end(cid, ok=False, error=_redact(str(e)))
+        try:
+            _log().warning("LLM chat error: %s", _redact(str(e)),
+                           extra={"backend": _backend, "model": model, "kind": kind})
+        except Exception:
+            pass
         raise
     finally:
+        try:
+            import metrics
+            metrics.observe("rag_llm_seconds", _time.perf_counter() - _t0,
+                            backend=_backend, kind=kind)
+            metrics.inc("rag_llm_requests_total", backend=_backend, model=model,
+                        kind=kind, result=("ok" if _ok else "fail"))
+            if not _ok:
+                metrics.inc("rag_llm_errors_total", backend=_backend, model=model)
+        except Exception:
+            pass
         try:
             llm_queue.release(_qtok)
         except Exception:
@@ -523,7 +567,8 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
         im.save(buf, format="PNG")
         data = buf.getvalue()
     except Exception as e:
-        print(f"[vision] чтение изображения: {e}")
+        import obs
+        obs.log_exc(_log(), "[vision] чтение изображения", e)
         return ""
     b64 = base64.b64encode(data).decode("ascii")
     model = (model or settings.get("VISION_MODEL") or settings.get("LLM_MODEL"))
@@ -539,12 +584,15 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
         attempts = 1
 
     import llm_queue
+    import time as _time
+    _backend = settings.get("LLM_BACKEND")
     last_err = None
     for attempt in range(1, attempts + 1):
         _qtok = llm_queue.acquire()
         cid = _act_begin("vision", model,
                          "описание изображения" + (f" (попытка {attempt})" if attempt > 1 else ""),
                          prompt=prompt + "\n\n[изображение прикреплено]")
+        _t0 = _time.perf_counter()
         try:
             ptok = ctok = gen_ms = 0
             if settings.get("LLM_BACKEND") == "openai":
@@ -573,27 +621,48 @@ def describe_image(image, prompt: str | None = None, model: str | None = None) -
                 ptok, ctok = int(j.get("prompt_eval_count") or 0), int(j.get("eval_count") or 0)
                 gen_ms = int((j.get("eval_duration") or 0) / 1e6)
             _act_end(cid, ok=True, chars=len(out), ptok=ptok, ctok=ctok, gen_ms=gen_ms)
+            try:
+                import metrics
+                metrics.observe("rag_llm_seconds", _time.perf_counter() - _t0,
+                                backend=_backend, kind="vision")
+                metrics.inc("rag_llm_requests_total", backend=_backend, model=model,
+                            kind="vision", result="ok")
+            except Exception:
+                pass
             return out
         except Exception as e:
             last_err = e
             _act_end(cid, ok=False, error=_redact(str(e)))
+            try:
+                import metrics
+                metrics.observe("rag_llm_seconds", _time.perf_counter() - _t0,
+                                backend=_backend, kind="vision")
+                metrics.inc("rag_llm_requests_total", backend=_backend, model=model,
+                            kind="vision", result="fail")
+                metrics.inc("rag_llm_errors_total", backend=_backend, model=model)
+            except Exception:
+                pass
             # low: не повторять на 4xx (кроме 429) — это ошибка запроса (плохая модель/картинка/
             # роль), повтор не поможет и только жжёт время/слот очереди. 429 (rate limit) и 5xx
             # (временный сбой движка) — повторяем.
             _status = getattr(getattr(e, "response", None), "status_code", None)
             _no_retry = isinstance(_status, int) and 400 <= _status < 500 and _status != 429
             if attempt < attempts and not _no_retry:
-                print(f"[vision] попытка {attempt}/{attempts} не удалась (model={model}): "
-                      f"{_redact(str(e))} — повтор")
+                _log().warning("[vision] попытка %s/%s не удалась — повтор: %s",
+                               attempt, attempts, _redact(str(e)),
+                               extra={"model": model, "backend": _backend})
                 continue
             if _no_retry:
-                print(f"[vision] {_status} — запрос отклонён моделью, без повторов (model={model})")
+                _log().warning("[vision] %s — запрос отклонён моделью, без повторов",
+                               _status, extra={"model": model, "backend": _backend})
                 break
         finally:
             try:
                 llm_queue.release(_qtok)
             except Exception:
                 pass
-    print(f"[vision] описание изображения не удалось (model={model}, "
-          f"попыток {attempts}, таймаут {timeout:.0f}с): {_redact(str(last_err))}")
+    _log().error("[vision] описание изображения не удалось: %s",
+                 _redact(str(last_err)),
+                 extra={"model": model, "attempts": attempts,
+                        "timeout": round(timeout, 0)})
     return ""

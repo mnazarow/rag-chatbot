@@ -932,6 +932,19 @@ FIELDS: list[dict] = [
              "раздела Администратор (они и данные перенесут, и переключат бэкенд). Смена "
              "вручную лишь переключает чтение/запись на выбранную СУБД (таблицы должны "
              "существовать). Требует драйвер: PyMySQL / psycopg2."},
+    {"key": "DB_POOL_SIZE", "label": "Размер пула соединений (MySQL/PostgreSQL)",
+     "group": "База данных и кэш", "type": "int", "scope": "restart",
+     "default": getattr(config, "DB_POOL_SIZE", 5),
+     "desc": "Максимум одновременных соединений к внешней СУБД на каждый бэкенд. "
+             "Ограничивает нагрузку на сервер при многих воркерах (веб/бот/ingest). "
+             "Для sqlite не используется. Применяется после перезапуска сервиса. "
+             "Рекомендация: 5 по умолчанию; 10–20 при большом числе параллельных запросов."},
+    {"key": "DB_POOL_TIMEOUT", "label": "Ожидание соединения из пула, сек",
+     "group": "База данных и кэш", "type": "int", "scope": "restart",
+     "default": getattr(config, "DB_POOL_TIMEOUT", 30),
+     "desc": "Сколько секунд запрос ждёт освобождения соединения, когда пул исчерпан. "
+             "По истечении открывается разовое соединение вне пула (чтобы не зависнуть). "
+             "Только для MySQL/PostgreSQL."},
     {"key": "MYSQL_HOST", "label": "MySQL: хост", "group": "База данных и кэш",
      "type": "text", "scope": "live", "default": config.MYSQL_HOST,
      "desc": "IP/домен сервера MySQL (или MariaDB). Пусто = не настроен."},
@@ -1193,12 +1206,88 @@ _state: dict = dict(DEFAULTS)
 _state["MODE"] = "basic"
 
 
+# ===================== Секреты at-rest (опционально) =====================
+# Если задан ключ окружения RAG_SECRET_KEY, секретные поля (type=="secret" и ключи
+# вида *_API_KEY/*_TOKEN/*_PASSWORD/*_SECRET) сохраняются в runtime_config.json
+# ЗАШИФРОВАННЫМИ (Fernet из cryptography) и прозрачно расшифровываются при загрузке.
+# В памяти (_state) секреты всегда открытые — поэтому get()/public_settings() и вся
+# остальная логика не меняются. Ключ не задан → поведение прежнее (открытое хранение).
+# Миграция: открытый конфиг читается как есть, а при следующем сохранении (update/
+# set_mode) секреты перешифровываются, если ключ доступен.
+_ENC_PREFIX = "enc:v1:"
+_cipher_cache: dict = {"key": None, "obj": None, "warned": False}
+
+
+def _secret_key_material() -> str | None:
+    import os
+    v = os.environ.get("RAG_SECRET_KEY")
+    v = v.strip() if v else ""
+    return v or None
+
+
+def _get_cipher():
+    """Fernet-шифр из RAG_SECRET_KEY (ленивый импорт cryptography). None, если ключ
+    не задан или библиотека недоступна. Произвольный ключ приводится к валидному
+    Fernet-ключу через SHA-256 → urlsafe-base64."""
+    km = _secret_key_material()
+    if not km:
+        return None
+    if _cipher_cache["obj"] is not None and _cipher_cache["key"] == km:
+        return _cipher_cache["obj"]
+    try:
+        import base64
+        import hashlib
+        from cryptography.fernet import Fernet
+        fkey = base64.urlsafe_b64encode(hashlib.sha256(km.encode("utf-8")).digest())
+        obj = Fernet(fkey)
+        _cipher_cache["obj"] = obj
+        _cipher_cache["key"] = km
+        return obj
+    except Exception as e:
+        # FIXME(review): RAG_SECRET_KEY задан, но cryptography недоступна — секреты
+        # остаются в открытом виде (шифрование пропускается). Установите cryptography.
+        if not _cipher_cache["warned"]:
+            print(f"[settings] RAG_SECRET_KEY задан, но шифрование недоступно ({e}); "
+                  f"секреты хранятся открытым текстом.")
+            _cipher_cache["warned"] = True
+        return None
+
+
+def _encrypt_secret(val: str) -> str:
+    """Зашифровать значение для хранения (если ключ доступен и оно ещё не шифровано)."""
+    c = _get_cipher()
+    if c is None or not isinstance(val, str) or val == "" or val.startswith(_ENC_PREFIX):
+        return val
+    try:
+        return _ENC_PREFIX + c.encrypt(val.encode("utf-8")).decode("ascii")
+    except Exception:
+        return val
+
+
+def _decrypt_secret(val: str) -> str:
+    """Расшифровать значение из хранилища; открытый текст возвращается как есть."""
+    if not isinstance(val, str) or not val.startswith(_ENC_PREFIX):
+        return val
+    c = _get_cipher()
+    if c is None:
+        # FIXME(review): значение зашифровано, но ключ/библиотека недоступны —
+        # расшифровать нельзя, возвращаем как есть (операторская ошибка: убрали ключ).
+        return val
+    try:
+        return c.decrypt(val[len(_ENC_PREFIX):].encode("ascii")).decode("utf-8")
+    except Exception:
+        # неверный ключ или повреждение — не роняем загрузку, отдаём как есть
+        return val
+
+
 def _load() -> None:
     if _RUNTIME.exists():
         try:
             data = json.loads(_RUNTIME.read_text(encoding="utf-8"))
             for k, v in data.items():
                 if k in _state:
+                    if isinstance(v, str) and v.startswith(_ENC_PREFIX):
+                        v = _decrypt_secret(v)
                     _state[k] = v
         except Exception:
             pass
@@ -1262,6 +1351,24 @@ _SECRET_NAME_RE = _re_secret.compile(r"(_API_KEY|_TOKEN|_PASSWORD|_SECRET)$")
 
 def _is_secret_key(key: str) -> bool:
     return _TYPES.get(key) == "secret" or bool(_SECRET_NAME_RE.search(key or ""))
+
+
+def _state_for_storage() -> dict:
+    """Снимок _state для записи в runtime_config.json: секреты шифруются, если задан
+    RAG_SECRET_KEY (иначе — как есть, прежнее поведение)."""
+    out = dict(_state)
+    if _get_cipher() is not None:
+        for k in list(out.keys()):
+            v = out.get(k)
+            if _is_secret_key(k) and isinstance(v, str) and v:
+                out[k] = _encrypt_secret(v)
+    return out
+
+
+def _persist() -> None:
+    """Единая запись конфигурации на диск (с шифрованием секретов at-rest)."""
+    _RUNTIME.write_text(json.dumps(_state_for_storage(), ensure_ascii=False, indent=2),
+                        encoding="utf-8")
 
 
 def public_settings() -> dict:
@@ -1336,8 +1443,7 @@ def update(changes: dict) -> dict:
                 _state[k] = _coerce(k, v)
             except (TypeError, ValueError):
                 continue
-        _RUNTIME.write_text(json.dumps(_state, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
+        _persist()
     if any(_before[k] != _state.get(k) for k in _model_keys):
         try:
             import retriever  # ленивый импорт — избегаем циклической зависимости
@@ -1378,6 +1484,5 @@ def set_mode(name: str) -> dict:
         _state["MODE"] = name
         for k, v in MODES[name]["flags"].items():
             _state[k] = v
-        _RUNTIME.write_text(json.dumps(_state, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
+        _persist()
     return public_settings()

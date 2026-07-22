@@ -174,6 +174,7 @@ def _drain(call, seconds: float = 0.3) -> None:
 def _on_call(call) -> None:
     """Колбэк pyVoIP на входящий звонок: ответить и вести диалог."""
     from sip_bridge import _stt, _answer, _rms, feedback_intent
+    from sip_dialog import DialogSession
     try:
         from pyVoIP.VoIP import CallState, InvalidStateError
     except Exception as e:
@@ -190,10 +191,9 @@ def _on_call(call) -> None:
     except Exception:
         aid = None
 
-    silence_ms = int(_cfg("SIP_SILENCE_MS", 700))
+    # VAD-настройки (SIP_SILENCE_MS/RMS, SIP_MAX_UTTER_SEC) читает DialogSession;
+    # здесь порог тишины нужен только для отладочного вывода пиковой громкости.
     silence_rms = float(_cfg("SIP_SILENCE_RMS", 500))
-    max_utter = float(_cfg("SIP_MAX_UTTER_SEC", 15))
-    need_silence = max(1, silence_ms // 20)
 
     caller = _caller_ext(call)
     if caller:
@@ -206,15 +206,57 @@ def _on_call(call) -> None:
         _play(call, _beep_u8())        # сигнал: «говорите»
         _drain(call, 0.2)
 
-        buf = bytearray()          # накапливаем уже в 16-бит (для STT)
-        voiced = False
-        sil = 0
-        started = 0.0
-        last_rid = 0               # id последнего ответа (для голосовой оценки)
-        await_comment = False      # ждём произнесённый комментарий
+        # Общая диалоговая логика (VAD, состояние фидбэка, ветвление good/bad/comment,
+        # обвязка heavy_slot внутри _stt/_answer/_tts_u8) — в DialogSession. Здесь только
+        # транспорт: чтение RTP-кадров pyVoIP (u8), приведение к 16-бит, проигрывание.
         dbg = bool(_cfg("SIP_DEBUG"))
-        _peak = 0.0
-        _dbg_t = time.time()
+        _peak = [0.0]
+        _dbg_t = [time.time()]
+
+        def _stage(stage, detail=None):
+            if aid is not None:
+                try:
+                    import activity
+                    activity.update(aid, stage=stage, detail=detail)
+                except Exception:
+                    pass
+
+        def _speak(text, beep=False, is_answer=False):
+            _play(call, _tts_u8(text))
+            if beep:
+                _play(call, _beep_u8())
+            _drain(call, 0.2 if beep else 0.3)
+            return False
+
+        def _on_frame(rms):
+            if not dbg:                                  # раз в ~2 c: пиковая громкость входа
+                return
+            _peak[0] = max(_peak[0], rms)
+            if time.time() - _dbg_t[0] > 2:
+                print(f"[sip-reg] вход: пик RMS={_peak[0]:.0f} (порог тишины {silence_rms:.0f})"
+                      + ("  — тишина/нет входящего звука!" if _peak[0] < 50 else ""))
+                _peak[0] = 0.0
+                _dbg_t[0] = time.time()
+
+        def _on_stt(pcm, q):
+            if dbg:
+                print(f"[sip-reg] распознано ({len(pcm)} байт): "
+                      + (repr(q) if q else "— пусто (речь не распознана)"))
+
+        def _on_answer(ans, rid, speak_text):
+            if dbg:
+                print(f"[sip-reg] ответ ({len(ans)} симв.), rid={rid}, озвучка "
+                      f"{'вкл' if _cfg('SIP_SPEAK_ANSWER', True) else 'выкл'}")
+
+        def _on_error(where, exc):
+            print(f"[sip-reg] {where}: {exc}")
+
+        session = DialogSession(
+            cfg=_cfg, rms=_rms, stt=_stt, answer=lambda q: _answer(q, caller=caller),
+            feedback_intent=feedback_intent, speak=_speak, set_stage=_stage,
+            on_frame=_on_frame, on_stt=_on_stt, on_answer=_on_answer, on_error=_on_error,
+            comment_prompt="Говорите комментарий после сигнала.", comment_prompt_beep=True)
+
         while call.state == CallState.ANSWERED and not _stop.is_set():
             try:
                 data = call.read_audio(_FRAME, False)   # unsigned 8-бит
@@ -226,96 +268,9 @@ def _on_call(call) -> None:
                 time.sleep(0.02)
                 continue
             data = _u8_to_s16(data)                      # → 16-бит для RMS/STT
-            rms = _rms(data)
-            if dbg:                                      # раз в ~2 c: пиковая громкость входа
-                _peak = max(_peak, rms)
-                if time.time() - _dbg_t > 2:
-                    print(f"[sip-reg] вход: пик RMS={_peak:.0f} (порог тишины {silence_rms:.0f})"
-                          + ("  — тишина/нет входящего звука!" if _peak < 50 else ""))
-                    _peak = 0.0
-                    _dbg_t = time.time()
-            if rms >= silence_rms:
-                if not voiced:
-                    started = time.time()
-                voiced = True
-                sil = 0
-                buf += data
-            elif voiced:
-                sil += 1
-                buf += data
-
-            too_long = voiced and (time.time() - started) > max_utter
-            if voiced and (sil >= need_silence or too_long):
-                pcm = bytes(buf)
-                buf = bytearray()
-                voiced = False
-                sil = 0
-                if aid is not None:
-                    try:
-                        import activity
-                        activity.update(aid, stage="распознавание")
-                    except Exception:
-                        pass
-                q = _stt(pcm)
-                if dbg:
-                    print(f"[sip-reg] распознано ({len(pcm)} байт): "
-                          + (repr(q) if q else "— пусто (речь не распознана)"))
-                if not q:
-                    continue
-
-                # 1) ждём произнесённый комментарий к последнему ответу
-                if await_comment and last_rid:
-                    try:
-                        import db
-                        db.set_comment(last_rid, q)
-                    except Exception as e:
-                        print(f"[sip-reg] комментарий: {e}")
-                    await_comment = False
-                    _play(call, _tts_u8("Комментарий сохранён. Спасибо."))
-                    _drain(call, 0.3)
-                    continue
-
-                # 2) голосовая обратная связь по предыдущему ответу
-                intent = feedback_intent(q) if last_rid else "ask"
-                if intent in ("good", "bad"):
-                    try:
-                        import db
-                        db.set_rating(last_rid, 1 if intent == "good" else -1)
-                    except Exception as e:
-                        print(f"[sip-reg] оценка: {e}")
-                    _play(call, _tts_u8("Спасибо, оценка сохранена. "
-                                        "Скажите «добавь комментарий», если хотите оставить отзыв."))
-                    _drain(call, 0.3)
-                    continue
-                if intent == "comment":
-                    await_comment = True
-                    _play(call, _tts_u8("Говорите комментарий после сигнала."))
-                    _play(call, _beep_u8())
-                    _drain(call, 0.2)
-                    continue
-
-                # 3) обычный вопрос
-                if aid is not None:
-                    try:
-                        import activity
-                        activity.update(aid, stage="ответ", detail=q[:60])
-                    except Exception:
-                        pass
-                ans, last_rid = _answer(q, caller=caller)
-                if not ans:
-                    ans = "Извините, не нашёл ответа в документах."
-                # по настройке: озвучить ответ модели или короткую отметку
-                if _cfg("SIP_SPEAK_ANSWER", True):
-                    speak = ans
-                else:
-                    speak = _cfg("SIP_ACK_PHRASE", "Ваш запрос принят и записан. Спасибо.")
-                apcm = _tts_u8(speak)
-                if dbg:
-                    print(f"[sip-reg] ответ ({len(ans)} симв.), rid={last_rid}, озвучка "
-                          f"{'вкл' if _cfg('SIP_SPEAK_ANSWER', True) else 'выкл'}, "
-                          f"TTS {len(apcm)} байт u8")
-                _play(call, apcm)
-                _drain(call, 0.3)
+            utter = session.feed(data)
+            if utter is not None:
+                session.process(utter)
             time.sleep(0.01)
     except InvalidStateError:
         pass

@@ -43,5 +43,34 @@ _stub(
 )
 # synonyms тянет БД (sqlite) — для тестов сборки промпта подсказки синонимов не нужны
 _stub("synonyms", hint=lambda q: "")
-# synonyms тянет БД (sqlite) — для тестов сборки промпта подсказки синонимов не нужны
-_stub("synonyms", hint=lambda q: "")
+
+# --- Лёгкие заглушки тяжёлых ML/utility-зависимостей ---------------------------
+# Нужны, чтобы импортировать чистые функции из retriever/ingest/calibrate без
+# установки моделей. setdefault-семантика (_stub не перезатирает уже импортированные
+# реальные пакеты), поэтому если numpy/пр. установлены — используется настоящий.
+class _DummyModel:  # общий безобидный синглтон для моделей
+    def __init__(self, *a, **k):
+        pass
+
+    def encode(self, *a, **k):
+        return []
+
+    def compute_score(self, *a, **k):
+        return []
+
+
+_stub("sentence_transformers", SentenceTransformer=_DummyModel)
+_stub("FlagEmbedding", FlagReranker=_DummyModel)
+
+
+class _DummyBM25:
+    def __init__(self, *a, **k):
+        pass
+
+    def get_scores(self, *a, **k):
+        return []
+
+
+_stub("rank_bm25", BM25Okapi=_DummyBM25)
+# tqdm: from tqdm import tqdm — прогресс-бар как прозрачная обёртка над итерируемым
+_stub("tqdm", tqdm=lambda it=None, *a, **k: (it if it is not None else []))

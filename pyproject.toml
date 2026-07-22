@@ -1,0 +1,55 @@
+# Конфигурация инструментов разработчика (ruff + pytest).
+#
+# ВАЖНО: проект — существующая кодовая база ~27k строк с намеренно длинными
+# строками и импортами после side-effect-инициализации. Поэтому lint-гейт CI
+# намеренно консервативен: репозиторный `ruff check .` ловит РЕАЛЬНЫЕ дефекты
+# (синтаксис, неопределённые имена, битые литералы, «голые» except), а не стиль.
+# Более строгий набор (E,F,I,B,C4,UP) применяется точечно к каталогу tests/ —
+# коду, который поддерживается в чистоте (см. CI-джобу lint и pre-commit).
+
+[project]
+name = "rag-chatbot"
+version = "0.0.0"
+description = "Корпоративный RAG-чатбот (FastAPI + Qdrant/Milvus + sentence-transformers)."
+requires-python = ">=3.10"
+
+# Тестовые зависимости для CI чистых тестов. Тяжёлые пакеты (torch,
+# sentence-transformers, qdrant, ...) НЕ ставятся — их подменяют заглушки в
+# tests/conftest.py. Ставить: `pip install -e ".[test]"` или `pip install pytest pyyaml`.
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<9",
+    "PyYAML>=6",       # нужен scripts/ci_check_yaml.py
+]
+
+# ------------------------------------------------------------------ ruff
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "windows_variant",
+    "docker_variant",
+    ".venv",
+    ".venv-xtts",
+    "build_inline.js",
+]
+
+[tool.ruff.lint]
+# Репозиторный гейт: только настоящие ошибки, которые обязаны падать всегда.
+#   E9  — синтаксис/отступы;   F63/F7/F82 — логические ошибки pyflakes;
+#   F811/F823 — переопределения/использование до присваивания;
+#   E711-E714 — сравнения с None/True через ==/is not;   E722 — голый except.
+select = ["E9", "F63", "F7", "F82", "F811", "F823", "E711", "E712", "E713", "E714", "E722"]
+
+# Тесты держим по более строгому набору (E,F,I,B,C4,UP) — задаётся отдельной
+# командой ruff в CI/pre-commit (ruff check tests/ --select ...), т.к. ruff не
+# поддерживает per-directory extend-select через конфиг.
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ------------------------------------------------------------------ pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Тесты не требуют плагинов и сети; conftest подкладывает лёгкие заглушки до импорта.

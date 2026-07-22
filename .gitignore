@@ -50,3 +50,6 @@ Thumbs.db
 
 # CI: собранный инлайн-JS для node --check
 build_inline.js
+
+.ruff_cache/
+.pytest_cache/

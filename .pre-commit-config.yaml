@@ -1,0 +1,45 @@
+# pre-commit хуки: линт/формат и базовая гигиена файлов.
+# Установка:  pip install pre-commit && pre-commit install
+# Разовый прогон по всем файлам:  pre-commit run --all-files
+#
+# Примечание: ruff-format по умолчанию отформатирует и легаси-файлы. Это
+# развесистая, но безопасная операция; при желании ограничьте область файлами
+# каталога tests/ (files: ^tests/).
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      # линт по конфигу pyproject.toml (репозиторный набор реальных ошибок)
+      - id: ruff
+        args: ["--fix"]
+      # более строгий линт именно тестов (тот же набор, что и в CI)
+      - id: ruff
+        name: ruff (strict, tests only)
+        args: ["--select", "E,F,I,B,C4,UP", "check"]
+        files: ^tests/.*\.py$
+      # автоформат (black-совместимый)
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+        # у compose-файлов бывают кастомные теги/множественные документы — не строжим
+        args: ["--allow-multiple-documents"]
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+
+  # Локальный хук: быстрые тесты перед коммитом (опционально; требует установленного pytest).
+  # Гоняет только чистые тесты из tests/ — без сети и тяжёлых моделей (заглушки в conftest).
+  - repo: local
+    hooks:
+      - id: pytest-fast
+        name: pytest (fast unit tests)
+        entry: python -m pytest -q tests/
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

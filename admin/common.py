@@ -127,3 +127,46 @@ def mem_invalidate(name: str | None = None) -> None:
             _MEM_CACHE.clear()
         else:
             _MEM_CACHE.pop(name, None)
+
+
+# --- классификация файлов и извлечение сводок (чистые функции, разделяемые доменами) ---
+# Раньше жили в admin_ops.py; вынесены сюда, т.к. их используют сразу несколько
+# вынесенных доменов (web_crawl, каталог документов) — единая точка без обратной
+# зависимости на admin_ops исключает циклический импорт.
+
+def _file_method(ext: str) -> str:
+    """Как из файла извлекается текст: транскрибация / OCR / спец-инструмент / прямой."""
+    ext = (ext or "").lower()
+    if not ext.startswith("."):
+        ext = "." + ext
+    if ext in _AV_EXTS:
+        return "transcribed"   # аудио/видео → Whisper
+    if ext in _OCR_EXTS:
+        return "ocr"           # изображения/RAW-фото → OCR
+    if ext in _TOOL_EXTS:
+        return "tool"          # DWG/STEP/IGES/.doc/.msg/архивы → спец-парсеры
+    return "text"              # PDF/DOCX/XLSX/… → прямое извлечение текста
+
+
+def _extract_summary(text: str) -> str:
+    """Достаёт машиночитаемую строку 'SUMMARY ...' из вывода задачи."""
+    for line in reversed((text or "").splitlines()):
+        if line.startswith("SUMMARY "):
+            return line[len("SUMMARY "):].strip()
+        if line.startswith("FATAL:"):
+            return line.strip()
+    return ""
+
+
+# путь к статистике времени индексации (rag/ingest_stats.json)
+_INGEST_STATS = Path(__file__).resolve().parent.parent / "ingest_stats.json"
+
+
+def _ingest_stats() -> dict:
+    """Время обработки файлов из последней индексации (ingest_stats.json)."""
+    if _INGEST_STATS.exists():
+        try:
+            return _json.loads(_INGEST_STATS.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}

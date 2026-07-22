@@ -17,10 +17,23 @@ try:
 except Exception:
     httpx = None
 
-# M25: сериализация read-modify-write списка ключей (api_keys в kv_store). Инкремент счётчика
-# вызовов и запись last в api_key_valid читают весь список, меняют элемент и сохраняют целиком —
-# без лока параллельные вызовы затирали бы правки друг друга (потеря инкрементов/новых ключей).
+# M25: _keys_lock сериализует read-modify-write ВСЕГО списка ключей (api_keys в kv_store) —
+# только для операций, реально меняющих список: create/revoke. Без лока параллельные
+# добавления/отзывы затирали бы друг друга (потеря новых ключей).
+#
+# M25 (доведение): горячий путь api_key_valid БОЛЬШЕ не переписывает весь список на каждый
+# запрос. Счётчик calls/last вынесен в ОТДЕЛЬНЫЙ per-key kv-ключ (api_key_stat:<id>), инкремент
+# идёт под локом только этого ключа (см. _bump_key_stat). Это снимает износ (перезапись всего
+# JSON-списка на каждую проверку) и потерю параллельных правок соседних ключей/самого списка.
+# Строго атомарного инкремента через db.kv_get/kv_set нет (это read-modify-write, не одна SQL-
+# операция), а db.py трогать нельзя — поэтому используется per-key лок; в пределах процесса это
+# корректно, конкуренция сведена к одному ключу (а не ко всему списку).
 _keys_lock = threading.Lock()
+
+# Per-key локи для инкремента счётчика вызовов: конкуренция только на конкретный api-key,
+# а не на общий список. Реестр локов защищён своим мета-локом.
+_stat_locks_meta = threading.Lock()
+_stat_locks: dict = {}
 
 # M23: переиспользуемый httpx-клиент с пулом keep-alive для веб-хуков (вместо нового
 # соединения на каждый вызов). Ленивое создание, закрытие при завершении процесса.
@@ -70,12 +83,63 @@ def _mask(key: str) -> str:
     return (key[:6] + "…" + key[-4:]) if key and len(key) > 12 else "…"
 
 
+# --- счётчик вызовов ключа: отдельный per-key kv-ключ (не трогаем общий список) ---
+
+def _stat_kv_key(key_id: str) -> str:
+    return f"api_key_stat:{key_id}"
+
+
+def _stat_lock(key_id: str) -> threading.Lock:
+    with _stat_locks_meta:
+        lk = _stat_locks.get(key_id)
+        if lk is None:
+            lk = threading.Lock()
+            _stat_locks[key_id] = lk
+        return lk
+
+
+def _stat_load(key_id: str) -> dict:
+    """{'calls': int, 'last': float|None} из per-key kv (пусто, если ещё не писали)."""
+    try:
+        raw = db.kv_get(_stat_kv_key(key_id))
+        d = json.loads(raw) if raw else {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _bump_key_stat(key_id: str) -> None:
+    """Инкремент calls и обновление last в отдельном per-key kv-ключе.
+
+    Не переписывает общий список api_keys → нет износа и потери параллельных правок
+    других ключей/списка. Инкремент — read-modify-write под локом ТОЛЬКО этого ключа
+    (строго атомарного incr в БД через kv нет, а db.py править нельзя); в пределах
+    процесса корректно, конкуренция сведена к одному api-key."""
+    if not key_id:
+        return
+    with _stat_lock(key_id):
+        d = _stat_load(key_id)
+        d["calls"] = int(d.get("calls", 0)) + 1
+        d["last"] = time.time()
+        try:
+            db.kv_set(_stat_kv_key(key_id), json.dumps(d, ensure_ascii=False))
+        except Exception:
+            pass
+
+
 def api_keys_list() -> list:
-    """Список ключей для UI (сам ключ маскирован)."""
-    return [{"id": k.get("id"), "label": k.get("label", ""), "ts": k.get("ts"),
-             "enabled": k.get("enabled", True), "masked": _mask(k.get("key", "")),
-             "calls": k.get("calls", 0), "last": k.get("last")}
-            for k in _keys_load()]
+    """Список ключей для UI (сам ключ маскирован).
+
+    calls/last берём из per-key kv-счётчика (_stat_*); фолбэк на устаревшие поля
+    внутри самого ключа — для ключей, созданных до выноса счётчика."""
+    out = []
+    for k in _keys_load():
+        st = _stat_load(k.get("id"))
+        out.append({"id": k.get("id"), "label": k.get("label", ""), "ts": k.get("ts"),
+                    "enabled": k.get("enabled", True), "masked": _mask(k.get("key", "")),
+                    "calls": int(st.get("calls", k.get("calls", 0)) or 0),
+                    "last": st.get("last", k.get("last"))})
+    return out
 
 
 def api_key_create(label: str = "") -> dict:
@@ -97,32 +161,30 @@ def api_key_revoke(key_id: str) -> dict:
         n = len(items)
         items = [k for k in items if k.get("id") != key_id]
         _keys_save(items)
+    try:
+        db.kv_del(_stat_kv_key(key_id))   # убираем осиротевший per-key счётчик
+    except Exception:
+        pass
     return {"ok": True, "removed": n - len(items)}
 
 
 def api_key_valid(key: str) -> bool:
     if not key:
         return False
-    # M25: весь цикл load → mutate → save под локом, иначе конкурентные проверки затирают
-    # правки друг друга (теряются инкременты calls и параллельно созданные/изменённые ключи).
-    # FIXME(review): при высокой нагрузке лучше вынести счётчик calls/last в атомарный апдейт
-    # в БД (db.kv или отдельная таблица), не переписывая весь JSON-список ключей на каждый запрос.
-    with _keys_lock:
-        items = _keys_load()
-        hit = None
-        for k in items:
-            if k.get("key") == key and k.get("enabled", True):
-                hit = k
-                break
-        if not hit:
-            return False
-        try:
-            hit["calls"] = int(hit.get("calls", 0)) + 1
-            hit["last"] = time.time()
-            _keys_save(items)
-        except Exception:
-            pass
-        return True
+    # M25 (доведение): проверка ключа — по СНИМКУ списка без мутации (одиночный
+    # kv_get + json.loads, тор-ридов нет), поэтому НЕ переписываем весь список api_keys
+    # на каждый запрос и не затираем параллельные create/revoke/чужие счётчики.
+    hit = None
+    for k in _keys_load():
+        if k.get("key") == key and k.get("enabled", True):
+            hit = k
+            break
+    if not hit:
+        return False
+    # Счётчик вызовов/last — атомарный инкремент в отдельном per-key kv-ключе
+    # (конкуренция только на этот ключ), не трогая общий список.
+    _bump_key_stat(hit.get("id"))
+    return True
 
 
 # ------------------------------------------------------------------ веб-хуки

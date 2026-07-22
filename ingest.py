@@ -258,7 +258,30 @@ def already_indexed(source: str, fhash: str) -> bool:
     return len(pts) > 0
 
 
+# Детерминированный id точки: uuid5 от «source#<номер чанка>». Схема и namespace
+# ЕДИНЫ с tg_train.index_path (uuid.NAMESPACE_URL, шаблон f"{source}#{i}") — один и тот
+# же source даёт одни и те же id в обоих путях индексации. Благодаря стабильным id
+# переиндексация ПЕРЕЗАПИСЫВАЕТ чанки 0..M-1 на месте (без дублей даже если delete
+# не сработал), а не плодит новые точки со случайными uuid4.
+_ID_NAMESPACE = uuid.NAMESPACE_URL
+
+
+def _point_id(source: str, chunk_idx: int) -> str:
+    return str(uuid.uuid5(_ID_NAMESPACE, f"{source}#{chunk_idx}"))
+
+
 def delete_old_versions(source: str):
+    """Снять прежние точки документа перед перезаписью.
+
+    При детерминированных id (uuid5 source#idx) upsert перезаписывает совпадающие
+    чанки на месте, поэтому отдельный «проход по хвосту» не нужен: полная чистка по
+    source здесь одним вызовом решает обе задачи —
+      • убирает «хвост» chunk_idx>=M при сокращении числа чанков (M<N);
+      • мигрирует старые точки со случайными uuid4 id (другая схема id их не перезапишет).
+    Фильтр фасада — только равенство (диапазон chunk_idx>=M бэкенды не поддерживают),
+    поэтому целимся по source целиком; окно между delete и upsert минимизируем wait
+    (см. _embed_upsert). Вызывается ТОЛЬКО после успешного парсинга — сбой парсинга не
+    должен стирать уже проиндексированный документ."""
     vectorstore.delete({"source": source})
 
 
@@ -457,9 +480,10 @@ def main():
                 print(f"    {source}: {int(done * 100 / len(points))}% "
                       f"({done}/{len(points)} чанков)", flush=True)
             vectorstore.upsert([
-                {"id": str(uuid.uuid4()), "vector": vec.tolist(),
+                {"id": _point_id(source, i + j), "vector": vec.tolist(),
                  "payload": {
                      "text": p["chunk"], "source": source, "page": p["page"],
+                     "chunk_idx": i + j,
                      "ftype": ftype, "fhash": fhash,
                      "indexed_at": time.strftime("%Y-%m-%d"),
                      **({"parent": _parent_text(i + j)} if _parent_on else {}),
@@ -468,8 +492,10 @@ def main():
                      **({"vision_desc": True} if p.get("vision_desc") else {}),
                      **md,
                  }}
+                # wait=None → берём QDRANT_UPSERT_WAIT (по умолч. True): обратное давление
+                # + минимизирует окно между delete_old_versions() и записью новых точек.
                 for j, (p, vec) in enumerate(zip(batch, vectors))
-            ], wait=False)
+            ], wait=None)
         embed_ms = int((time.time() - t_embed) * 1000)
         n_new += 1
         n_chunks += len(points)
@@ -640,11 +666,10 @@ def main():
                     n_skip += 1
                     continue
                 # Удаляем старые версии ТОЛЬКО после успешного парсинга (как в _consume),
-                # иначе сбой парсинга стёр бы уже проиндексированный документ.
-                # FIXME(review): точки пишутся со случайными uuid4 id (см. _embed_upsert),
-                # поэтому нужен явный delete по source. Детерминированные id
-                # (uuid5 от source+chunk_idx) убрали бы гонку delete→upsert, но при
-                # изменении числа чанков оставляли бы «хвост» — нужен отдельный проход.
+                # иначе сбой парсинга стёр бы уже проиндексированный документ. id теперь
+                # детерминированы (uuid5 source#idx), поэтому чанки 0..M-1 перезапишутся
+                # на месте без дублей; delete по source снимает «хвост» и старые uuid4-точки
+                # (подробнее — в delete_old_versions).
                 delete_old_versions(source)
                 _embed_upsert(source, fhash, points, path.suffix.lower().lstrip("."),
                               meta_path, parse_ms)

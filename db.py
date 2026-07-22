@@ -14,6 +14,7 @@ kv_store приёмника (для переносимости между хос
 """
 from __future__ import annotations
 import json
+import queue
 import sqlite3
 import threading
 import time as _time
@@ -145,13 +146,13 @@ def _set_autocommit(dialect: str, conn, value: bool) -> None:
         pass
 
 
-# --- Кэш соединения в threadlocal (M20): переиспользуем соединение внутри потока,
-# чтобы не открывать новое на каждый запрос (особенно дорого для MySQL/PostgreSQL).
+# --- Кэш соединения в threadlocal (M20): для sqlite переиспользуем одно соединение
+# на поток (локальный файл, запись сериализуется _LOCK — пул не нужен и не помог бы).
 _local = threading.local()
 
 
 def _ping(dialect: str, conn) -> bool:
-    """Живо ли соединение (для повторного использования из кэша)."""
+    """Живо ли соединение (для повторного использования из кэша/пула)."""
     try:
         c = conn.cursor()
         c.execute("SELECT 1")
@@ -166,9 +167,8 @@ def _ping(dialect: str, conn) -> bool:
 
 
 def _get_cached_conn(dialect: str):
-    """Соединение из threadlocal-кэша (или новое) с реконнектом по ping.
-    FIXME(review): это per-thread кэш, а не пул; транзакционные функции
-    (copy_all/catalog_*_pg) намеренно открывают собственные соединения."""
+    """Sqlite-соединение из threadlocal-кэша (или новое) с реконнектом по ping.
+    Только для sqlite: postgres/mysql обслуживаются ограниченным пулом (_pool_*)."""
     key = _norm(dialect)
     conn = getattr(_local, "conn", None)
     ckey = getattr(_local, "conn_key", None)
@@ -186,23 +186,170 @@ def _get_cached_conn(dialect: str):
     return d, conn
 
 
+# --- Ограниченный пул соединений (доведение M20) для внешних СУБД. ---
+# Threadlocal-кэш давал по соединению на поток: при большом числе воркеров (пул
+# Telegram, web, ingest) число открытых соединений к серверу росло неограниченно.
+# Пул ограничивает его сверху величиной DB_POOL_SIZE (на каждый диалект). Соединение
+# берётся из пула (или создаётся, пока не достигнут предел; иначе ждём освобождения),
+# проверяется ping при выдаче, реконнектится при сбое и возвращается в пул в finally.
+# Для sqlite пул не используется (один локальный файл; см. _get_cached_conn).
+#
+# FIXME(review): размер пула фиксируется при первом обращении к диалекту — смена
+# DB_POOL_SIZE в рантайме вступит в силу только после перезапуска процесса.
+# FIXME(review): транзакционные функции (init/copy_all/migrate/_backend_detail/
+# test_connection) намеренно открывают собственные соединения ВНЕ пула.
+_DEFAULT_POOL_SIZE = 5
+_POOL_LOCK = threading.Lock()
+_POOLS: dict[str, "queue.Queue"] = {}     # диалект -> очередь свободных соединений
+_POOL_COUNTS: dict[str, int] = {}         # диалект -> число «живущих» соединений
+_POOL_MAX: dict[str, int] = {}            # диалект -> зафиксированный предел
+
+
+def _pool_size() -> int:
+    try:
+        n = int(_settings().get("DB_POOL_SIZE") or _DEFAULT_POOL_SIZE)
+    except Exception:
+        n = _DEFAULT_POOL_SIZE
+    return n if n >= 1 else 1
+
+
+def _pool_wait() -> float:
+    """Сколько секунд ждать освобождения соединения, когда пул исчерпан."""
+    try:
+        n = float(_settings().get("DB_POOL_TIMEOUT") or 30)
+    except Exception:
+        n = 30.0
+    return n if n > 0 else 30.0
+
+
+def _pool_for(key: str) -> "queue.Queue":
+    q = _POOLS.get(key)
+    if q is None:
+        with _POOL_LOCK:
+            q = _POOLS.get(key)
+            if q is None:
+                size = _pool_size()
+                q = queue.Queue(maxsize=size)
+                _POOLS[key] = q
+                _POOL_COUNTS[key] = 0
+                _POOL_MAX[key] = size
+    return q
+
+
+def _pool_acquire(dialect: str):
+    """Взять соединение из пула диалекта. Возвращает (dialect, conn, from_pool).
+    from_pool=False — «переливное» разовое соединение (пул исчерпан дольше таймаута);
+    вызывающий закрывает его, а не возвращает в пул."""
+    key = _norm(dialect)
+    q = _pool_for(key)
+    maxn = _POOL_MAX.get(key, _DEFAULT_POOL_SIZE)
+    deadline = _time.monotonic() + _pool_wait()
+    while True:
+        conn = None
+        try:
+            conn = q.get_nowait()
+        except queue.Empty:
+            conn = None
+        if conn is not None:
+            if _ping(key, conn):
+                return key, conn, True
+            # мёртвое соединение из пула: закрыть, уменьшить счётчик, попробовать снова
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with _POOL_LOCK:
+                _POOL_COUNTS[key] = max(0, _POOL_COUNTS.get(key, 0) - 1)
+            continue
+        # свободных нет — создаём новое, пока не достигнут предел
+        create = False
+        with _POOL_LOCK:
+            if _POOL_COUNTS.get(key, 0) < maxn:
+                _POOL_COUNTS[key] = _POOL_COUNTS.get(key, 0) + 1
+                create = True
+        if create:
+            try:
+                d, conn = _connect_for(key)
+                return d, conn, True
+            except Exception:
+                with _POOL_LOCK:
+                    _POOL_COUNTS[key] = max(0, _POOL_COUNTS.get(key, 0) - 1)
+                raise
+        # предел достигнут — ждём возврата чужого соединения
+        timeout = deadline - _time.monotonic()
+        if timeout <= 0:
+            # FIXME(review): пул исчерпан дольше DB_POOL_TIMEOUT — открываем разовое
+            # соединение вне пула (закроется как временное), чтобы не зависнуть навсегда.
+            d, conn = _connect_for(key)
+            return d, conn, False
+        try:
+            conn = q.get(timeout=min(timeout, 1.0))
+        except queue.Empty:
+            continue
+        if _ping(key, conn):
+            return key, conn, True
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _POOL_LOCK:
+            _POOL_COUNTS[key] = max(0, _POOL_COUNTS.get(key, 0) - 1)
+        continue
+
+
+def _pool_release(dialect: str, conn, broken: bool = False) -> None:
+    """Вернуть соединение в пул (или закрыть, если оно битое/пул переполнен)."""
+    if conn is None:
+        return
+    key = _norm(dialect)
+    q = _pool_for(key)
+    if broken:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _POOL_LOCK:
+            _POOL_COUNTS[key] = max(0, _POOL_COUNTS.get(key, 0) - 1)
+        return
+    try:
+        q.put_nowait(conn)
+    except queue.Full:
+        # переполнение (при корректном учёте не случается) — закрываем
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _POOL_LOCK:
+            _POOL_COUNTS[key] = max(0, _POOL_COUNTS.get(key, 0) - 1)
+
+
 @contextmanager
 def _cursor(dialect: str | None = None, conn=None):
     own = conn is None
-    tmp = False
+    tmp = False          # временное соединение — закрыть в finally
+    pooled = False       # соединение из пула — вернуть в пул в finally
+    set_busy = False     # этот вызов выставил _local.busy (значит он и снимает)
     if own:
-        d0 = dialect or _dialect()
+        d0 = _norm(dialect or _dialect())
         if getattr(_local, "busy", False):
             # вложенный вызов _cursor в том же потоке: берём отдельное временное
             # соединение, чтобы не делить курсоры на одном соединении (для MySQL/PG
-            # это «commands out of sync»). Кэшируем только «верхний» вызов.
+            # это «commands out of sync»). Пул/кэш занимает только «верхний» вызов.
             dialect, conn = _connect_for(d0)
             tmp = True
-        else:
+        elif d0 == "sqlite":
             dialect, conn = _get_cached_conn(d0)
             _local.busy = True
+            set_busy = True
+        else:
+            dialect, conn, from_pool = _pool_acquire(d0)
+            pooled = from_pool
+            tmp = not from_pool      # «переливное» соединение — закрыть, а не в пул
+            _local.busy = True
+            set_busy = True
     _t0 = _time.perf_counter()
     _ok = True
+    _broken = False
     try:
         cur = _mk_cursor(dialect, conn)
         yield dialect, conn, cur
@@ -211,16 +358,23 @@ def _cursor(dialect: str | None = None, conn=None):
     except Exception:
         _ok = False
         if own and not tmp:
-            # откатываем незавершённую транзакцию в кэшируемом соединении, иначе
-            # следующий запрос в этом потоке унаследует битую/открытую транзакцию
+            # откатываем незавершённую транзакцию в удерживаемом соединении, иначе
+            # следующий запрос унаследует битую/открытую транзакцию
             try:
                 conn.rollback()
             except Exception:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                _local.conn = None
+                _broken = True           # для пула — не возвращать, закрыть
+                if dialect == "sqlite":
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    _local.conn = None
+        elif own and tmp:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise
     finally:
         try:
@@ -229,9 +383,11 @@ def _cursor(dialect: str | None = None, conn=None):
                            (_time.perf_counter() - _t0) * 1000.0, _ok)
         except Exception:
             pass
-        if own and not tmp:
-            _local.busy = False           # кэшируемое соединение НЕ закрываем
-        if tmp:
+        if own and set_busy:
+            _local.busy = False           # sqlite-кэш НЕ закрываем и НЕ возвращаем
+        if pooled:
+            _pool_release(dialect, conn, broken=_broken)
+        elif own and tmp:
             try:
                 conn.close()
             except Exception:
@@ -495,9 +651,161 @@ def _ddl(d: str) -> list[str]:
     ]
 
 
+# ===================== Версионирование схемы =====================
+# Схема развивается нумерованными шагами MIGRATIONS = [(version, fn), ...]. Каждая
+# fn(dd, cur) выполняет DDL своего шага ИДЕМПОТЕНТНО (CREATE TABLE IF NOT EXISTS,
+# ALTER ... в try/except): это позволяет принять уже существующую «живую» БД как
+# baseline — недостающие шаги применяются поверх, не трогая данные. init() читает
+# текущую версию (kv_store, ключ 'schema_version'), применяет все шаги с номером
+# больше неё в ОДНОЙ транзакции и записывает новую версию. Фактическая схема здесь
+# не меняется — прежние DDL лишь разложены по версиям.
+#
+# КАК ДОБАВИТЬ ШАГ МИГРАЦИИ:
+#   1) напишите def _migration_N(dd, cur), выполняющий ТОЛЬКО новый DDL
+#      идемпотентно (ADD COLUMN в try/except, CREATE ... IF NOT EXISTS);
+#   2) допишите (N, _migration_N) в конец MIGRATIONS (N = предыдущий + 1);
+#   3) НЕ меняйте уже выпущенные шаги — только добавляйте новые с бóльшим номером.
+_SCHEMA_VERSION_KEY = "schema_version"
+
+
+def _migration_1_base(dd, cur) -> None:
+    """v1: базовые таблицы (CREATE TABLE IF NOT EXISTS)."""
+    for stmt in _ddl(dd):
+        try:
+            cur.execute(stmt)
+        except Exception as e:
+            print(f"[db] migrate v1 {dd}: {e}")
+
+
+def _migration_2_columns(dd, cur) -> None:
+    """v2: доращивание колонок для баз, созданных ранними версиями (идемпотентно)."""
+    if dd == "sqlite":
+        for col in ("rating INTEGER", "retrieve_ms INTEGER", "gen_ms INTEGER",
+                    "session_id TEXT", "comment TEXT"):
+            try:
+                cur.execute(f"ALTER TABLE requests ADD COLUMN {col}")
+            except Exception:
+                pass
+    # миграции колонок doc_catalog (хранение файлов целиком) — все диалекты
+    _blob = {"mysql": "LONGBLOB", "postgresql": "BYTEA", "sqlite": "BLOB"}[dd]
+    _txt = {"mysql": "VARCHAR(512)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    _sha = {"mysql": "VARCHAR(64)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    for _c, _t in (("fname", _txt), ("sha256", _sha), ("content", _blob),
+                   ("content_oid", "BIGINT")):
+        try:
+            cur.execute(f"ALTER TABLE doc_catalog ADD COLUMN {_c} {_t}")
+        except Exception:
+            pass
+    # миграция: колонка kind для наборов автокалибровки (старые базы)
+    _kind_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    try:
+        cur.execute(f"ALTER TABLE calib_sets ADD COLUMN kind {_kind_t}")
+    except Exception:
+        pass
+    # миграция: обучение пользователей Телеграм (старые базы)
+    _mode_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    _emp_t = {"mysql": "VARCHAR(255)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    for _c, _t in (("can_train", "INTEGER"), ("mode", _mode_t),
+                   ("emp_email", _emp_t), ("emp_name", _emp_t), ("emp_info", _emp_t)):
+        try:
+            cur.execute(f"ALTER TABLE tg_users ADD COLUMN {_c} {_t}")
+        except Exception:
+            pass
+    # миграция: оценка и комментарий к ответам (веб и Телеграм; старые базы)
+    _cmt_t = {"mysql": "MEDIUMTEXT", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    for _c, _t in (("rating", "INTEGER"), ("comment", _cmt_t)):
+        try:
+            cur.execute(f"ALTER TABLE tg_requests ADD COLUMN {_c} {_t}")
+        except Exception:
+            pass
+    try:
+        cur.execute(f"ALTER TABLE requests ADD COLUMN comment {_cmt_t}")
+    except Exception:
+        pass
+    # миграция: текст ответа в журнале веб-чата (старые базы)
+    _ans_t = {"mysql": "LONGTEXT", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    try:
+        cur.execute(f"ALTER TABLE requests ADD COLUMN answer {_ans_t}")
+    except Exception:
+        pass
+    # миграция: канал запроса (web/voip) — чтобы различать веб-чат и звонки
+    _ch_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    try:
+        cur.execute(f"ALTER TABLE requests ADD COLUMN channel {_ch_t}")
+    except Exception:
+        pass
+    # миграция: VoIP — добавочный номер (caller) и подпись сотрудника (username)
+    _cl_t = {"mysql": "VARCHAR(64)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    _un_t = {"mysql": "VARCHAR(255)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
+    for _c, _t in (("caller", _cl_t), ("username", _un_t)):
+        try:
+            cur.execute(f"ALTER TABLE requests ADD COLUMN {_c} {_t}")
+        except Exception:
+            pass
+
+
+def _migration_3_indexes(dd, cur) -> None:
+    """v3: индексы под частые выборки (идемпотентно). MySQL до 8.0 не знает
+    «CREATE INDEX IF NOT EXISTS» — на повторном запуске отдаст «duplicate key»,
+    его глушим через try/except (у каждого индекса свой try)."""
+    _if = "" if dd == "mysql" else "IF NOT EXISTS "
+    _idx = [
+        (f"CREATE INDEX {_if}idx_req_session ON requests(session_id)"),
+        (f"CREATE INDEX {_if}idx_req_day ON requests(day)"),
+        (f"CREATE INDEX {_if}idx_req_chan_caller ON requests(channel, caller)"),
+        (f"CREATE INDEX {_if}idx_tgr_chat ON tg_requests(chat_id)"),
+        (f"CREATE INDEX {_if}idx_tgr_day ON tg_requests(day)"),
+    ]
+    for stmt in _idx:
+        try:
+            cur.execute(stmt)
+        except Exception:
+            pass
+
+
+# Baseline = максимальный номер здесь (текущее состояние схемы). Существующая живая
+# БД без записанной версии примет все шаги идемпотентно и застолбит эту версию.
+MIGRATIONS = [
+    (1, _migration_1_base),
+    (2, _migration_2_columns),
+    (3, _migration_3_indexes),
+]
+
+
+def _schema_version_get(dd, cur) -> int:
+    """Текущая версия схемы из kv_store (0 — если ещё не записана / нет таблицы)."""
+    try:
+        cur.execute(_ph("SELECT v FROM kv_store WHERE k=?", dd), (_SCHEMA_VERSION_KEY,))
+        r = cur.fetchone()
+        if not r:
+            return 0
+        val = r["v"] if isinstance(r, dict) else r[0]
+        return int(val)
+    except Exception:
+        return 0
+
+
+def schema_version(dialect: str | None = None) -> int:
+    """Публичная справка: текущая версия схемы активного (или указанного) бэкенда."""
+    d = _norm(dialect or _dialect())
+    try:
+        dd, conn = _connect_for(d)
+    except Exception:
+        return 0
+    try:
+        cur = _mk_cursor(dd, conn)
+        return _schema_version_get(dd, cur)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def init(dialect: str | None = None) -> None:
-    """Создать таблицы для указанного (или текущего) бэкенда. Идемпотентно и
-    устойчиво к недоступности внешней СУБД (не валит старт приложения)."""
+    """Привести схему указанного (или текущего) бэкенда к последней версии, применив
+    недостающие шаги MIGRATIONS. Идемпотентно и устойчиво к недоступности внешней
+    СУБД (не валит старт приложения)."""
     d = _norm(dialect or _dialect())
     try:
         dd, conn = _connect_for(d)
@@ -506,93 +814,32 @@ def init(dialect: str | None = None) -> None:
         return
     try:
         cur = _mk_cursor(dd, conn)
-        for stmt in _ddl(dd):
+        # kv_store нужен для чтения/записи версии — гарантируем его первым шагом (v1
+        # его и создаёт; на пустой БД версия ещё 0, поэтому шаг применится).
+        current = _schema_version_get(dd, cur)
+        target = MIGRATIONS[-1][0] if MIGRATIONS else 0
+        if current >= target:
+            return
+        # применяем недостающие шаги. Для sqlite оборачиваем в явную транзакцию
+        # (commit в конце); pg/mysql в autocommit — DDL там фиксируется по-своему,
+        # но каждый шаг идемпотентен, поэтому частичное применение безопасно.
+        for ver, fn in MIGRATIONS:
+            if ver <= current:
+                continue
             try:
-                cur.execute(stmt)
+                fn(dd, cur)
+                _schema_version_set(dd, cur, ver)
+                if dd == "sqlite":
+                    conn.commit()
+                current = ver
             except Exception as e:
-                print(f"[db] init {dd}: {e}")
-        if dd == "sqlite":
-            # миграции колонок для старых баз (идемпотентно)
-            for col in ("rating INTEGER", "retrieve_ms INTEGER", "gen_ms INTEGER",
-                        "session_id TEXT", "comment TEXT"):
-                try:
-                    cur.execute(f"ALTER TABLE requests ADD COLUMN {col}")
-                except Exception:
-                    pass
-        # миграции колонок doc_catalog (хранение файлов целиком) — все диалекты
-        _blob = {"mysql": "LONGBLOB", "postgresql": "BYTEA", "sqlite": "BLOB"}[dd]
-        _txt = {"mysql": "VARCHAR(512)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        _sha = {"mysql": "VARCHAR(64)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        for _c, _t in (("fname", _txt), ("sha256", _sha), ("content", _blob),
-                       ("content_oid", "BIGINT")):
-            try:
-                cur.execute(f"ALTER TABLE doc_catalog ADD COLUMN {_c} {_t}")
-            except Exception:
-                pass
-        # миграция: колонка kind для наборов автокалибровки (старые базы)
-        _kind_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        try:
-            cur.execute(f"ALTER TABLE calib_sets ADD COLUMN kind {_kind_t}")
-        except Exception:
-            pass
-        # миграция: обучение пользователей Телеграм (старые базы)
-        _mode_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        _emp_t = {"mysql": "VARCHAR(255)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        for _c, _t in (("can_train", "INTEGER"), ("mode", _mode_t),
-                       ("emp_email", _emp_t), ("emp_name", _emp_t), ("emp_info", _emp_t)):
-            try:
-                cur.execute(f"ALTER TABLE tg_users ADD COLUMN {_c} {_t}")
-            except Exception:
-                pass
-        # миграция: оценка и комментарий к ответам (веб и Телеграм; старые базы)
-        _cmt_t = {"mysql": "MEDIUMTEXT", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        for _c, _t in (("rating", "INTEGER"), ("comment", _cmt_t)):
-            try:
-                cur.execute(f"ALTER TABLE tg_requests ADD COLUMN {_c} {_t}")
-            except Exception:
-                pass
-        try:
-            cur.execute(f"ALTER TABLE requests ADD COLUMN comment {_cmt_t}")
-        except Exception:
-            pass
-        # миграция: текст ответа в журнале веб-чата (старые базы)
-        _ans_t = {"mysql": "LONGTEXT", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        try:
-            cur.execute(f"ALTER TABLE requests ADD COLUMN answer {_ans_t}")
-        except Exception:
-            pass
-        # миграция: канал запроса (web/voip) — чтобы различать веб-чат и звонки
-        _ch_t = {"mysql": "VARCHAR(16)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        try:
-            cur.execute(f"ALTER TABLE requests ADD COLUMN channel {_ch_t}")
-        except Exception:
-            pass
-        # миграция: VoIP — добавочный номер (caller) и подпись сотрудника (username)
-        _cl_t = {"mysql": "VARCHAR(64)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        _un_t = {"mysql": "VARCHAR(255)", "postgresql": "TEXT", "sqlite": "TEXT"}[dd]
-        for _c, _t in (("caller", _cl_t), ("username", _un_t)):
-            try:
-                cur.execute(f"ALTER TABLE requests ADD COLUMN {_c} {_t}")
-            except Exception:
-                pass
-        # индексы под частые выборки (идемпотентно). MySQL до 8.0 не знает
-        # «CREATE INDEX IF NOT EXISTS» — на повторном запуске отдаст «duplicate key»,
-        # его глушим через try/except (у каждого индекса свой try).
-        _if = "" if dd == "mysql" else "IF NOT EXISTS "
-        _idx = [
-            (f"CREATE INDEX {_if}idx_req_session ON requests(session_id)"),
-            (f"CREATE INDEX {_if}idx_req_day ON requests(day)"),
-            (f"CREATE INDEX {_if}idx_req_chan_caller ON requests(channel, caller)"),
-            (f"CREATE INDEX {_if}idx_tgr_chat ON tg_requests(chat_id)"),
-            (f"CREATE INDEX {_if}idx_tgr_day ON tg_requests(day)"),
-        ]
-        for stmt in _idx:
-            try:
-                cur.execute(stmt)
-            except Exception:
-                pass
-        if dd == "sqlite":
-            conn.commit()
+                print(f"[db] init {dd}: шаг миграции v{ver}: {e}")
+                if dd == "sqlite":
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                break
     finally:
         try:
             conn.close()
@@ -600,7 +847,8 @@ def init(dialect: str | None = None) -> None:
             pass
 
 
-init()
+def _schema_version_set(dd, cur, v: int) -> None:
+    _kv_set(dd, cur, _SCHEMA_VERSION_KEY, str(int(v)))
 
 
 # ===================== Веб-чат: журнал и аналитика =====================
@@ -2322,3 +2570,8 @@ def api_hook_delete(hook_id: int) -> bool:
     n = _exec("DELETE FROM api_hooks WHERE id=?", (int(hook_id),))
     _bump()
     return n > 0
+
+
+# Инициализация схемы при импорте модуля. Вызывается в конце файла, когда все
+# помощники (_kv_set/_ph/_schema_version_set и т. д.) уже определены.
+init()

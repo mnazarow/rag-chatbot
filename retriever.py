@@ -57,8 +57,13 @@ def reset_models() -> None:
 def _rerank(pairs):
     """Реранк пар [вопрос, текст] с замером для дашборда."""
     import metrics
+    import time as _t
+    _t0 = _t.perf_counter()
     with metrics.timer("rerank"):
-        return _reranker().compute_score(pairs, normalize=True)
+        res = _reranker().compute_score(pairs, normalize=True)
+    metrics.observe("rag_rerank_seconds", _t.perf_counter() - _t0)
+    metrics.inc("rag_rerank_pairs_total", len(pairs) if isinstance(pairs, list) else 1)
+    return res
 
 
 def _tokenize(text: str) -> list[str]:
@@ -221,16 +226,23 @@ def _embed_query(question: str):
     except Exception:
         nq = (question or "").strip().lower()
     lkey = (model, nq)
+    import metrics
     with _QEMB_LOCK:
         v = _QEMB_LRU.get(lkey)
         if v is not None:
             _QEMB_LRU.move_to_end(lkey)
+            metrics.inc("rag_qemb_cache_total", result="lru_hit")
             return v
+    metrics.inc("rag_qemb_cache_total", result="lru_miss")
 
     def _enc():
-        import metrics
+        import time as _t
+        _t0 = _t.perf_counter()
         with metrics.timer("embed"):
-            return _embedder().encode([question], normalize_embeddings=True)[0].tolist()
+            vec = _embedder().encode([question], normalize_embeddings=True)[0].tolist()
+        metrics.observe("rag_embed_seconds", _t.perf_counter() - _t0)
+        metrics.inc("rag_embed_computed_total")
+        return vec
 
     try:
         import cache
@@ -248,10 +260,14 @@ def _embed_query(question: str):
 
 def _dense_search(qvec, qfilter):
     import metrics
+    import time as _t
     qv = qvec.tolist() if hasattr(qvec, "tolist") else qvec
+    _t0 = _t.perf_counter()
     with metrics.timer("qdrant"):
         res = vectorstore.search(qv, settings.get("TOP_K_RETRIEVE"), flt=qfilter,
                                  with_payload=True)
+    metrics.observe("rag_dense_search_seconds", _t.perf_counter() - _t0)
+    metrics.inc("rag_dense_search_total", filtered=("yes" if qfilter else "no"))
     out = []
     for p in res:
         pl = p.get("payload") or {}
@@ -273,6 +289,8 @@ def search(question: str, filters: dict | None = None,
     наполняется этапами конвейера {key, ms, info} для анимации в интерфейсе."""
     if auto_filter is None:
         auto_filter = settings.get("AUTO_FILTER")
+    import metrics
+    metrics.inc("rag_retriever_search_total")
     try:
         import synonyms
         syn_sig = synonyms.signature()
@@ -294,9 +312,11 @@ def search(question: str, filters: dict | None = None,
     except Exception:
         hit = None
     if hit is not None:
+        metrics.inc("rag_search_cache_total", result="hit")
         if trace is not None:
             trace.append({"key": "cache", "ms": 0, "info": {"hit": True}})
         return hit
+    metrics.inc("rag_search_cache_total", result="miss")
     res = _search_raw(question, filters, auto_filter, trace)
     try:
         cache.set_json(ckey, int(settings.get("CACHE_SEARCH_TTL") or 21600), res, ns="index")

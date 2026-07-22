@@ -30,6 +30,11 @@ _local_active: dict[str, float] = {}
 _local_wait: dict[str, float] = {}
 
 
+def _log():
+    import obs
+    return obs.get_logger("llm_queue")
+
+
 def _redis():
     try:
         import cache
@@ -294,7 +299,13 @@ def _try_acquire(c, tok: str, m: int) -> bool:
             return int(c.eval(_ACQ_LUA, 1, _ACTIVE, now, m, now + _HOLD_TTL, tok)) == 1
         except Exception as e:
             # H7: не выдаём токен из локального счётчика — иначе обход лимита
-            print(f"[llmq] Redis деградация в _try_acquire ({e}) — слот не выдан")
+            try:
+                import metrics
+                metrics.inc("rag_llmq_degraded_total", backend="redis")
+            except Exception:
+                pass
+            _log().warning("Redis деградация в _try_acquire — слот не выдан: %s", e,
+                           extra={"backend": "redis"})
             return False
     conn = _sql()
     if conn is not None:
@@ -322,9 +333,21 @@ def _try_acquire(c, tok: str, m: int) -> bool:
                     time.sleep(0.05 * (_attempt + 1))   # backoff и ретрай BEGIN IMMEDIATE
                     continue
                 # H7: прочий сбой SQLite — не проваливаемся в локальный обход лимита
-                print(f"[llmq] SQLite деградация в _try_acquire ({e}) — слот не выдан")
+                try:
+                    import metrics
+                    metrics.inc("rag_llmq_degraded_total", backend="sqlite")
+                except Exception:
+                    pass
+                _log().warning("SQLite деградация в _try_acquire — слот не выдан: %s", e,
+                               extra={"backend": "sqlite"})
                 return False
-        print("[llmq] SQLite BEGIN IMMEDIATE не удался (BUSY) — слот не выдан")
+        try:
+            import metrics
+            metrics.inc("rag_llmq_degraded_total", backend="sqlite")
+        except Exception:
+            pass
+        _log().warning("SQLite BEGIN IMMEDIATE не удался (BUSY) — слот не выдан",
+                       extra={"backend": "sqlite"})
         return False
     # общего бэкенда нет — истинно локальный режим (память процесса), атомарно под _lock
     with _lock:
@@ -371,6 +394,7 @@ def acquire() -> str:
             with _lock:
                 _local_wait[tok] = time.time() + _WAIT_TTL
     got = False
+    _wait_t0 = time.time()
     try:
         while True:
             m = _limit()
@@ -384,6 +408,12 @@ def acquire() -> str:
             time.sleep(0.1)
     finally:
         _rem(c, _WAIT, _local_wait, tok)
+        try:
+            import metrics
+            metrics.observe("rag_llmq_wait_seconds", time.time() - _wait_t0,
+                            result=("acquired" if got else "timeout_or_open"))
+        except Exception:
+            pass
     if not got:
         _add_active(c, tok)          # лимит снят или таймаут ожидания — учитываем слот принудительно
     _pace()                          # пауза между запросами (если задана)
@@ -451,7 +481,16 @@ class slot:
 def stats() -> dict:
     c = _redis()
     m = _limit()
-    return {"max": m, "running": _active_count(c), "waiting": _waiting_count(c),
+    running = _active_count(c)
+    waiting = _waiting_count(c)
+    try:
+        import metrics
+        metrics.set_gauge("rag_llmq_active", running)
+        metrics.set_gauge("rag_llmq_waiting", waiting)
+        metrics.set_gauge("rag_llmq_max", m)
+    except Exception:
+        pass
+    return {"max": m, "running": running, "waiting": waiting,
             "enabled": m > 0, "timeout": _timeout(), "delay": _delay(),
             # общая очередь есть либо через Redis, либо через общую rag_logs.db (procshare)
             "shared": bool(c) or (_sql() is not None)}
