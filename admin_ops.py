@@ -29,7 +29,21 @@ import db
 import backup
 import fsutil
 
+# Инфраструктура вынесена в пакет admin/ (jobs.py, common.py). Имена ре-экспортируются
+# ниже как атрибуты этого модуля, поэтому обратная совместимость (admin_ops.<имя>) цела.
+from admin.jobs import _tail, _read_full_log, jobview as _jobview_safe
+from admin.common import (
+    _fmt_bytes, _num, _dir_size_mb, _sha256_file, _jlen,
+    mem_get_or_set as _mem_get_or_set,
+    _AV_EXTS, _IMG_EXTS, _OCR_EXTS, _ARCHIVE_EXTS, _CAD_EXTS, _TOOL_EXTS,
+    _UNSUPPORTED_FIX, _SUPPORTED,
+)
+
 ROOT = Path(__file__).resolve().parent
+
+# ipaddress/socket — для проверки SSRF (резолв хоста → блок приватных диапазонов)
+import ipaddress as _ipaddress
+import socket as _socket
 
 _job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": "", "logfile": ""}
 _ft_job = {"running": False, "started": None, "finished": None, "ok": None, "log": "", "summary": "", "logfile": ""}
@@ -52,29 +66,9 @@ _restore_job = {"running": False, "started": None, "finished": None, "ok": None,
 _check_job = {"running": False, "started": None, "finished": None, "ok": None,
               "log": "", "logfile": "", "results": {}}
 
-_AV_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
-_UNSUPPORTED_FIX = {
-    ".doc": "Сконвертируйте в .docx (Word → «Сохранить как») или установите LibreOffice.",
-    ".rtf": "Сконвертируйте в .docx или .txt.",
-    ".odt": "Сконвертируйте в .docx.",
-    ".pages": "Apple Pages не читается — экспортируйте в PDF/DOCX.",
-    ".numbers": "Apple Numbers не читается — экспортируйте в XLSX/CSV.",
-    ".key": "Apple Keynote не читается — экспортируйте в PDF/PPTX.",
-    ".xlsb": "Бинарный Excel — сохраните как .xlsx или установите pyxlsb.",
-    ".epub": "Сконвертируйте в PDF/TXT.",
-    ".fb2": "Сконвертируйте в TXT/PDF.",
-    ".djvu": "Сконвертируйте в PDF.",
-}
-_IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp", ".jfif"}
-# OCR-форматы (картинки и RAW-фото): индексируются, но при проверке каталога
-# их не парсим поштучно — OCR слишком долгий для тысяч файлов
-_OCR_EXTS = _IMG_EXTS | {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf",
-                         ".rw2", ".orf", ".sr2"}
-# Архивы: индексируются (распаковкой), но при проверке не распаковываем — долго
-_ARCHIVE_EXTS = {".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2"}
-# Спец-инструменты извлечения текста (CAD, 3D-обмен, старый .doc, письма, архивы)
-_CAD_EXTS = {".dxf", ".dwg", ".stp", ".step", ".igs", ".iges"}
-_TOOL_EXTS = _CAD_EXTS | _ARCHIVE_EXTS | {".doc", ".msg"}
+# Наборы расширений (_AV_EXTS, _IMG_EXTS, _OCR_EXTS, _ARCHIVE_EXTS, _CAD_EXTS,
+# _TOOL_EXTS, _UNSUPPORTED_FIX, _SUPPORTED) вынесены в admin/common.py и
+# импортированы выше — используются как раньше.
 
 
 def _file_method(ext: str) -> str:
@@ -230,21 +224,7 @@ def check_data_dir() -> dict:
     return {"ok": True, "msg": "проверка каталога запущена"}
 
 
-def _tail(path: str, n: int = 6000) -> str:
-    try:
-        with open(path, "r", errors="ignore") as f:
-            return f.read()[-n:]
-    except Exception:
-        return ""
-
-
-def _read_full_log(path: str, cap: int = 5_000_000) -> str:
-    """Полный текст лог-файла (с ограничением размера)."""
-    try:
-        t = Path(path).read_text(errors="ignore")
-        return t[-cap:] if len(t) > cap else t
-    except Exception:
-        return ""
+# _tail / _read_full_log вынесены в admin/jobs.py и импортированы выше.
 
 
 def _bg(job: dict, label: str, cmds: list, logfile: str, timeout: int = 24 * 3600,
@@ -313,15 +293,8 @@ def _bg(job: dict, label: str, cmds: list, logfile: str, timeout: int = 24 * 360
 _LIGHTRAG_DEPS = ["lightrag-hku==1.3.0", "nano-vectordb==0.0.4.3",
                   "tiktoken==0.8.0", "networkx==3.4.2"]
 
-# поддерживаемые типы — для подсказки «сколько документов в папке»
-_SUPPORTED = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".xlsm", ".xls", ".csv",
-              ".txt", ".md", ".html", ".htm", ".mhtml", ".mht",
-              ".xml", ".json", ".url", ".msg", ".svg",
-              ".dxf", ".dwg", ".stp", ".step", ".igs", ".iges",
-              ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2",
-              ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".jfif",
-              ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".rw2", ".orf", ".sr2",
-              ".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
+# _SUPPORTED (поддерживаемые типы) вынесён в admin/common.py и импортирован выше.
+# Остаётся доступен как admin_ops._SUPPORTED (app.py на него ссылается).
 
 
 def status() -> dict:
@@ -358,12 +331,10 @@ def status() -> dict:
         out["llm"] = False
     out["backend"] = settings.get("LLM_BACKEND")
 
-    def _jobview(jb):
-        d = dict(jb)
-        # живой лог: пока задача идёт, читаем хвост её logfile
-        if d.get("running") and d.get("logfile"):
-            d["log"] = _tail(d["logfile"])
-        return d
+    # B1: единый безопасный сериализатор из admin.jobs выкидывает несериализуемый
+    # Popen (_proc) и прочие «_*»-поля, иначе json.dumps статуса падал 500 во время
+    # индексации; заодно подставляет живой хвост logfile.
+    _jobview = _jobview_safe
 
     _ij = _jobview(_job)
     if _ij.get("running"):
@@ -380,14 +351,14 @@ def status() -> dict:
     out["graph_job"] = _jobview(_graph_job)
     out["graph_ready"] = (ROOT / "graph_storage").exists()
     out["engine"] = settings.get("ENGINE")
-    out["pull_job"] = dict(_pull_job)
+    out["pull_job"] = _jobview(_pull_job)
     out["dep_job"] = _jobview(_dep_job)
     out["web_job"] = _jobview(_web_job)
     out["test_job"] = _jobview(_test_job)
     out["bench_job"] = _jobview(_bench_job)
     out["check_job"] = _jobview(_check_job)
-    out["backup_job"] = dict(_backup_job)
-    out["restore_job"] = dict(_restore_job)
+    out["backup_job"] = _jobview(_backup_job)
+    out["restore_job"] = _jobview(_restore_job)
     return out
 
 
@@ -1546,6 +1517,49 @@ _WEB_HEADERS = {
 }
 
 
+# --- SSRF-защита: не ходим на приватные/loopback/link-local адреса (S4/M41) ---
+_HOST_SAFE_CACHE: dict = {}
+
+
+def _host_is_safe(host: str) -> bool:
+    """True, если ВСЕ адреса, в которые резолвится host, публичные. Блокируем
+    127.0.0.0/8, 10/8, 172.16/12, 192.168/16, 169.254/16, ::1 и прочие приватные/
+    служебные диапазоны. Не резолвится — считаем небезопасным (не ходим)."""
+    if not host:
+        return False
+    h = host.lower()
+    if h in _HOST_SAFE_CACHE:
+        return _HOST_SAFE_CACHE[h]
+    safe = True
+    try:
+        infos = _socket.getaddrinfo(h, None)
+        if not infos:
+            safe = False
+        for info in infos:
+            ip = _ipaddress.ip_address(info[4][0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+                safe = False
+                break
+    except Exception:
+        safe = False
+    _HOST_SAFE_CACHE[h] = safe
+    return safe
+
+
+def _url_is_safe(url: str) -> bool:
+    """Проверка URL перед обходом: только http/https и публичный (не приватный) хост.
+    file:// и прочие схемы уже отсекаются раньше по схеме."""
+    from urllib.parse import urlparse as _up
+    try:
+        pr = _up(url)
+        if pr.scheme not in ("http", "https"):
+            return False
+        return _host_is_safe(pr.hostname or "")
+    except Exception:
+        return False
+
+
 def _web_client(workers: int = 6):
     """Общий httpx-клиент с пулом keep-alive соединений для всего прогона парсинга —
     убирает повторные TLS-рукопожатия (особенно на множестве файлов одного хоста).
@@ -1585,6 +1599,9 @@ def _web_fetch_http(url: str, client, log, retries: int = 2):
     общем клиенте. Разрыв соединения сервером (частое под нагрузкой: «Server
     disconnected») повторяется несколько раз с короткой паузой — на новом соединении
     из пула обычно проходит."""
+    if not _url_is_safe(url):                      # SSRF: приватный/loopback/link-local
+        log(f"ERR {url}: адрес заблокирован (приватный/loopback/link-local)")
+        return None
     last = None
     for attempt in range(retries + 1):
         try:
@@ -1623,13 +1640,7 @@ def _web_fetch(url: str, renderer, log, client=None):
     return html
 
 
-def _fmt_bytes(n: int) -> str:
-    n = float(n or 0)
-    for unit in ("Б", "КБ", "МБ", "ГБ"):
-        if n < 1024 or unit == "ГБ":
-            return f"{n:.0f} {unit}" if unit == "Б" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} ГБ"
+# _fmt_bytes вынесен в admin/common.py и импортирован выше.
 
 
 def _web_save_bytes(dest_dir, name, data, log):
@@ -1661,6 +1672,9 @@ def _web_download(url: str, dest_dir, log, client=None,
     отказа; fp — отпечаток {etag,lastmod,size} для инкремента; not_modified — сервер
     ответил 304 (условный запрос). Заголовки — «браузерные» (UA + Referer) + авторизация
     и условные заголовки (If-None-Match/If-Modified-Since), если переданы."""
+    if not _url_is_safe(url):                      # SSRF: приватный/loopback/link-local
+        log(f"    адрес заблокирован (приватный/loopback/link-local): {url}")
+        return None, "адрес заблокирован (приватный/loopback)", None, False
     import re
     from urllib.parse import urlparse, unquote
     tmp = None
@@ -1917,6 +1931,9 @@ def _web_sitemap_urls(sitemap_seeds, client, limit, headers=None, cookies=None) 
 def _web_get_page(url, client, log, extra_headers=None, cookies=None, cond=None, retries=2):
     """Загрузить страницу с авторизацией и условными заголовками. Возвращает dict:
     {status, html, etag, lastmod, not_modified}. Разрыв соединения повторяется."""
+    if not _url_is_safe(url):                      # SSRF: приватный/loopback/link-local
+        log(f"ERR {url}: адрес заблокирован (приватный/loopback/link-local)")
+        return {"status": 0, "html": None, "not_modified": False, "etag": None, "lastmod": None}
     hdrs = {}
     if extra_headers:
         hdrs.update(extra_headers)
@@ -2156,6 +2173,14 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
     urls = [u.strip() for u in (urls or []) if u.strip().startswith(("http://", "https://"))][:50]
     if not urls:
         return {"ok": False, "msg": "укажите хотя бы один URL (http/https), максимум 50"}
+    # SSRF (S4/M41): резолвим хост и отсеиваем приватные/loopback/link-local адреса
+    # ПЕРЕД обходом. FIXME(review): httpx follow_redirects=True — редиректы на внутренний
+    # адрес заново не проверяются (и остаётся TOCTOU/DNS-rebinding до фактического connect).
+    _blocked = [u for u in urls if not _url_is_safe(u)]
+    urls = [u for u in urls if _url_is_safe(u)]
+    if not urls:
+        return {"ok": False, "msg": "все адреса указывают на приватную/локальную сеть — "
+                                    "парсинг таких адресов запрещён"}
     if _web_job["running"]:
         return {"ok": False, "msg": "парсинг сайтов уже идёт"}
     if save:
@@ -2194,7 +2219,10 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
             with open(logfile, "w", buffering=1, errors="ignore") as fp:
                 import threading as _th
                 from urllib.parse import urlparse as _urlparse
-                _wlock = _th.Lock()   # защита лога/статистики/счётчиков при параллельных сайтах
+                # RLock (B2/M37): позволяет держать замок при мутации stats_map и тут же
+                # вызвать _save_stats() (который снова берёт замок для json.dumps) без
+                # дедлока — сериализация и все мутации stats_map идут строго под ним.
+                _wlock = _th.RLock()  # защита лога/статистики/счётчиков при параллельных сайтах
                 def _rawlog(m):
                     with _wlock:
                         fp.write(m + "\n"); fp.flush()
@@ -2333,7 +2361,8 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                             file_list = all_files[:s_maxf] if s_maxf else all_files
                             nf = len(file_list)
                             _docroot = Path(settings.get("DOCS_DIR")).expanduser()
-                            stats_map[u]["progress"] = {"phase": "download", "done": 0, "total": nf, "pct": 40}
+                            with _wlock:
+                                stats_map[u]["progress"] = {"phase": "download", "done": 0, "total": nf, "pct": 40}
                             _save_stats()
                             if nf:
                                 _log(f"  файлов к скачиванию: {nf}"
@@ -2352,8 +2381,9 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                                    "name": (p.name if okf else (furl.rsplit("/", 1)[-1] or furl)),
                                                    "source": rel, "size": size, "ok": okf})
                                 done = len(site_items)
-                                stats_map[u]["progress"] = {"phase": "download", "done": done, "total": nf,
-                                                            "pct": min(88, 40 + int(done * 45 / max(1, nf)))}
+                                with _wlock:
+                                    stats_map[u]["progress"] = {"phase": "download", "done": done, "total": nf,
+                                                                "pct": min(88, 40 + int(done * 45 / max(1, nf)))}
                                 if done % 5 == 0:
                                     _save_stats()
 
@@ -2480,11 +2510,12 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                                     renderer.close()
                                 except Exception:
                                     pass
-                        stats_map[u] = {"url": u, "ok": site_ok, "pages": len(pages),
-                                        "files": dl, "errors": site_errors,
-                                        "limits": site_limits, "ts": time.time(),
-                                        "items": site_items, "depth_urls": site_depth_urls,
-                                        "progress": {"phase": "parsed", "pct": 92}}
+                        with _wlock:
+                            stats_map[u] = {"url": u, "ok": site_ok, "pages": len(pages),
+                                            "files": dl, "errors": site_errors,
+                                            "limits": site_limits, "ts": time.time(),
+                                            "items": site_items, "depth_urls": site_depth_urls,
+                                            "progress": {"phase": "parsed", "pct": 92}}
                         _save_stats()
 
                     # запуск сайтов: последовательно или параллельно (каждый — свой поток+браузер)
@@ -2529,9 +2560,11 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                 if added:
                     fp.write(f"В PostgreSQL добавлено страниц: {added}\n")
                 def _set_all_progress(prog):
-                    for _u in stats_map:
-                        stats_map[_u]["progress"] = dict(prog)
-                    _web_stats_save(stats_map)
+                    # под _wlock: мутация и json.dumps stats_map не должны идти конкурентно
+                    with _wlock:
+                        for _u in stats_map:
+                            stats_map[_u]["progress"] = dict(prog)
+                        _web_stats_save(stats_map)
 
                 if index:
                     _set_all_progress({"phase": "index", "pct": 96})
@@ -2549,7 +2582,12 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
                     _set_all_progress({"phase": "parsed", "pct": 100})
             _web_job["log"] = _tail(logfile)
             _web_job["summary"] = _extract_summary(_web_job["log"])
-            _web_job["ok"] = (err == 0 and rc == 0)
+            # B7: частичный успех — это НЕ провал задачи. Падение одного из нескольких
+            # сайтов не должно помечать всю задачу как failed (и слать ложный алерт).
+            # Провал = индексация упала (rc != 0) ИЛИ не удалось ни одного сайта (ok == 0
+            # при наличии ошибок). Ошибки по отдельным сайтам видны в summary/логе.
+            _web_job["ok"] = (rc == 0) and (ok > 0 or err == 0)
+            _web_job["partial"] = bool(ok > 0 and err > 0)
         except Exception as e:
             _web_job["ok"] = False
             _web_job["log"] = (_tail(logfile) + "\n" + str(e)).strip()
@@ -2563,7 +2601,10 @@ def ingest_web(urls: list, index: bool = True, save: bool = True) -> dict:
 
     threading.Thread(target=run, daemon=True).start()
     tail = "затем — индексация" if index else "без индексации (только парсинг)"
-    return {"ok": True, "msg": f"парсинг {len(urls)} сайт(ов) запущен; {tail}"}
+    msg = f"парсинг {len(urls)} сайт(ов) запущен; {tail}"
+    if _blocked:
+        msg += f"; заблокировано приватных/локальных адресов: {len(_blocked)}"
+    return {"ok": True, "msg": msg}
 
 
 def _run_dep_job(label: str, cmd: list, timeout: int = 3600) -> dict:
@@ -2704,7 +2745,13 @@ def retrieval_autotune(apply: bool = False) -> dict:
 
     def run():
         keys = ("MIN_SCORE", "TOP_K_RETRIEVE", "TOP_K_RERANK")
+        # B4/H14: снапшот затрагиваемых настроек ДО перебора — откат в finally.
         orig = {k: settings.get(k) for k in keys}
+        apply_best = None
+        # FIXME(review): во время перебора settings._state временно меняется глобально,
+        # поэтому параллельный «живой» трафик отвечает на экспериментальных параметрах.
+        # Правильнее — передавать MIN_SCORE/TOP_K_* в search()/_eval_gold явным аргументом
+        # (без записи в глобальное состояние); это затрагивает retriever/поиск — не мой файл.
         _tune_job.update(running=True, done=0, total=len(combos), log=[], best=None,
                          baseline=None, result=None, applied=False, ts=time.time())
         try:
@@ -2728,27 +2775,28 @@ def retrieval_autotune(apply: bool = False) -> dict:
                     f"[{i}/{len(combos)}] MIN_SCORE={ms} K={kr} rerank={rr} → "
                     f"hit {m['hit_rate']}, пустых {m['empty']}")
             _tune_job["best"] = best
-            # применяем/восстанавливаем
+            # применяем позже (в finally, ПОСЛЕ безусловного отката экспериментов)
             if apply and best:
-                for k in keys:
-                    settings._state[k] = orig[k]      # вернём, чтобы update записал чисто
-                settings.update({"MIN_SCORE": best["MIN_SCORE"],
-                                 "TOP_K_RETRIEVE": best["TOP_K_RETRIEVE"],
-                                 "TOP_K_RERANK": best["TOP_K_RERANK"]})
-                _tune_job["applied"] = True
-                _tune_job["log"].append(f"Применены лучшие параметры: MIN_SCORE="
-                                        f"{best['MIN_SCORE']}, K={best['TOP_K_RETRIEVE']}, "
-                                        f"rerank={best['TOP_K_RERANK']}")
-            else:
-                for k in keys:
-                    settings._state[k] = orig[k]      # восстановить исходные (без записи)
+                apply_best = {"MIN_SCORE": best["MIN_SCORE"],
+                              "TOP_K_RETRIEVE": best["TOP_K_RETRIEVE"],
+                              "TOP_K_RERANK": best["TOP_K_RERANK"]}
             _tune_job["result"] = "ok"
         except Exception as e:
-            for k in ("MIN_SCORE", "TOP_K_RETRIEVE", "TOP_K_RERANK"):
-                settings._state[k] = orig.get(k)
             _tune_job["result"] = f"error: {e}"
             _tune_job["log"].append(f"ОШИБКА: {e}")
         finally:
+            # B4/H14: снапшот orig сделан ДО цикла; здесь ГАРАНТИРОВАННО откатываем
+            # временные правки settings._state (иначе на любом исключении/остановке
+            # живой трафик остался бы на экспериментальных MIN_SCORE/TOP_K_*).
+            for k in keys:
+                settings._state[k] = orig[k]
+            # применяем лучшие уже поверх чистого состояния (память + запись в файл)
+            if apply_best:
+                settings.update(apply_best)
+                _tune_job["applied"] = True
+                _tune_job["log"].append(
+                    f"Применены лучшие параметры: MIN_SCORE={apply_best['MIN_SCORE']}, "
+                    f"K={apply_best['TOP_K_RETRIEVE']}, rerank={apply_best['TOP_K_RERANK']}")
             _tune_job["running"] = False
 
     threading.Thread(target=run, daemon=True).start()
@@ -3238,10 +3286,12 @@ def reinstall_env() -> dict:
     if not script.exists():
         return {"ok": False, "msg": "reinstall.sh не найден"}
     try:
-        logf = open("/tmp/rag_reinstall.log", "ab")
-        subprocess.Popen(["bash", str(script)], cwd=ROOT,
-                         stdout=logf, stderr=subprocess.STDOUT,
-                         start_new_session=True)
+        # B5: закрываем FD в родителе сразу после старта — потомок наследует свою копию,
+        # запись в лог продолжится, а утечки дескриптора в этом процессе не будет.
+        with open("/tmp/rag_reinstall.log", "ab") as logf:
+            subprocess.Popen(["bash", str(script)], cwd=ROOT,
+                             stdout=logf, stderr=subprocess.STDOUT,
+                             start_new_session=True)
         return {"ok": True, "msg": "переустановка окружения запущена; сервис перезапустится. "
                 "Лог: /tmp/rag_reinstall.log"}
     except Exception as e:
@@ -3421,10 +3471,11 @@ def reinstall_full(kind: str) -> dict:
     if not sc or not sc.exists():
         return {"ok": False, "msg": f"скрипт переустановки '{kind}' не найден"}
     try:
-        logf = open("/tmp/rag_reinstall.log", "ab")
-        subprocess.Popen(["bash", str(sc)], cwd=ROOT,
-                         env={**os.environ, "CONFIRM": "yes"},
-                         stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+        # B5: FD закрываем в родителе сразу после старта (потомок наследует свою копию).
+        with open("/tmp/rag_reinstall.log", "ab") as logf:
+            subprocess.Popen(["bash", str(sc)], cwd=ROOT,
+                             env={**os.environ, "CONFIRM": "yes"},
+                             stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
         note = ("полная переустановка запущена; сервис будет недоступен во время "
                 "процесса. Лог: /tmp/rag_reinstall.log")
         if kind == "server":
@@ -3484,12 +3535,20 @@ def _extract_summary(text: str) -> str:
     return ""
 
 
-def _dir_size_mb(path: Path) -> float:
+# _dir_size_mb вынесён в admin/common.py и импортирован выше.
+
+
+def _cache_or_mem(name: str, ttl: int, producer, ns: str = "index"):
+    """Кэш с обязательным фолбэком: при доступном Redis — cache.get_or_set(ns),
+    иначе — процесс-локальный mem-кэш (короткий TTL). Устраняет ситуацию, когда без
+    Redis тяжёлый producer вызывался на каждый запрос."""
     try:
-        total = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
-        return round(total / 1e6, 1)
+        import cache
+        if cache.client():
+            return cache.get_or_set(name, ttl, producer, ns=ns)
     except Exception:
-        return 0.0
+        pass
+    return _mem_get_or_set(name, min(ttl, 30), producer)
 
 
 def system_info() -> dict:
@@ -3582,20 +3641,11 @@ def _system_info_raw() -> dict:
         "job": dict(_graph_job),
     }
     if gdir.exists():
-        def _jlen(name, key=None):
-            f = gdir / name
-            if not f.exists():
-                return None
-            try:
-                d = _json.loads(f.read_text(encoding="utf-8"))
-                v = d.get(key) if key else d
-                return len(v) if hasattr(v, "__len__") else None
-            except Exception:
-                return None
-        graph["entities"] = _jlen("vdb_entities.json", "data")
-        graph["relations"] = _jlen("vdb_relationships.json", "data")
-        graph["chunks"] = _jlen("kv_store_text_chunks.json")
-        graph["docs"] = _jlen("kv_store_full_docs.json")
+        # _jlen вынесен в admin/common.py (был продублирован дословно) — передаём gdir
+        graph["entities"] = _jlen(gdir, "vdb_entities.json", "data")
+        graph["relations"] = _jlen(gdir, "vdb_relationships.json", "data")
+        graph["chunks"] = _jlen(gdir, "kv_store_text_chunks.json")
+        graph["docs"] = _jlen(gdir, "kv_store_full_docs.json")
         gml = gdir / "graph_chunk_entity_relation.graphml"
         if gml.exists() and graph.get("entities") is None:
             t = gml.read_text(errors="ignore")
@@ -3726,12 +3776,7 @@ def _system_info_raw() -> dict:
             "database": database, "cache": cache_info}
 
 
-def _num(s):
-    try:
-        s = str(s).strip()
-        return float(s) if "." in s else int(s)
-    except Exception:
-        return None
+# _num вынесён в admin/common.py и импортирован выше.
 
 
 def _gpu_info() -> dict:
@@ -4399,7 +4444,24 @@ def _monitor_running() -> bool:
 
 
 def component_analytics() -> dict:
-    """Расширенная аналитика по компонентам: Qdrant, граф (LightRAG), дообучение."""
+    """Расширенная аналитика по компонентам: Qdrant, граф (LightRAG), дообучение.
+
+    P2/M39: результат кэшируется (как _system_info_raw). Внутри — ~26 точных count к
+    Qdrant; кэш на 30 с снимает нагрузку при частом опросе дашбордом. FIXME(review):
+    заменить N точных _qcount на один агрегирующий facet(doc_category/ftype) — семантика
+    для must_not/is_empty (наличие поля) через facet отличается, нужна аккуратная сверка."""
+    try:
+        import cache
+        if cache.client():
+            return cache.get_or_set("component_analytics", 30,
+                                    _component_analytics_raw, ns="stats")
+    except Exception:
+        pass
+    # Redis выключен/недоступен — обязательный процесс-локальный кэш (короткий TTL)
+    return _mem_get_or_set("component_analytics", 15, _component_analytics_raw)
+
+
+def _component_analytics_raw() -> dict:
     coll = settings.get("QDRANT_COLLECTION")
     qbase = settings.get("QDRANT_URL")
 
@@ -4437,20 +4499,11 @@ def component_analytics() -> dict:
     gdir = ROOT / "graph_storage"
     graph: dict = {"ready": gdir.exists()}
     if gdir.exists():
-        def _jlen(name, key=None):
-            f = gdir / name
-            if not f.exists():
-                return None
-            try:
-                d = _json.loads(f.read_text(encoding="utf-8"))
-                v = d.get(key) if key else d
-                return len(v) if hasattr(v, "__len__") else None
-            except Exception:
-                return None
-        ent = _jlen("vdb_entities.json", "data")
-        rel = _jlen("vdb_relationships.json", "data")
-        ch = _jlen("kv_store_text_chunks.json")
-        dc = _jlen("kv_store_full_docs.json")
+        # _jlen вынесен в admin/common.py (был продублирован дословно) — передаём gdir
+        ent = _jlen(gdir, "vdb_entities.json", "data")
+        rel = _jlen(gdir, "vdb_relationships.json", "data")
+        ch = _jlen(gdir, "kv_store_text_chunks.json")
+        dc = _jlen(gdir, "kv_store_full_docs.json")
         gml = gdir / "graph_chunk_entity_relation.graphml"
         if ent is None and gml.exists():
             t = gml.read_text(errors="ignore")
@@ -4658,21 +4711,21 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
             pass
         return out
 
-    try:
-        import cache
-        counts = cache.get_or_set("facet:" + str(settings.get("QDRANT_COLLECTION")),
-                                  60, _facet, ns="index")
-        described = cache.get_or_set("facet_desc:" + str(settings.get("QDRANT_COLLECTION")),
-                                     60, _facet_described, ns="index")
-    except Exception:
-        counts = _facet()
-        described = _facet_described()
+    # P1/M38: тяжёлый фасет кэшируется ОБЯЗАТЕЛЬНО — при Redis через ns=index (сбрасывается
+    # переиндексацией), без Redis — процесс-локальный mem-кэш с коротким TTL.
+    _coll = str(settings.get("QDRANT_COLLECTION"))
+    counts = _cache_or_mem("facet:" + _coll, 60, _facet, ns="index")
+    # described возвращает set (не сериализуется в Redis) — держим только в mem-кэше
+    described = _mem_get_or_set("facet_desc:" + _coll, 30, _facet_described)
 
     files, by_ext = [], {}
     total_size = indexed = 0
     if pg:
         # источник — таблица doc_catalog в PostgreSQL
-        for r in db.catalog_rows():
+        # P1: список строк каталога PG кэшируется коротко (mem), чтобы не бить БД на каждый
+        # запрос пагинации. FIXME(review): для очень больших каталогов правильнее пагинация
+        # на стороне БД (LIMIT/OFFSET) с сортировкой/фильтром в SQL — здесь набор берётся целиком.
+        for r in _mem_get_or_set("catalog_rows:" + _coll, 15, lambda: list(db.catalog_rows())):
             rel = r.get("rel_path") or ""
             ext = (r.get("ext") or "").lstrip(".")
             sz = int(r.get("size") or 0)
@@ -4688,20 +4741,27 @@ def files_catalog(limit: int = 100, offset: int = 0, query: str = "",
                           "error": err_map.get(rel), "proc_ms": proc_map.get(rel),
                           "method": meth})
     else:
-        for p in sorted(fsutil.iter_doc_files(docs, _SUPPORTED)):
-            rel = str(p.relative_to(docs))
-            ext = p.suffix.lower().lstrip(".")
-            try:
-                sz = p.stat().st_size
-                mt = int(p.stat().st_mtime)
-            except Exception:
-                sz, mt = 0, 0
+        # P1/P3: полный обход папки знаний (rglob + stat на каждый файл) — тяжёлый на горячем
+        # пути. Кэшируем список (rel, suffix, size, mtime) коротким mem-кэшем.
+        def _scan_docs():
+            rows = []
+            for p in sorted(fsutil.iter_doc_files(docs, _SUPPORTED)):
+                try:
+                    st = p.stat()
+                    sz, mt = st.st_size, int(st.st_mtime)
+                except Exception:
+                    sz, mt = 0, 0
+                rows.append((str(p.relative_to(docs)), p.suffix.lower(), sz, mt))
+            return rows
+
+        for rel, suffix, sz, mt in _mem_get_or_set("docs_scan:" + str(docs), 15, _scan_docs):
+            ext = suffix.lstrip(".")
             ch = counts.get(rel, 0)
             if ch:
                 indexed += 1
             total_size += sz
             by_ext[ext] = by_ext.get(ext, 0) + 1
-            meth = _file_method(p.suffix.lower())
+            meth = _file_method(suffix)
             files.append({"path": rel, "ext": ext, "size": sz, "mtime": mt,
                           "chunks": ch, "indexed": bool(ch),
                           "error": err_map.get(rel), "proc_ms": proc_map.get(rel),
@@ -4787,13 +4847,23 @@ def file_text(source: str, max_chars: int = 20000) -> dict:
                 "n_chars": r.get("n_chars"), "truncated": r.get("truncated"),
                 "from": "postgresql"}
     points, next_off = [], None
+    # B6: осознанный бизнес-лимит на предпросмотр — до 4000 чанков файла. Раньше был ещё
+    # и «магический» range(40); теперь честно идём по next_off, а предохранитель по
+    # страницам лишь защищает от бесконечного цикла при странном next_off.
+    _CHUNK_PREVIEW_CAP = 4000
     try:
-        for _ in range(40):  # до ~10k чанков на файл
+        pages = 0
+        while True:
             pts, next_off = vectorstore.scroll(flt={"source": source}, limit=256,
                                                offset=next_off, with_payload=True,
                                                with_vectors=False)
             points.extend(pts)
-            if next_off is None or len(points) >= 4000:
+            pages += 1
+            if next_off is None or len(points) >= _CHUNK_PREVIEW_CAP:
+                break
+            if pages >= _SCROLL_SAFETY_PAGES:
+                print(f"[file_text] предохранитель обхода ({_SCROLL_SAFETY_PAGES}) — "
+                      f"предпросмотр по части чанков файла {source}")
                 break
     except Exception as e:
         return {"ok": False, "msg": str(e)}
@@ -5600,17 +5670,7 @@ _CAT_FLUSH_FILES = 100               # размер пакета записи (�
 _CAT_FLUSH_BYTES = 16 * 1024 * 1024  # либо по суммарному объёму содержимого в пакете
 
 
-def _sha256_file(p) -> str | None:
-    """SHA-256 файла потоково (без загрузки целиком в память). None при ошибке чтения —
-    вызывающий код (дедуп, каталог) корректно обрабатывает отсутствие хэша."""
-    try:
-        h = hashlib.sha256()
-        with open(p, "rb") as f:
-            for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
-    except Exception:
-        return None
+# _sha256_file вынесён в admin/common.py и импортирован выше.
 
 
 def _catalog_prepare(rel, p, sz, mt, method, txt, ex):
@@ -5671,13 +5731,23 @@ def catalog_status() -> dict:
             "can_use_pg": active_pg and meta.get("count", 0) > 0}
 
 
+# Предохранитель от бесконечного scroll-цикла (при 512 точек/страница это ~1 млрд точек).
+# Раньше вместо честного «пока есть next_off» стоял магический range(200000), молча
+# обрывавший обход больших коллекций.
+_SCROLL_SAFETY_PAGES = 2_000_000
+
+
 def _qdrant_text_by_source(cap_per_file: int) -> dict:
     """Один проход scroll по коллекции Qdrant: собирает уже извлечённый текст по
     каждому файлу (source). Это быстро — не нужно заново парсить/OCR/транскрибировать.
     Возвращает {source: text}. Текст на файл ограничен cap_per_file символов."""
     acc: dict = {}        # source -> [running_len, [parts]]
     next_off = None
-    for _ in range(200000):  # страховка от бесконечного цикла
+    pages = 0
+    # B6: честный обход до исчерпания коллекции (next_off is None), а не «магический»
+    # range(200000), который молча обрывал большие коллекции. _SCROLL_SAFETY_PAGES —
+    # только предохранитель от бесконечного цикла, при достижении логируем.
+    while True:
         try:
             pts, next_off = vectorstore.scroll(limit=512, offset=next_off,
                                                with_payload=True, with_vectors=False)
@@ -5694,7 +5764,12 @@ def _qdrant_text_by_source(cap_per_file: int) -> dict:
                 continue
             cur[1].append(tx)
             cur[0] += len(tx) + 2
+        pages += 1
         if next_off is None or not pts:
+            break
+        if pages >= _SCROLL_SAFETY_PAGES:
+            print(f"[qdrant_text] достигнут предохранитель обхода ({_SCROLL_SAFETY_PAGES} "
+                  "страниц) — коллекция очень большая, обход прерван")
             break
     return {s: "\n\n".join(v[1])[:cap_per_file] for s, v in acc.items()}
 
@@ -5723,7 +5798,9 @@ def _kb_build(max_nodes: int) -> None:
     j.update(running=True, scrolled=0, total=_kb_total_points(), stage="чтение индекса",
              ok=None, error=None)
     try:
-        for _ in range(200000):
+        pages = 0
+        # B6: обход до исчерпания (next_off is None); range(200000) молча резал большие БД.
+        while True:
             try:
                 pts, next_off = vectorstore.scroll(limit=512, offset=next_off,
                                                    with_payload=True, with_vectors=False)
@@ -5752,7 +5829,12 @@ def _kb_build(max_nodes: int) -> None:
                     if pl.get("department") and not f["department"]:
                         f["department"] = pl.get("department")
             j["scrolled"] = total_points
+            pages += 1
             if next_off is None or not pts:
+                break
+            if pages >= _SCROLL_SAFETY_PAGES:
+                print(f"[kb_build] достигнут предохранитель обхода ({_SCROLL_SAFETY_PAGES} "
+                      "страниц) — граф построен по части коллекции")
                 break
 
         j["stage"] = "построение графа"
@@ -6074,18 +6156,49 @@ def catalog_use(source: str) -> dict:
                     else "Каталог документов снова читается из папки (файловая система)")}
 
 
+def _env_key_ok(key: str) -> bool:
+    """Имя переменной .env: буквы/цифры/подчёркивание, не начинается с цифры."""
+    import re as _re
+    return bool(key) and bool(_re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key))
+
+
+def _env_sanitize(value) -> str:
+    """S6/M42: провалидировать значение для .env. Формат остаётся «bare» (KEY=value),
+    т.к. .env читается и python-dotenv, и (в GPU-варианте) возможно docker --env-file,
+    который НЕ снимает кавычки — поэтому не оборачиваем в кавычки, а ЗАПРЕЩАЕМ опасные
+    символы: перевод строки/CR/NUL (иначе env-инъекция новых переменных) и кавычки
+    (ломают bash-парсинг при source)."""
+    s = "" if value is None else str(value)
+    if any(c in s for c in ("\n", "\r", "\x00")):
+        raise ValueError("перевод строки/NUL запрещён")
+    if '"' in s or "'" in s:
+        raise ValueError("кавычки запрещены")
+    return s
+
+
 def _update_env(path: Path, kv: dict) -> None:
+    # S6/M42: значения валидируются через _env_sanitize (запрет CR/LF/NUL и кавычек),
+    # ключи — через _env_key_ok; иначе значение с '\n' инъектировало произвольные переменные.
+    safe = {}
+    for k, v in kv.items():
+        if not _env_key_ok(k):
+            print(f"[env] пропущен недопустимый ключ: {k!r}")
+            continue
+        try:
+            safe[k] = _env_sanitize(v)
+        except ValueError as e:
+            print(f"[env] пропущено значение {k}: {e}")
     lines = path.read_text().splitlines() if path.exists() else []
     seen = set()
     out = []
     for ln in lines:
         key = ln.split("=", 1)[0] if "=" in ln else None
-        if key in kv:
-            out.append(f"{key}={kv[key]}")
+        if key in safe:
+            out.append(f"{key}={safe[key]}")
             seen.add(key)
         else:
             out.append(ln)
-    for k, v in kv.items():
+    for k, v in safe.items():
         if k not in seen:
             out.append(f"{k}={v}")
     path.parent.mkdir(parents=True, exist_ok=True)

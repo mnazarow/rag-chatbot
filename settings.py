@@ -112,7 +112,7 @@ FIELDS: list[dict] = [
     {"key": "LLM_BASE_URL", "label": "URL vLLM (OpenAI API)", "group": "Генерация (LLM)",
      "type": "text", "scope": "live", "default": config.LLM_BASE_URL},
     {"key": "LLM_API_KEY", "label": "API-ключ vLLM", "group": "Генерация (LLM)",
-     "type": "text", "scope": "live", "default": config.LLM_API_KEY},
+     "type": "secret", "scope": "live", "default": config.LLM_API_KEY},
     {"key": "LLM_MAX_CONCURRENCY", "label": "Очередь к LLM: одновременных запросов",
      "group": "Генерация (LLM)", "type": "int", "scope": "live",
      "default": config.LLM_MAX_CONCURRENCY,
@@ -1253,12 +1253,23 @@ def all_settings() -> dict:
     return dict(_state)
 
 
+# M42/L2: любой ключ вида *_API_KEY/*_TOKEN/*_PASSWORD/*_SECRET считаем секретом даже
+# если в описании поля забыли поставить type=secret (страховка от утечки через
+# public_settings/export_settings).
+import re as _re_secret
+_SECRET_NAME_RE = _re_secret.compile(r"(_API_KEY|_TOKEN|_PASSWORD|_SECRET)$")
+
+
+def _is_secret_key(key: str) -> bool:
+    return _TYPES.get(key) == "secret" or bool(_SECRET_NAME_RE.search(key or ""))
+
+
 def public_settings() -> dict:
-    """Значения для UI: секреты маскируются."""
+    """Значения для UI: секреты маскируются (по типу поля И по имени ключа)."""
     out = dict(_state)
-    for f in FIELDS:
-        if f["type"] == "secret":
-            out[f["key"]] = ""  # не отдаём пароль наружу
+    for k in list(out.keys()):
+        if _is_secret_key(k):
+            out[k] = ""  # не отдаём пароль/ключ/токен наружу
     return out
 
 
@@ -1271,9 +1282,9 @@ def export_settings(include_secrets: bool = False) -> dict:
     По умолчанию секреты (токены/пароли) НЕ включаются — включите явно при необходимости."""
     out = dict(_state)
     if not include_secrets:
-        for f in FIELDS:
-            if f["type"] == "secret":
-                out.pop(f["key"], None)
+        for k in list(out.keys()):
+            if _is_secret_key(k):
+                out.pop(k, None)
     return out
 
 
@@ -1307,12 +1318,16 @@ def _coerce(key: str, value):
 
 
 def update(changes: dict) -> dict:
+    # M42: если сменились модель эмбеддингов/реранка или устройство — сбросить синглтоны
+    # моделей в retriever (иначе останется загруженной прежняя модель до перезапуска).
+    _model_keys = ("EMBED_MODEL", "RERANK_MODEL", "DEVICE")
+    _before = {k: _state.get(k) for k in _model_keys}
     with _LOCK:
         for k, v in changes.items():
             if k not in DEFAULTS:
                 continue
-            # пустой секрет = «не менять»
-            if _TYPES[k] == "secret" and (v is None or v == ""):
+            # пустой секрет = «не менять» (по типу поля ИЛИ по имени ключа *_API_KEY/…)
+            if _is_secret_key(k) and (v is None or v == ""):
                 continue
             # select: только значения из списка опций
             if _TYPES[k] == "select" and v not in (_OPTIONS.get(k) or []):
@@ -1323,6 +1338,12 @@ def update(changes: dict) -> dict:
                 continue
         _RUNTIME.write_text(json.dumps(_state, ensure_ascii=False, indent=2),
                             encoding="utf-8")
+    if any(_before[k] != _state.get(k) for k in _model_keys):
+        try:
+            import retriever  # ленивый импорт — избегаем циклической зависимости
+            retriever.reset_models()
+        except Exception as e:
+            print(f"[settings] retriever.reset_models() не выполнен: {e}")
     return public_settings()
 
 

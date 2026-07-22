@@ -5,6 +5,7 @@ import sys
 import yaml
 
 FILES = [
+    "docker-compose.yml",   # корневой compose (Qdrant для Mac/локали)
     "windows_variant/docker/docker-compose.windows.yml",
     "windows_variant/docker/docker-compose.gpu.yml",
     "docker_variant/docker-compose.yml",

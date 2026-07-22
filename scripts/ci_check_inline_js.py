@@ -8,7 +8,11 @@ import re
 import sys
 
 html = pathlib.Path("static/index.html").read_text(encoding="utf-8")
-scripts = re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", html, re.S)
+# Закрывающий тег матчим с учётом регистра и возможных пробелов (</script >, </SCRIPT>).
+# FIXME(review): по HTML-спеке <script> — raw-text элемент и завершается ПЕРВЫМ вхождением
+# "</script"; если в самом JS встречается литерал "</script>" (нужно писать "<\/script>"),
+# извлечение оборвётся преждевременно. Полностью корректно это решается только HTML-парсером.
+scripts = re.findall(r"<script(?![^>]*\ssrc=)[^>]*>(.*?)</script\s*>", html, re.S | re.I)
 if not scripts:
     print("no inline scripts found", file=sys.stderr)
     sys.exit(1)

@@ -96,7 +96,7 @@ def sync_index(rows: list[dict]) -> dict:
     добавляет/обновляет изменённые карточки, удаляет исчезнувшие. Возвращает
     {added, updated, removed, total}."""
     import retriever
-    from qdrant_client.http import models as qm
+    import vectorstore
 
     try:
         prev = json.loads(db.kv_get(KV_MAP) or "{}")
@@ -134,21 +134,20 @@ def sync_index(rows: list[dict]) -> dict:
         day = time.strftime("%Y-%m-%d")
         pts = []
         for (k, card, e), v in zip(to_embed, vecs):
-            pts.append(qm.PointStruct(
-                id=_point_id(k),
-                vector=(v.tolist() if hasattr(v, "tolist") else list(v)),
-                payload={"text": card, "source": _source(e), "page": None,
-                         "doc_category": CATEGORY, "indexed_at": day,
-                         "org": True, "org_key": k,
-                         "emp_name": _fio(e), "emp_email": e.get("email") or "",
-                         "department": e.get("department") or ""}))
-        retriever._client.upsert(retriever._COLLECTION, wait=False, points=pts)
+            pts.append({
+                "id": _point_id(k),
+                "vector": (v.tolist() if hasattr(v, "tolist") else list(v)),
+                "payload": {"text": card, "source": _source(e), "page": None,
+                            "doc_category": CATEGORY, "indexed_at": day,
+                            "org": True, "org_key": k,
+                            "emp_name": _fio(e), "emp_email": e.get("email") or "",
+                            "department": e.get("department") or ""}})
+        vectorstore.upsert(pts, wait=False)
 
-    # удаление исчезнувших
-    if removed:
-        retriever._client.delete(
-            retriever._COLLECTION,
-            points_selector=qm.PointIdsList(points=[_point_id(k) for k in removed]))
+    # удаление исчезнувших: точки помечены org_key=<ключ>, удаляем по нейтральному
+    # dict-фильтру (фасад vectorstore.delete не принимает список id, только фильтр).
+    for k in removed:
+        vectorstore.delete({"org_key": k})
 
     db.kv_set(KV_MAP, json.dumps(cur, ensure_ascii=False))
     _bump()
@@ -164,13 +163,9 @@ def settings_batch():
 def clear() -> int:
     """Убрать все карточки сотрудников из индекса и очистить карту."""
     try:
-        import retriever
-        from qdrant_client.http import models as qm
-        retriever._client.delete(
-            retriever._COLLECTION,
-            points_selector=qm.FilterSelector(
-                filter=qm.Filter(must=[qm.FieldCondition(
-                    key="org", match=qm.MatchValue(value=True))])))
+        import vectorstore
+        # все карточки сотрудников помечены payload-полем org=True
+        vectorstore.delete({"org": True})
     except Exception as e:
         print(f"[org_index] очистка индекса: {e}")
     db.kv_set(KV_MAP, "{}")

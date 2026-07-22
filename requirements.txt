@@ -14,7 +14,11 @@ qdrant-client==1.12.2
 # --- эмбеддинги и реранк (работают на Apple Metal / MPS) ---
 sentence-transformers==3.3.1
 FlagEmbedding==1.3.3
-torch==2.5.1
+transformers==4.44.2      # ядро RAG зафиксировано на этой версии (см. setup.sh); XTTS — в отд. venv
+# torch>=2.6.0: CVE-2025-32434 (RCE в torch.load с weights_only) исправлена в 2.6.0.
+# FIXME(review): проверить совместимость sentence-transformers 3.3.1 / FlagEmbedding 1.3.3
+# с torch 2.6.x на Apple MPS (обычно ок). GPU-сборка ставит torch отдельно (requirements-gpu.txt).
+torch>=2.6.0
 
 # --- лексический поиск (гибрид) ---
 rank-bm25==0.2.2
@@ -27,7 +31,7 @@ openpyxl==3.1.5            # XLSX
 xlrd==2.0.1               # старый формат XLS (Excel 97-2003)
 ezdxf==1.3.5              # чертежи DXF/DWG (текст, MTEXT, атрибуты)
 rawpy==0.24.0            # RAW-фото (CR2/NEF/ARW…) → изображение
-Pillow==11.0.0           # растровые изображения (JPG/PNG/…) для OCR и превью
+Pillow>=11.3.0           # растровые изображения (JPG/PNG/…) для OCR и превью (11.0.0 уязвим, апаем до 11.3+)
 matplotlib==3.10.0       # рендер чертежей DXF/DWG в превью (ezdxf drawing backend)
 pytesseract==0.3.13      # OCR распознавание текста на фото (нужен Tesseract)
 extract-msg==0.54.1      # письма Outlook (.msg)
@@ -41,7 +45,7 @@ playwright==1.48.0         # headless-браузер для JS-сайтов (н�
 markdown-it-py==3.0.0
 
 # --- транскрибация обучающих записей (аудио/видео) ---
-mlx-whisper==0.4.2         # Whisper на Apple Silicon (Metal)
+mlx-whisper==0.4.2 ; sys_platform == "darwin"    # Whisper на Apple Silicon (Metal); только macOS
 
 # --- телефония: нативная SIP-регистрация (опционально; AudioSocket работает без неё) ---
 pyVoIP==1.6.8              # SIP-клиент + RTP (PCMU/PCMA) для режима SIP-регистрации

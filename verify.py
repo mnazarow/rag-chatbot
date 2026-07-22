@@ -25,11 +25,44 @@ _CHECK_SYS = (
 )
 
 
+_FRAG_RE = re.compile(r"\n\n(?=\[Фрагмент \d)")
+
+
+def _trim_context(context: str, answer: str, budget: int = 8000) -> str:
+    """Урезать контекст под бюджет символов, НЕ разрывая фрагменты: режем по границам
+    фрагментов (см. prompts.build_context) и в первую очередь оставляем те, чей источник
+    упомянут в ответе (использованные). Грубое context[:8000] могло оборвать фрагмент
+    на полуслове и «спрятать» именно тот кусок, на который опирался ответ."""
+    if not context or len(context) <= budget:
+        return context
+    frags = _FRAG_RE.split(context)
+    ans = (answer or "").lower()
+
+    def _cited(frag: str) -> bool:
+        head = frag.split("\n", 1)[0]
+        m = re.search(r"—\s*(.+?)\]", head)          # "[Фрагмент i — источник, стр. N]"
+        name = (m.group(1) if m else "").split(",")[0].strip().lower()
+        return bool(name) and name in ans
+
+    ordered = [f for f in frags if _cited(f)] + [f for f in frags if not _cited(f)]
+    out, used = [], 0
+    for f in ordered:
+        add = len(f) + (2 if out else 0)             # +разделитель "\n\n"
+        if used + add > budget:
+            continue
+        out.append(f)
+        used += add
+    if not out:
+        return frags[0][:budget]                     # ни один фрагмент не влез — крайний случай
+    return "\n\n".join(out)
+
+
 def is_grounded(question: str, answer: str, context: str) -> bool:
     """True — ответ обеспечен контекстом (или проверка недоступна/не нужна)."""
     if not answer or not context:
         return True
-    msg = (f"КОНТЕКСТ:\n{context[:8000]}\n\nВОПРОС:\n{question}\n\n"
+    ctx = _trim_context(context, answer, 8000)
+    msg = (f"КОНТЕКСТ:\n{ctx}\n\nВОПРОС:\n{question}\n\n"
            f"ОТВЕТ:\n{answer[:4000]}")
     try:
         out = llm_backend.chat(
@@ -71,6 +104,9 @@ def apply(question: str, answer: str, context: str, mode: str | None = None) -> 
     if mode == "strict":
         fixed = regenerate_strict(question, context)
         if fixed and fixed.strip():
-            return {"answer": fixed, "grounded": is_grounded(question, fixed, context),
-                    "changed": True}
+            g2 = is_grounded(question, fixed, context)
+            if g2 or prompts.is_no_answer(fixed):
+                return {"answer": fixed, "grounded": g2, "changed": True}
+            # повторная необоснованность после перегенерации — отдаём с пометкой CAVEAT
+            return {"answer": fixed + CAVEAT, "grounded": False, "changed": True}
     return {"answer": answer + CAVEAT, "grounded": False, "changed": True}

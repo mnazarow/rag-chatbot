@@ -203,6 +203,7 @@ def _thumb_cad(src: Path, out: Path) -> Path | None:
 
 def _thumb_pdf(src: Path, out: Path, page: int = 0) -> Path | None:
     """Рендер страницы PDF в PNG через PyMuPDF."""
+    doc = None
     try:
         import fitz  # pymupdf
         doc = fitz.open(str(src))
@@ -214,6 +215,14 @@ def _thumb_pdf(src: Path, out: Path, page: int = 0) -> Path | None:
         return out if out.exists() else None
     except Exception:
         return None
+    finally:
+        # закрываем документ PyMuPDF в finally (в т. ч. при раннем return) —
+        # иначе утекают файловые дескрипторы при генерации превью.
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
 
 
 def _thumb_video_frame(src: Path, out: Path, t: float = 1.0) -> Path | None:

@@ -52,13 +52,18 @@ def _bump():
 
 # ----------------------------- индексация -----------------------------
 def index_path(path: Path, source: str, chat_id) -> int:
-    """Разобрать файл, нарезать на чанки, заэмбедить и добавить в Qdrant.
-    Возвращает число добавленных чанков."""
+    """Разобрать файл, нарезать на чанки, заэмбедить и добавить в векторную базу
+    (через фасад vectorstore). Возвращает число добавленных чанков.
+
+    Точки получают детерминированные id (uuid5 по source+номер чанка), поэтому
+    повторная индексация того же документа заменяет те же точки, а не плодит дубли.
+    В payload проставляются служебные поля tg=True и tg_chat_id — по ним работает
+    удаление delete_user/delete_all (см. ниже)."""
     import retriever
     import uuid
     import loaders
+    import vectorstore
     from ingest import chunk_text
-    from qdrant_client.http import models as qm
 
     items = []
     for part in loaders.load_file(Path(path)):
@@ -77,20 +82,35 @@ def index_path(path: Path, source: str, chat_id) -> int:
                                         normalize_embeddings=True, batch_size=batch)
     ext = Path(path).suffix.lower().lstrip(".")
     day = time.strftime("%Y-%m-%d")
-    pts = [qm.PointStruct(
-        id=str(uuid.uuid4()),
-        vector=(v.tolist() if hasattr(v, "tolist") else list(v)),
-        payload={"text": t, "source": source, "page": pg, "ftype": ext,
-                 "doc_category": "document", "indexed_at": day,
-                 "tg": True, "tg_chat_id": int(chat_id)})
-        for (t, pg), v in zip(items, vecs)]
-    retriever._client.upsert(retriever._COLLECTION, wait=False, points=pts)
+    pts = []
+    for i, ((t, pg), v) in enumerate(zip(items, vecs)):
+        pid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}#{i}"))
+        pts.append({
+            "id": pid,
+            "vector": (v.tolist() if hasattr(v, "tolist") else list(v)),
+            "payload": {"text": t, "source": source, "page": pg, "ftype": ext,
+                        "doc_category": "document", "indexed_at": day,
+                        "tg": True, "tg_chat_id": int(chat_id)},
+        })
+    # Чистим прежние точки этого source (переиндексация): детерминированные id
+    # перезапишут совпадающие, а этот вызов убирает «хвост», если чанков стало меньше.
+    try:
+        vectorstore.delete({"source": source})
+    except Exception:
+        pass
+    vectorstore.upsert(pts)
     _bump()
     return len(items)
 
 
 def save_and_index(chat_id, tmp_path: str, name: str) -> dict:
-    """Сохранить присланный файл в папку пользователя и проиндексировать его."""
+    """Сохранить присланный файл в папку пользователя и проиндексировать его.
+
+    Различаем два исхода:
+      - индексация прошла, но текста нет (chunks==0 без исключения) — файл бесполезен,
+        удаляем его;
+      - индексация упала с исключением (эмбеддер/векторная база/парсер) — файл НЕ теряем,
+        оставляем на диске и возвращаем {chunks: 0, error: ...} для повторной попытки."""
     d = user_dir(chat_id)
     d.mkdir(parents=True, exist_ok=True)
     dest = _unique(d / _safe_name(name))
@@ -99,7 +119,7 @@ def save_and_index(chat_id, tmp_path: str, name: str) -> dict:
         n = index_path(dest, _source(chat_id, dest.name), chat_id)
     except Exception as e:
         print(f"[tg_train] индексация {dest.name}: {e}")
-        n = 0
+        return {"name": dest.name, "chunks": 0, "error": str(e)}
     if n == 0:
         try:
             dest.unlink()
@@ -108,22 +128,15 @@ def save_and_index(chat_id, tmp_path: str, name: str) -> dict:
     return {"name": dest.name, "chunks": n}
 
 
-# ----------------------------- удаление точек Qdrant -----------------------------
-def _delete_by(must) -> None:
+# ----------------------------- удаление точек векторной базы -----------------------------
+def _delete_by(flt: dict) -> None:
+    """Удалить точки по нейтральному фильтру (поле→значение) через фасад vectorstore."""
     try:
-        import retriever
-        from qdrant_client.http import models as qm
-        retriever._client.delete(
-            retriever._COLLECTION,
-            points_selector=qm.FilterSelector(filter=qm.Filter(must=must)))
+        import vectorstore
+        vectorstore.delete(flt)
         _bump()
     except Exception as e:
         print(f"[tg_train] удаление точек: {e}")
-
-
-def _qm():
-    from qdrant_client.http import models as qm
-    return qm
 
 
 # ----------------------------- список и удаление файлов -----------------------------
@@ -155,9 +168,7 @@ def delete_file(chat_id, name: str) -> bool:
             f.unlink()
         except Exception as e:
             print(f"[tg_train] не удалён файл {f}: {e}")
-    qm = _qm()
-    _delete_by([qm.FieldCondition(key="source",
-                                  match=qm.MatchValue(value=_source(chat_id, _safe_name(name))))])
+    _delete_by({"source": _source(chat_id, _safe_name(name))})
     return True
 
 
@@ -165,9 +176,7 @@ def delete_user(chat_id) -> bool:
     d = user_dir(chat_id)
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)
-    qm = _qm()
-    _delete_by([qm.FieldCondition(key="tg_chat_id",
-                                  match=qm.MatchValue(value=int(chat_id)))])
+    _delete_by({"tg_chat_id": int(chat_id)})
     return True
 
 
@@ -175,6 +184,5 @@ def delete_all() -> bool:
     r = _root()
     if r.exists():
         shutil.rmtree(r, ignore_errors=True)
-    qm = _qm()
-    _delete_by([qm.FieldCondition(key="tg", match=qm.MatchValue(value=True))])
+    _delete_by({"tg": True})
     return True

@@ -24,8 +24,10 @@ warn() { printf "\033[1;33m[warn]\033[0m %s\n" "$*"; }
 
 # ----- 0. проверка платформы ------------------------------------------------
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
-  warn "Скрипт рассчитан на Apple Silicon (macOS arm64). Текущая платформа: $(uname -s)/$(uname -m)."
-  warn "На Linux/NVIDIA замените Ollama на vLLM, а Metal — на CUDA. Остальное переносимо."
+  warn "setup.sh рассчитан ТОЛЬКО на Apple Silicon (macOS arm64). Текущая платформа: $(uname -s)/$(uname -m)."
+  warn "Ниже используются macOS-специфичные вещи (brew, sed -i '', open -a Docker, launchd, MPS)."
+  warn "Для Linux/NVIDIA используйте GPU-деплой: sudo -E bash deploy.sh <git-url> (vLLM + CUDA + Qdrant)."
+  exit 1
 fi
 
 # ----- 1. Homebrew ----------------------------------------------------------
@@ -51,8 +53,13 @@ brew install ollama || true
 
 # ----- 3. Ollama сервис + модель генерации ---------------------------------
 log "Запускаю Ollama как фоновый сервис..."
-brew services start ollama || ollama serve >/dev/null 2>&1 &
-sleep 5
+# Скобки вокруг фонового варианта: иначе `&` относился ко ВСЕМУ выражению `A || B`,
+# и `brew services start` уходил в фон, а фолбэк-серва не запускался предсказуемо.
+brew services start ollama || (ollama serve >/dev/null 2>&1 &)
+# Ждём готовности Ollama (вместо фиксированного sleep) — опрашиваем API до 30 c.
+for _ in $(seq 1 30); do
+  curl -sf localhost:11434/api/tags >/dev/null 2>&1 && break || sleep 1
+done
 # Redis — запускаем как фоновый сервис (кэш агрегатов + семантический кэш)
 if [ "${INSTALL_REDIS:-1}" = "1" ] && command -v redis-server >/dev/null 2>&1; then
   log "Запускаю Redis (кэш)..."
@@ -150,18 +157,28 @@ fi
 
 # папка документов по умолчанию /opt/db (в /opt нужны права sudo)
 if [[ ! -d /opt/db ]]; then
-  log "Создаю /opt/db (может потребоваться пароль sudo)..."
-  sudo mkdir -p /opt/db && sudo chown "$(whoami)" /opt/db \
-    || warn "Не удалось создать /opt/db — создайте вручную или укажите другую папку в админке."
+  # Не вызываем интерактивный sudo вслепую (в CI/без TTY он повиснет на запросе пароля):
+  # пробуем только неинтерактивный sudo, иначе просим создать вручную.
+  if sudo -n true 2>/dev/null; then
+    log "Создаю /opt/db..."
+    sudo -n mkdir -p /opt/db && sudo -n chown "$(whoami)" /opt/db \
+      || warn "Не удалось создать /opt/db — создайте вручную или укажите другую папку в админке."
+  else
+    warn "Нет неинтерактивного sudo — пропускаю /opt/db. Создайте вручную:"
+    warn "  sudo mkdir -p /opt/db && sudo chown $(whoami) /opt/db"
+  fi
 fi
 
 # ----- 7. прогрев моделей эмбеддинга/реранка -------------------------------
 log "Прогреваю модели эмбеддинга и реранка (скачивание весов с HF)..."
-python - <<PY
+# Значения передаём через окружение (os.environ), а не интерполируем в текст кода —
+# так спецсимволы в имени модели не могут сломать/инъектировать Python. Делимитр в кавычках.
+EMBED_MODEL_HF="${EMBED_MODEL_HF}" RERANK_MODEL_HF="${RERANK_MODEL_HF}" python - <<'PY'
+import os
 from sentence_transformers import SentenceTransformer
 from FlagEmbedding import FlagReranker
-SentenceTransformer("${EMBED_MODEL_HF}", device="mps")
-FlagReranker("${RERANK_MODEL_HF}", use_fp16=True)
+SentenceTransformer(os.environ["EMBED_MODEL_HF"], device="mps")
+FlagReranker(os.environ["RERANK_MODEL_HF"], use_fp16=True)
 print("OK")
 PY
 

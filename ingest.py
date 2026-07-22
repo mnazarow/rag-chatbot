@@ -62,14 +62,22 @@ INGEST_STATS = Path(__file__).resolve().parent / "ingest_stats.json"
 INGEST_PROGRESS = Path(__file__).resolve().parent / "ingest_progress.json"
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Атомарная запись текста: во временный файл рядом, затем os.replace. Иначе
+    читатель (админка) может увидеть наполовину записанный/усечённый JSON."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _write_progress(done: int, total: int, current: str = "", phase: str = "index") -> None:
     """Записать прогресс индексации в файл (для графического прогресс-бара в панели)."""
     try:
         pct = int(done * 100 / total) if total else (100 if phase == "done" else 0)
-        INGEST_PROGRESS.write_text(json.dumps(
+        _atomic_write_text(INGEST_PROGRESS, json.dumps(
             {"done": int(done), "total": int(total), "pct": max(0, min(100, pct)),
              "current": (current or "")[:200], "phase": phase, "ts": time.time()},
-            ensure_ascii=False), encoding="utf-8")
+            ensure_ascii=False))
     except Exception:
         pass
 
@@ -215,9 +223,27 @@ def _append_llm_desc(points, source, file_text, chunk_size, chunk_overlap, cappe
 
 
 def file_hash(path: Path) -> str:
+    st = path.stat()
+    # Опция INGEST_CONTENT_HASH: для небольших файлов хешируем содержимое — устойчиво
+    # к изменению содержимого без смены mtime/size (rsync -a, git checkout, восстановление
+    # из бэкапа). По умолчанию (ключа нет) — дёшево, по mtime+size.
+    try:
+        if settings.get("INGEST_CONTENT_HASH"):
+            try:
+                cap = int(settings.get("INGEST_CONTENT_HASH_MAX") or 1_000_000)
+            except Exception:
+                cap = 1_000_000
+            if st.st_size <= cap:
+                h = hashlib.sha256()
+                with open(path, "rb") as f:
+                    for blk in iter(lambda: f.read(1 << 20), b""):
+                        h.update(blk)
+                return h.hexdigest()[:16]
+    except Exception:
+        pass
     h = hashlib.sha256()
-    h.update(str(path.stat().st_mtime_ns).encode())
-    h.update(str(path.stat().st_size).encode())
+    h.update(str(st.st_mtime_ns).encode())
+    h.update(str(st.st_size).encode())
     return h.hexdigest()[:16]
 
 
@@ -314,7 +340,11 @@ def main():
             print("В PostgreSQL нет файлов с содержимым — сначала «Загрузить каталог "
                   "данных в PostgreSQL».")
     else:
-        work = list(fsutil.iter_doc_files(DOCS_DIR, SUPPORTED, onerror=_walk_err))
+        # telegram/ индексируется отдельно tg_train (payload tg=True/tg_chat_id);
+        # исключаем из общего обхода, иначе переиндексация затрёт эти метки и
+        # delete_user()/delete_all() перестанут находить чанки (M31).
+        work = list(fsutil.iter_doc_files(DOCS_DIR, SUPPORTED, onerror=_walk_err,
+                                          exclude_dirs={"telegram"}))
         print(f"Найдено файлов: {len(work)}")
         if _skipped_dirs:
             print(f"Пропущено недоступных папок: {len(_skipped_dirs)} "
@@ -547,6 +577,9 @@ def main():
 
     if workers <= 1:
         # последовательный путь (поддерживает лимит времени на файл через SIGALRM)
+        # FIXME(review): логика парсинга файла продублирована с _parse/_consume
+        # (параллельный путь). Объединять рискованно из-за SIGALRM-таймаута, который
+        # работает только в основном потоке; при рефакторинге вынести общий парсер файла.
         for idx, item in enumerate(work, 1):
             t_file = time.time()
             tmp_path = None
@@ -571,7 +604,6 @@ def main():
                     if not args.reset and already_indexed(source, fhash):
                         continue
                     meta_path = path
-                delete_old_versions(source)
                 print(f"[{idx}/{total_work}] {int(idx * 100 / total_work)}% "
                       f"индексирую: {source}", flush=True)
                 _write_progress(idx, total_work, source)
@@ -607,6 +639,13 @@ def main():
                 if not points:
                     n_skip += 1
                     continue
+                # Удаляем старые версии ТОЛЬКО после успешного парсинга (как в _consume),
+                # иначе сбой парсинга стёр бы уже проиндексированный документ.
+                # FIXME(review): точки пишутся со случайными uuid4 id (см. _embed_upsert),
+                # поэтому нужен явный delete по source. Детерминированные id
+                # (uuid5 от source+chunk_idx) убрали бы гонку delete→upsert, но при
+                # изменении числа чанков оставляли бы «хвост» — нужен отдельный проход.
+                delete_old_versions(source)
                 _embed_upsert(source, fhash, points, path.suffix.lower().lstrip("."),
                               meta_path, parse_ms)
             except _Timeout:
@@ -706,8 +745,8 @@ def main():
         "updated": run_end,
     }
     try:
-        INGEST_STATS.write_text(json.dumps(stats_out, ensure_ascii=False, indent=2),
-                                encoding="utf-8")
+        _atomic_write_text(INGEST_STATS,
+                           json.dumps(stats_out, ensure_ascii=False, indent=2))
     except Exception as e:
         print(f"  ~ не удалось записать {INGEST_STATS.name}: {e}")
 

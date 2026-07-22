@@ -26,6 +26,7 @@ REPO="${REPO:-${1:-}}"
 BRANCH="${BRANCH:-main}"
 TARGET_DIR="${TARGET_DIR:-/opt/rag}"
 RUN_USER="${SUDO_USER:-$(whoami)}"
+FORCE="${FORCE:-0}"          # FORCE=1 — затирать локальные изменения без stash (неинтерактивно)
 
 log(){ printf "\033[1;36m[deploy]\033[0m %s\n" "$*"; }
 
@@ -40,6 +41,16 @@ command -v git >/dev/null || { log "Ставлю git..."; apt-get update -y && a
 if [[ -d "${TARGET_DIR}/.git" ]]; then
   log "Репозиторий уже есть в ${TARGET_DIR} — обновляю до origin/${BRANCH}..."
   git -C "${TARGET_DIR}" fetch --all -q
+  # git reset --hard затирает локальные правки. Проверяем рабочее дерево и сохраняем изменения.
+  if [[ -n "$(git -C "${TARGET_DIR}" status --porcelain 2>/dev/null)" ]]; then
+    if [[ "${FORCE}" == "1" ]]; then
+      log "Локальные изменения в ${TARGET_DIR} будут ЗАТЁРТЫ (FORCE=1)."
+    else
+      log "Обнаружены локальные изменения — сохраняю их в git stash (запустите с FORCE=1, чтобы затереть)."
+      git -C "${TARGET_DIR}" stash push -u -q -m "deploy.sh auto $(date +%F_%T)" || {
+        echo "Не удалось сохранить локальные изменения (git stash). Прерываю. FORCE=1 для перезаписи."; exit 1; }
+    fi
+  fi
   git -C "${TARGET_DIR}" reset --hard "origin/${BRANCH}"
 else
   log "Клонирую ${REPO} (ветка ${BRANCH}) в ${TARGET_DIR}..."

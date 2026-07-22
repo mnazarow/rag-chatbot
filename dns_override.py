@@ -20,6 +20,13 @@ import threading
 _orig_getaddrinfo = None
 _lock = threading.Lock()
 _map: dict[str, str] = {}
+# M24: опциональный allowlist суффиксов имён, к которым РАЗРЕШЕНО применять переопределение.
+# Пустой список (по умолчанию) = применять ко всем записям карты — сохраняет прежнее поведение
+# (в т.ч. документированный кейс `in.vodokomfort.ru`, который выглядит как публичный домен и не
+# попал бы под жёсткий allowlist «внутренних» суффиксов). Если задан — переопределяются только
+# имена, оканчивающиеся на один из суффиксов; прочие резолвятся системно. Это ограничивает
+# «радиус поражения» глобального патча (напр. не даёт случайно перехватить api.telegram.org).
+_allow_suffixes: list[str] = []
 
 
 def set_map(mapping: dict) -> None:
@@ -32,6 +39,27 @@ def set_map(mapping: dict) -> None:
             clean[k] = v
     with _lock:
         _map = clean
+
+
+def set_allowlist(suffixes) -> None:
+    """Ограничить переопределение именами с указанными суффиксами (M24). Пусто = без ограничения.
+    Пример: set_allowlist([".corp.local", ".vodokomfort.ru"])."""
+    global _allow_suffixes
+    clean = [str(s).strip().lower() for s in (suffixes or []) if str(s).strip()]
+    with _lock:
+        _allow_suffixes = clean
+
+
+def _allowed(key: str) -> bool:
+    with _lock:
+        sfx = list(_allow_suffixes)
+    if not sfx:
+        return True   # без allowlist — прежнее поведение (переопределяем все записи карты)
+    for s in sfx:
+        bare = s.lstrip(".")          # суффикс без ведущей точки
+        if key == bare or key.endswith("." + bare):
+            return True
+    return False
 
 
 def get_map() -> dict:
@@ -59,7 +87,7 @@ def _patched_getaddrinfo(host, *args, **kwargs):
             key = host.lower()
         else:
             key = None
-        if key:
+        if key and _allowed(key):
             with _lock:
                 ip = _map.get(key)
             if ip:
@@ -77,6 +105,27 @@ def install() -> dict:
         socket.getaddrinfo = _patched_getaddrinfo
     n = reload()
     return {"ok": True, "count": n}
+
+
+def uninstall() -> dict:
+    """Снять перехват и восстановить оригинальный socket.getaddrinfo (M24). Идемпотентно.
+    Нужно, т.к. install() ставит ГЛОБАЛЬНЫЙ monkeypatch — без снятия он живёт до конца процесса
+    и влияет на всё сетевое взаимодействие. После uninstall() карта сохраняется (можно снова
+    install())."""
+    global _orig_getaddrinfo
+    if _orig_getaddrinfo is not None:
+        try:
+            # восстанавливаем только если патч всё ещё наш (не перекрыт кем-то ещё)
+            if socket.getaddrinfo is _patched_getaddrinfo:
+                socket.getaddrinfo = _orig_getaddrinfo
+        finally:
+            _orig_getaddrinfo = None
+        return {"ok": True, "restored": True}
+    return {"ok": True, "restored": False}
+
+
+# Псевдоним восстановления (совместимое имя)
+restore = uninstall
 
 
 def active() -> bool:

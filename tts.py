@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 
 import config
 import settings
@@ -29,6 +30,8 @@ def _which(x):
 # Coqui XTTS-v2: «обучение» голосового вывода на коротком образце (zero-shot).
 _XTTS = None            # кэш загруженной модели (тяжёлая — грузим один раз)
 _XTTS_KEY = None        # (модель, gpu) — чтобы пересоздать при смене настроек
+_XTTS_LOAD_LOCK = threading.Lock()   # сериализует ленивую загрузку модели (гонка кэша)
+_XTTS_SYNTH_LOCK = threading.Lock()  # tts_to_file непотокобезопасен — синтез по одному
 
 
 def _xtts_importable() -> bool:
@@ -108,19 +111,24 @@ def _load_xtts():
     key = (model, use_gpu)
     if _XTTS is not None and _XTTS_KEY == key:
         return _XTTS
-    try:
-        os.environ.setdefault("COQUI_TOS_AGREED", "1")  # без интерактивного вопроса лицензии
-        from TTS.api import TTS as _CoquiTTS
-        t = _CoquiTTS(model)
+    # Лок вокруг загрузки: без него два потока могут одновременно грузить тяжёлую
+    # модель (двойная память/гонка кэша). Двойная проверка внутри лока.
+    with _XTTS_LOAD_LOCK:
+        if _XTTS is not None and _XTTS_KEY == key:
+            return _XTTS
         try:
-            t.to("cuda" if use_gpu else "cpu")
-        except Exception:
-            pass
-        _XTTS, _XTTS_KEY = t, key
-        return _XTTS
-    except Exception as e:
-        print(f"[tts] XTTS не загрузилась: {e}")
-        return None
+            os.environ.setdefault("COQUI_TOS_AGREED", "1")  # без интерактивного вопроса лицензии
+            from TTS.api import TTS as _CoquiTTS
+            t = _CoquiTTS(model)
+            try:
+                t.to("cuda" if use_gpu else "cpu")
+            except Exception:
+                pass
+            _XTTS, _XTTS_KEY = t, key
+            return _XTTS
+        except Exception as e:
+            print(f"[tts] XTTS не загрузилась: {e}")
+            return None
 
 
 def _wav_to_ogg(wav: str, out_ogg: str) -> bool:
@@ -147,7 +155,11 @@ def _synth_xtts_service(text: str, sample: str, out_ogg: str) -> bool:
     wav = out_ogg + ".wav"
     try:
         import httpx
-        r = httpx.post(url.rstrip("/") + "/tts", timeout=180, json={
+        headers = {}
+        tok = (settings.get("XTTS_TOKEN") or "").strip()
+        if tok:
+            headers["X-Auth-Token"] = tok
+        r = httpx.post(url.rstrip("/") + "/tts", timeout=180, headers=headers, json={
             "text": text, "sample_path": sample,
             "language": (settings.get("XTTS_LANGUAGE") or "ru").strip() or "ru"})
         if r.status_code != 200:
@@ -178,10 +190,12 @@ def _synth_xtts(text: str, out_ogg: str) -> bool:
         return False
     wav = out_ogg + ".wav"
     try:
-        model.tts_to_file(
-            text=text, speaker_wav=sample,
-            language=(settings.get("XTTS_LANGUAGE") or "ru").strip() or "ru",
-            file_path=wav)
+        # tts_to_file не потокобезопасен — синтезируем строго по одному.
+        with _XTTS_SYNTH_LOCK:
+            model.tts_to_file(
+                text=text, speaker_wav=sample,
+                language=(settings.get("XTTS_LANGUAGE") or "ru").strip() or "ru",
+                file_path=wav)
     except Exception as e:
         print(f"[tts] xtts синтез не удался: {e}")
         return False
@@ -288,7 +302,10 @@ def _run(cmd, **kw) -> bool:
 
 
 def synthesize(text: str, out_ogg: str) -> bool:
-    """Озвучить text и записать в out_ogg (OGG/Opus). Возвращает True при успехе."""
+    """Озвучить text и записать в out_ogg (OGG/Opus). Возвращает True при успехе.
+
+    Перебирает доступные движки по порядку (available()["candidates"]) до первого
+    успеха — если приоритетный движок молча не справился, пробуем следующий."""
     text = (text or "").strip()
     if not text:
         return False
@@ -296,7 +313,18 @@ def synthesize(text: str, out_ogg: str) -> bool:
     info = available()
     if not info["ok"]:
         return False
-    eng = info["engine"]
+    cands = info.get("candidates") or ([info["engine"]] if info.get("engine") else [])
+    for eng in cands:
+        try:
+            if _synth_one(eng, text, out_ogg):
+                return True
+        except Exception as e:
+            print(f"[tts] движок {eng} не сработал: {e}")
+    return False
+
+
+def _synth_one(eng: str, text: str, out_ogg: str) -> bool:
+    """Синтез конкретным движком. Возвращает True при успехе (файл out_ogg готов)."""
     if eng == "xtts":
         return _synth_xtts(text, out_ogg)
     voice = (settings.get("TTS_VOICE") or "").strip()
@@ -317,14 +345,17 @@ def synthesize(text: str, out_ogg: str) -> bool:
             cmd = ["say", "-o", tmp]
             if voice:
                 cmd += ["-v", voice]
-            cmd += [text]
+            # '--' завершает опции: текст, начинающийся с '-', не попадёт в argv как флаг
+            cmd += ["--", text]
             if not _run(cmd) or not os.path.exists(tmp):
                 return False
             src = tmp
         else:  # espeak / espeak-ng
             ex = _which("espeak-ng") or _which("espeak")
             tmp = out_ogg + ".wav"
-            if not _run([ex, "-v", voice or "ru", "-w", tmp, text]) or not os.path.exists(tmp):
+            # '--' завершает опции; текст с ведущим '-' иначе трактуется как флаг
+            if not _run([ex, "-v", voice or "ru", "-w", tmp, "--", text]) \
+                    or not os.path.exists(tmp):
                 return False
             src = tmp
         ok = _run(["ffmpeg", "-y", "-i", src, "-c:a", "libopus", "-b:a", "32k", out_ogg])

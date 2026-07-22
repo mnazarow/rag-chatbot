@@ -250,6 +250,7 @@ def sync(url: str | None = None) -> dict:
     L(f"Справочник заменён в базе данных: сохранено {n} сотрудник(ов)")
     # индексация карточек сотрудников в базу знаний (инкрементально)
     idx = None
+    idx_error = None
     try:
         if aid is not None:
             import activity
@@ -261,9 +262,15 @@ def sync(url: str | None = None) -> dict:
             L(f"Индекс обновлён: добавлено {idx.get('added', 0)}, "
               f"обновлено {idx.get('updated', 0)}, удалено {idx.get('removed', 0)}")
     except Exception as e:
+        idx_error = str(e)
         L(f"Индексация в базу знаний не удалась: {e}")
         print(f"[org] индексация в базу знаний не удалась: {e}")
-    _set_status(True, n, None)
+    # Ошибку индексации отражаем в статусе (не только в текстовом логе): справочник
+    # в БД заменён (n сохранено), но база знаний не обновлена — помечаем как ошибку.
+    if idx_error:
+        _set_status(False, n, f"Индексация в базу знаний не удалась: {idx_error}")
+    else:
+        _set_status(True, n, None)
     L("Синхронизация завершена успешно.")
     if aid is not None:
         import activity

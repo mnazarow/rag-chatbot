@@ -26,6 +26,10 @@ DB_PATH = Path(__file__).resolve().parent / "rag_logs.db"
 _RUNTIME = Path(__file__).resolve().parent / "runtime_config.json"
 _LOCK = threading.Lock()
 
+# Окно последних записей для тяжёлых построчных разборов в аналитике (ключевые слова,
+# источники, комментарии) — ограничивает линейную деградацию на больших журналах.
+_ANALYTICS_WINDOW = 100000
+
 _STOPWORDS = set(
     "и в во не на по с со о об а но что как так это для из у к до за от же бы ли "
     "the a of to is при или есть быть какой какая какие чем тип где когда".split()
@@ -105,8 +109,17 @@ def _connect_for(dialect: str):
                                 connect_timeout=5, client_encoding="UTF8")
         conn.autocommit = True
         return "postgresql", conn
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    # WAL + busy_timeout: несколько пишущих процессов (веб/бот/ingest) иначе получают
+    # «database is locked». WAL допускает конкурентное чтение при записи; busy_timeout
+    # заставляет ждать снятия блокировки, а не падать сразу.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        pass
     return "sqlite", conn
 
 
@@ -120,11 +133,74 @@ def _mk_cursor(dialect: str, conn):
     return conn.cursor()
 
 
+def _set_autocommit(dialect: str, conn, value: bool) -> None:
+    """Переключить autocommit с учётом различий драйверов (pymysql — метод,
+    psycopg2 — свойство; sqlite управляется через commit()/rollback())."""
+    try:
+        if dialect == "mysql":
+            conn.autocommit(value)         # pymysql: это МЕТОД, не свойство
+        elif dialect == "postgresql":
+            conn.autocommit = value        # psycopg2: свойство
+    except Exception:
+        pass
+
+
+# --- Кэш соединения в threadlocal (M20): переиспользуем соединение внутри потока,
+# чтобы не открывать новое на каждый запрос (особенно дорого для MySQL/PostgreSQL).
+_local = threading.local()
+
+
+def _ping(dialect: str, conn) -> bool:
+    """Живо ли соединение (для повторного использования из кэша)."""
+    try:
+        c = conn.cursor()
+        c.execute("SELECT 1")
+        c.fetchone()
+        try:
+            c.close()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _get_cached_conn(dialect: str):
+    """Соединение из threadlocal-кэша (или новое) с реконнектом по ping.
+    FIXME(review): это per-thread кэш, а не пул; транзакционные функции
+    (copy_all/catalog_*_pg) намеренно открывают собственные соединения."""
+    key = _norm(dialect)
+    conn = getattr(_local, "conn", None)
+    ckey = getattr(_local, "conn_key", None)
+    if conn is not None and ckey == key and _ping(key, conn):
+        return key, conn
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _local.conn = None
+    d, conn = _connect_for(key)
+    _local.conn = conn
+    _local.conn_key = d
+    return d, conn
+
+
 @contextmanager
 def _cursor(dialect: str | None = None, conn=None):
     own = conn is None
+    tmp = False
     if own:
-        dialect, conn = _connect_for(dialect or _dialect())
+        d0 = dialect or _dialect()
+        if getattr(_local, "busy", False):
+            # вложенный вызов _cursor в том же потоке: берём отдельное временное
+            # соединение, чтобы не делить курсоры на одном соединении (для MySQL/PG
+            # это «commands out of sync»). Кэшируем только «верхний» вызов.
+            dialect, conn = _connect_for(d0)
+            tmp = True
+        else:
+            dialect, conn = _get_cached_conn(d0)
+            _local.busy = True
     _t0 = _time.perf_counter()
     _ok = True
     try:
@@ -134,6 +210,17 @@ def _cursor(dialect: str | None = None, conn=None):
             conn.commit()
     except Exception:
         _ok = False
+        if own and not tmp:
+            # откатываем незавершённую транзакцию в кэшируемом соединении, иначе
+            # следующий запрос в этом потоке унаследует битую/открытую транзакцию
+            try:
+                conn.rollback()
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                _local.conn = None
         raise
     finally:
         try:
@@ -142,7 +229,9 @@ def _cursor(dialect: str | None = None, conn=None):
                            (_time.perf_counter() - _t0) * 1000.0, _ok)
         except Exception:
             pass
-        if own:
+        if own and not tmp:
+            _local.busy = False           # кэшируемое соединение НЕ закрываем
+        if tmp:
             try:
                 conn.close()
             except Exception:
@@ -486,6 +575,22 @@ def init(dialect: str | None = None) -> None:
                 cur.execute(f"ALTER TABLE requests ADD COLUMN {_c} {_t}")
             except Exception:
                 pass
+        # индексы под частые выборки (идемпотентно). MySQL до 8.0 не знает
+        # «CREATE INDEX IF NOT EXISTS» — на повторном запуске отдаст «duplicate key»,
+        # его глушим через try/except (у каждого индекса свой try).
+        _if = "" if dd == "mysql" else "IF NOT EXISTS "
+        _idx = [
+            (f"CREATE INDEX {_if}idx_req_session ON requests(session_id)"),
+            (f"CREATE INDEX {_if}idx_req_day ON requests(day)"),
+            (f"CREATE INDEX {_if}idx_req_chan_caller ON requests(channel, caller)"),
+            (f"CREATE INDEX {_if}idx_tgr_chat ON tg_requests(chat_id)"),
+            (f"CREATE INDEX {_if}idx_tgr_day ON tg_requests(day)"),
+        ]
+        for stmt in _idx:
+            try:
+                cur.execute(stmt)
+            except Exception:
+                pass
         if dd == "sqlite":
             conn.commit()
     finally:
@@ -769,9 +874,14 @@ def _analytics_raw() -> dict:
     per_cat = _all("SELECT COALESCE(NULLIF(category,''),'—') cat, COUNT(*) n "
                    "FROM requests GROUP BY COALESCE(NULLIF(category,''),'—') "
                    "ORDER BY n DESC")
-    answered_rows = _all("SELECT sources FROM requests WHERE answered=1")
-    lat_rows = _all("SELECT latency_ms FROM requests")
-    q_rows = _all("SELECT question FROM requests")
+    # Тяжёлые построчные разборы (JSON-источники, ключевые слова) ограничиваем окном
+    # последних записей, чтобы аналитика не деградировала линейно на больших журналах.
+    # FIXME(review): окно _ANALYTICS_WINDOW усечёт статистику источников/слов на очень
+    # больших базах; при необходимости вынести ключевые слова в отдельную SQL-агрегацию.
+    _win = _ANALYTICS_WINDOW
+    answered_rows = _all("SELECT sources FROM requests WHERE answered=1 "
+                         "ORDER BY id DESC LIMIT ?", (_win,))
+    q_rows = _all("SELECT question FROM requests ORDER BY id DESC LIMIT ?", (_win,))
     tm = _one("SELECT AVG(retrieve_ms) rt, AVG(gen_ms) gn, AVG(latency_ms) lt "
               "FROM requests")
 
@@ -791,7 +901,7 @@ def _analytics_raw() -> dict:
     # частые слова в вопросах Телеграм — отдельно
     tg_kw = Counter()
     try:
-        for r in _all("SELECT question FROM tg_requests"):
+        for r in _all("SELECT question FROM tg_requests ORDER BY id DESC LIMIT ?", (_win,)):
             for w in (r["question"] or "").lower().split():
                 w = w.strip("?.,!:;()\"'«»—-")
                 if len(w) > 3 and w not in _STOPWORDS:
@@ -803,12 +913,14 @@ def _analytics_raw() -> dict:
     cmt_rows = []
     try:
         cmt_rows += [r["comment"] for r in
-                     _all("SELECT comment FROM requests WHERE comment IS NOT NULL AND comment<>''")]
+                     _all("SELECT comment FROM requests WHERE comment IS NOT NULL AND comment<>'' "
+                          "ORDER BY id DESC LIMIT ?", (_win,))]
     except Exception:
         pass
     try:
         cmt_rows += [r["comment"] for r in
-                     _all("SELECT comment FROM tg_requests WHERE comment IS NOT NULL AND comment<>''")]
+                     _all("SELECT comment FROM tg_requests WHERE comment IS NOT NULL AND comment<>'' "
+                          "ORDER BY id DESC LIMIT ?", (_win,))]
     except Exception:
         pass
     cmt_kw = Counter()
@@ -823,17 +935,18 @@ def _analytics_raw() -> dict:
             if len(w) > 3 and w not in _STOPWORDS:
                 cmt_kw[w] += 1
 
-    buckets = {"<1с": 0, "1–3с": 0, "3–6с": 0, ">6с": 0}
-    for r in lat_rows:
-        ms = r["latency_ms"] or 0
-        if ms < 1000:
-            buckets["<1с"] += 1
-        elif ms < 3000:
-            buckets["1–3с"] += 1
-        elif ms < 6000:
-            buckets["3–6с"] += 1
-        else:
-            buckets[">6с"] += 1
+    # гистограмма латентности — SQL-агрегатом (без полного скана в Python)
+    _lh = _one(
+        "SELECT "
+        "SUM(CASE WHEN COALESCE(latency_ms,0) < 1000 THEN 1 ELSE 0 END) b0, "
+        "SUM(CASE WHEN COALESCE(latency_ms,0) >= 1000 AND COALESCE(latency_ms,0) < 3000 "
+        "         THEN 1 ELSE 0 END) b1, "
+        "SUM(CASE WHEN COALESCE(latency_ms,0) >= 3000 AND COALESCE(latency_ms,0) < 6000 "
+        "         THEN 1 ELSE 0 END) b2, "
+        "SUM(CASE WHEN COALESCE(latency_ms,0) >= 6000 THEN 1 ELSE 0 END) b3 "
+        "FROM requests") or {}
+    buckets = {"<1с": int(_lh.get("b0") or 0), "1–3с": int(_lh.get("b1") or 0),
+               "3–6с": int(_lh.get("b2") or 0), ">6с": int(_lh.get("b3") or 0)}
 
     return {
         "per_day": [{"day": r["day"], "n": r["n"]} for r in reversed(per_day)],
@@ -1122,6 +1235,10 @@ def copy_all(target: str) -> dict:
     except Exception as e:
         return {"ok": False, "target": target,
                 "log": "\n".join(log) + f"\nПодключение к {target}: {_safe_err(e)}"}
+    # атомарная замена: DELETE+INSERT каждой таблицы в одной транзакции (autocommit
+    # off), вставка пакетами executemany — иначе сбой на середине оставит приёмник в
+    # полузаполненном состоянии.
+    _set_autocommit(td, tconn, False)
     try:
         tcur = _mk_cursor(td, tconn)
         for table, cols in _TABLES.items():
@@ -1133,26 +1250,39 @@ def copy_all(target: str) -> dict:
             ins = _ph(f"INSERT INTO {table} ({','.join(cols)}) "
                       f"VALUES ({','.join(['?'] * len(cols))})", td)
             n = 0
-            for r in rows:
+            batch = [[r.get(c) for c in cols] for r in rows]
+            CH = 1000
+            for i in range(0, len(batch), CH):
+                chunk = batch[i:i + CH]
                 try:
-                    tcur.execute(ins, [r.get(c) for c in cols])
-                    n += 1
-                except Exception as e:
-                    log.append(f"{table}: строка пропущена: {e}")
-            if td == "sqlite":
-                tconn.commit()
+                    tcur.executemany(ins, chunk)
+                    n += len(chunk)
+                except Exception:
+                    # пакет не прошёл — построчно, чтобы одна битая строка не роняла всё
+                    for row in chunk:
+                        try:
+                            tcur.execute(ins, row)
+                            n += 1
+                        except Exception as e:
+                            log.append(f"{table}: строка пропущена: {e}")
             counts[table] = n
             log.append(f"{table}: скопировано {n} из {len(rows)}")
         _fix_seq(td, tcur)
         try:
             _kv_set(td, tcur, "runtime_config", cfg)
-            if td == "sqlite":
-                tconn.commit()
             counts["settings"] = 1
             log.append("Настройки (runtime_config) сохранены в kv_store приёмника.")
         except Exception as e:
             log.append(f"Настройки: {e}")
+        tconn.commit()
+    except Exception:
+        try:
+            tconn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
+        _set_autocommit(td, tconn, True)
         try:
             tconn.close()
         except Exception:
@@ -1464,6 +1594,9 @@ def catalog_store_many(rows: list) -> int:
               "txt=VALUES(txt),updated=VALUES(updated)")
     with _LOCK, _cursor() as (d, conn, cur):
         if d == "postgresql":
+            # перед перезаписью освобождаем прежние Large Objects перезаписываемых
+            # записей: ON CONFLICT обнулит content_oid, иначе прежний LO осиротеет
+            _pg_unlink_oids_for([r[0] for r in rows])
             from psycopg2 import Binary
             from psycopg2.extras import execute_values
             data = [(r[0], r[1] or "", r[2] or "", int(r[3] or 0), int(r[4] or 0),
@@ -1497,7 +1630,30 @@ def catalog_store_many(rows: list) -> int:
 
 def catalog_clear() -> int:
     """Полностью очистить каталог (метаданные, текст и файлы)."""
+    d = _dialect()
     try:
+        if d == "postgresql":
+            # перед DELETE освобождаем Large Objects, иначе они осиротеют в
+            # pg_largeobject (как в catalog_clear_files)
+            conn = _connect_pg_tx()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT content_oid FROM doc_catalog "
+                            "WHERE content_oid IS NOT NULL")
+                for (oid,) in cur.fetchall():
+                    try:
+                        conn.lobject(oid=int(oid), mode="n").unlink()
+                    except Exception:
+                        pass
+                cur.execute("DELETE FROM doc_catalog")
+                n = cur.rowcount
+                conn.commit()
+                return n
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
         with _LOCK:
             return _exec("DELETE FROM doc_catalog")
     except Exception as e:
@@ -1513,6 +1669,45 @@ def _connect_pg_tx():
     return psycopg2.connect(host=p["host"], port=p["port"], user=p["user"],
                             password=p["password"], dbname=p["db"],
                             connect_timeout=5, client_encoding="UTF8")
+
+
+def _pg_unlink_oids_for(rel_paths: list) -> None:
+    """Отвязать (lo_unlink) Large Objects перезаписываемых записей doc_catalog в
+    PostgreSQL. Без этого при перезаписи (ON CONFLICT ... content_oid=NULL) прежние
+    Large Objects осиротеют в pg_largeobject. Своё tx-соединение (lobject требует
+    транзакции; у кэшируемого соединения autocommit=True)."""
+    paths = [p for p in rel_paths if p]
+    if not paths:
+        return
+    try:
+        conn = _connect_pg_tx()
+    except Exception:
+        return
+    try:
+        cur = conn.cursor()
+        CH = 1000
+        for i in range(0, len(paths), CH):
+            chunk = paths[i:i + CH]
+            ph = ",".join(["%s"] * len(chunk))
+            cur.execute("SELECT content_oid FROM doc_catalog "
+                        f"WHERE content_oid IS NOT NULL AND rel_path IN ({ph})", chunk)
+            for (oid,) in cur.fetchall():
+                try:
+                    conn.lobject(oid=int(oid), mode="n").unlink()
+                except Exception:
+                    pass
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[db] _pg_unlink_oids_for: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def catalog_store_large_pg(rel_path, fname, ext, size, mtime, method, src_path,
@@ -1837,9 +2032,8 @@ def org_replace(rows: list[dict]) -> int:
     cols = ", ".join(_ORG_COLS) + ", updated"
     ph = ", ".join("?" for _ in _ORG_COLS) + ", ?"
     with _cursor() as (d, conn, cur):
-        cur.execute(_ph("DELETE FROM org_employees", d))
         sql = _ph(f"INSERT INTO org_employees({cols}) VALUES({ph})", d)
-        n = 0
+        data = []
         for r in rows:
             # парсер отдаёт ключ "position"; в БД колонка job_title
             params = []
@@ -1849,12 +2043,24 @@ def org_replace(rows: list[dict]) -> int:
                 else:
                     params.append(r.get(c) if r.get(c) is not None else "")
             params.append(now)
-            cur.execute(sql, tuple(params))
-            n += 1
-        if d == "sqlite":
+            data.append(tuple(params))
+        # атомарная полная замена: DELETE+INSERT в одной транзакции, пакетный executemany
+        _set_autocommit(d, conn, False)
+        try:
+            cur.execute(_ph("DELETE FROM org_employees", d))
+            if data:
+                cur.executemany(sql, data)
             conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            _set_autocommit(d, conn, True)
     _bump()
-    return n
+    return len(data)
 
 
 def org_list(search: str = "", department: str = "", limit: int = 2000) -> list[dict]:
@@ -1862,12 +2068,17 @@ def org_list(search: str = "", department: str = "", limit: int = 2000) -> list[
     В выдаче job_title продублирован как position (для совместимости с UI)."""
     where, params = [], []
     if search:
-        s = f"%{search.strip().lower()}%"
-        where.append("(LOWER(last_name) LIKE ? OR LOWER(first_name) LIKE ? OR "
-                     "LOWER(middle_name) LIKE ? OR LOWER(job_title) LIKE ? OR "
-                     "LOWER(department) LIKE ? OR LOWER(email) LIKE ? OR "
-                     "phone_work LIKE ? OR phone_ext LIKE ? OR phone_mobile LIKE ? OR "
-                     "LOWER(suppliers) LIKE ?)")
+        # экранируем спецсимволы LIKE (%/_/\), чтобы поисковая строка трактовалась
+        # буквально, и добавляем ESCAPE к каждому предикату
+        raw = search.strip().lower()
+        esc = raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        s = f"%{esc}%"
+        where.append(
+            "(LOWER(last_name) LIKE ? ESCAPE '\\' OR LOWER(first_name) LIKE ? ESCAPE '\\' OR "
+            "LOWER(middle_name) LIKE ? ESCAPE '\\' OR LOWER(job_title) LIKE ? ESCAPE '\\' OR "
+            "LOWER(department) LIKE ? ESCAPE '\\' OR LOWER(email) LIKE ? ESCAPE '\\' OR "
+            "phone_work LIKE ? ESCAPE '\\' OR phone_ext LIKE ? ESCAPE '\\' OR "
+            "phone_mobile LIKE ? ESCAPE '\\' OR LOWER(suppliers) LIKE ? ESCAPE '\\')")
         params += [s] * 10
     if department:
         where.append("department = ?")

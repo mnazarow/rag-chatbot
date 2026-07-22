@@ -11,6 +11,7 @@
 «зависшие» без обновлений дольше `STALE_TTL` секунд автоматически убираются.
 """
 from __future__ import annotations
+import contextlib
 import itertools
 import threading
 import time
@@ -41,6 +42,49 @@ def _gc_locked() -> None:
                        key=lambda x: (not x.get("done"), x.get("updated", 0)))
         for v in order[: len(_items) - MAX_ITEMS]:
             _items.pop(v["id"], None)
+
+
+# ---------------------------------------------------------------- общий семафор --
+# Общий на процесс лимит одновременных «тяжёлых» стадий конвейера (STT/LLM/TTS) —
+# один на все каналы (веб-чат/Telegram/VoIP), чтобы всплеск запросов не положил хост.
+# Лимит из настройки HEAVY_PIPELINE_LIMIT (0/пусто = без ограничения).
+_heavy_sem = None
+_heavy_sem_n = None
+_heavy_lock = threading.Lock()
+
+
+def _heavy_semaphore():
+    global _heavy_sem, _heavy_sem_n
+    try:
+        import settings
+        n = int(settings.get("HEAVY_PIPELINE_LIMIT") or 0)
+    except Exception:
+        n = 0
+    if n <= 0:
+        return None
+    with _heavy_lock:
+        if _heavy_sem is None or _heavy_sem_n != n:
+            _heavy_sem = threading.BoundedSemaphore(n)
+            _heavy_sem_n = n
+        return _heavy_sem
+
+
+@contextlib.contextmanager
+def heavy_slot():
+    """Контекст-менеджер: занять слот тяжёлого конвейера (STT/LLM/TTS). Если лимит не
+    задан (HEAVY_PIPELINE_LIMIT<=0) — no-op. Использовать: `with activity.heavy_slot(): ...`."""
+    sem = _heavy_semaphore()
+    if sem is None:
+        yield
+        return
+    sem.acquire()
+    try:
+        yield
+    finally:
+        try:
+            sem.release()
+        except Exception:
+            pass
 
 
 def start(kind: str, label: str, stage: str = "", detail: str = "",

@@ -556,13 +556,17 @@ doc_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
  '<Relationship Id="rIdF" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>'
  '</Relationships>')
 
-out = sys.argv[1]
-with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-    z.writestr("[Content_Types].xml", content_types)
-    z.writestr("_rels/.rels", rels)
-    z.writestr("word/document.xml", document_xml)
-    z.writestr("word/styles.xml", styles_xml)
-    z.writestr("word/numbering.xml", numbering_xml)
-    z.writestr("word/footer1.xml", footer_xml)
-    z.writestr("word/_rels/document.xml.rels", doc_rels)
-print("written", out)
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("usage: gen_pmi.py <output.docx>", file=sys.stderr)
+        sys.exit(1)
+    out = sys.argv[1]
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("word/document.xml", document_xml)
+        z.writestr("word/styles.xml", styles_xml)
+        z.writestr("word/numbering.xml", numbering_xml)
+        z.writestr("word/footer1.xml", footer_xml)
+        z.writestr("word/_rels/document.xml.rels", doc_rels)
+    print("written", out)

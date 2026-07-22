@@ -75,7 +75,7 @@ def load_file(path: Path, _depth: int = 0) -> Iterator[dict]:
         elif ext in {".xlsx", ".xlsm", ".xls", ".csv"}:
             yield from _load_table(path)
         elif ext in {".txt", ".md"}:
-            yield {"text": path.read_text(errors="ignore"), "page": None}
+            yield {"text": _read_text_any(path), "page": None}
         elif ext in {".html", ".htm", ".mhtml", ".mht"}:
             yield from _load_html(path)
         elif ext == ".doc":
@@ -107,8 +107,15 @@ def load_file(path: Path, _depth: int = 0) -> Iterator[dict]:
             if _enabled("TRANSCRIBE_AV"):  # транскрибация Whisper — минуты на файл
                 yield from _load_av(path)
         # остальное молча пропускаем
-    except Exception as e:  # один битый файл не должен ронять индексацию
-        print(f"  ! ошибка чтения {path.name}: {e}")
+    except Exception as e:
+        # Ошибку парсера прокидываем наружу — в ingest она попадёт в список errors и
+        # станет видна пользователю (раньше глоталась print-ом и файл «молча пустел»).
+        # Подавляем только для вложенных файлов архива (_depth > 0): один битый файл
+        # внутри архива не должен срывать индексацию остального содержимого.
+        if _depth > 0:
+            print(f"  ! ошибка чтения {path.name}: {e}")
+            return
+        raise
 
 
 def _enabled(key: str) -> bool:
@@ -237,13 +244,21 @@ def _load_pdf(path: Path):
         min_chars = int(_ocr_setting("OCR_MIN_CHARS", 25))
     except Exception:
         min_chars = 25
-    for i, page in enumerate(doc, 1):
-        txt = page.get_text("text")
-        if txt.strip():
-            yield {"text": txt, "page": i}
-        # мало или нет текста — вероятно, страница нарисована картинкой: распознаём
-        if ocr_on and len(txt.strip()) < min_chars and _ocr_available():
-            yield from _ocr_pdf_page(page, i)
+    try:
+        for i, page in enumerate(doc, 1):
+            txt = page.get_text("text")
+            if txt.strip():
+                yield {"text": txt, "page": i}
+            # мало или нет текста — вероятно, страница нарисована картинкой: распознаём
+            if ocr_on and len(txt.strip()) < min_chars and _ocr_available():
+                yield from _ocr_pdf_page(page, i)
+    finally:
+        # закрываем документ в finally (в т. ч. при закрытии генератора до конца) —
+        # иначе утекают файловые дескрипторы PyMuPDF при массовой индексации.
+        try:
+            doc.close()
+        except Exception:
+            pass
 
 
 def _load_docx(path: Path):
@@ -275,13 +290,12 @@ def _load_pptx(path: Path):
             yield {"text": "\n".join(chunks), "page": i}
 
 
-def _read_csv_any(path: Path, pd):
-    """Прочитать CSV с авто-определением кодировки и разделителя.
-    Поддерживает UTF-8/UTF-8-BOM, Windows-1251 (кириллица), Latin-1 и др.;
-    разделитель — , ; \\t |."""
-    import io
-    raw = path.read_bytes()
-    # 1) кодировка: сначала пробуем определитель, затем типичные варианты
+def _read_text_any(path: Path) -> str:
+    """Прочитать текстовый файл, определив кодировку.
+    Порядок: charset_normalizer → utf-8-sig → cp1251 → latin-1 → utf-8(replace).
+    Общий хелпер для ВСЕХ текстовых загрузчиков: read_text(errors='ignore') молча
+    ломает кириллицу в cp1251, поэтому кодировку надо подбирать, а не игнорировать."""
+    raw = Path(path).read_bytes()
     encodings: list[str] = []
     try:
         import charset_normalizer
@@ -293,15 +307,21 @@ def _read_csv_any(path: Path, pd):
     for e in ("utf-8-sig", "cp1251", "latin-1"):
         if e not in encodings:
             encodings.append(e)
-    text = None
     for e in encodings:
         try:
-            text = raw.decode(e)
-            break
+            return raw.decode(e)
         except Exception:
             continue
-    if text is None:
-        text = raw.decode("utf-8", errors="replace")
+    return raw.decode("utf-8", errors="replace")
+
+
+def _read_csv_any(path: Path, pd):
+    """Прочитать CSV с авто-определением кодировки и разделителя.
+    Поддерживает UTF-8/UTF-8-BOM, Windows-1251 (кириллица), Latin-1 и др.;
+    разделитель — , ; \\t |."""
+    import io
+    # 1) кодировка: общий хелпер (charset_normalizer + cp1251-фолбэк)
+    text = _read_text_any(path)
     # 2) разделитель: Sniffer, иначе — самый частый в первой строке
     import csv as _csv
     sample = text[:8192]
@@ -348,9 +368,9 @@ def _load_html(path: Path):
                 payload = part.get_payload(decode=True) or b""
                 charset = part.get_content_charset() or "utf-8"
                 html += payload.decode(charset, errors="ignore")
-        raw = html or path.read_text(errors="ignore")
+        raw = html or _read_text_any(path)
     else:
-        raw = path.read_text(errors="ignore")
+        raw = _read_text_any(path)
     soup = BeautifulSoup(raw, "html.parser")
     text = soup.get_text(separator="\n")
     if text.strip():
@@ -395,7 +415,12 @@ def _dwg_to_dxf(path: Path):
     import shutil
     import subprocess
     import tempfile
-    out = Path(tempfile.gettempdir()) / (path.stem + "_conv.dxf")
+    # Уникальный временный DXF на каждую конверсию: при INGEST_WORKERS>1 два потока с
+    # одинаковым stem писали бы в один и тот же файл (gettempdir()/stem+"_conv.dxf") —
+    # гонка и порча данных. mkstemp даёт уникальное имя; вызывающий удалит его (tmp.unlink).
+    _fd, _out = tempfile.mkstemp(suffix=".dxf", prefix=path.stem + "_conv_")
+    _os.close(_fd)
+    out = Path(_out)
     if shutil.which("dwg2dxf"):
         try:
             subprocess.run(["dwg2dxf", "-o", str(out), str(path)],
@@ -427,6 +452,11 @@ def _dwg_to_dxf(path: Path):
             for _d in (ind, outd):
                 if _d is not None:
                     shutil.rmtree(_d, ignore_errors=True)
+    # конверсия не удалась — убираем пустой временный файл, чтобы не копить мусор
+    try:
+        out.unlink()
+    except Exception:
+        pass
     return None
 
 
@@ -824,7 +854,7 @@ def _load_cad_exchange(path: Path):
     названия деталей/изделий, описания, заголовок, единицы, автор.
     Геометрия не извлекается (для текстового поиска она бесполезна)."""
     ext = path.suffix.lower()
-    text = path.read_text(errors="ignore")
+    text = _read_text_any(path)
     body = _parse_iges(text) if ext in (".igs", ".iges") else _parse_step(text)
     if body.strip():
         yield {"text": body, "page": None}
@@ -963,10 +993,16 @@ def _ocr_image(img):
     pdf_bytes = pytesseract.image_to_pdf_or_hocr(
         img, lang=_ocr_lang(), extension="pdf", config=_ocr_config())
     doc = fitz.open(stream=io.BytesIO(pdf_bytes).getvalue(), filetype="pdf")
-    for i, page in enumerate(doc, 1):
-        txt = page.get_text("text")
-        if txt.strip():
-            yield {"text": txt, "page": i}
+    try:
+        for i, page in enumerate(doc, 1):
+            txt = page.get_text("text")
+            if txt.strip():
+                yield {"text": txt, "page": i}
+    finally:
+        try:
+            doc.close()   # не утекают дескрипторы PyMuPDF
+        except Exception:
+            pass
 
 
 def _load_image(path: Path):
@@ -1029,7 +1065,7 @@ def _load_raw(path: Path):
 def _load_svg(path: Path):
     """SVG — извлекаем текст из элементов <text>/<tspan>."""
     import re
-    data = path.read_text(errors="ignore")
+    data = _read_text_any(path)
     # вытаскиваем содержимое текстовых тегов
     parts = re.findall(r"<(?:text|tspan)\b[^>]*>(.*?)</(?:text|tspan)>", data,
                        flags=re.DOTALL | re.IGNORECASE)
@@ -1047,7 +1083,7 @@ def _load_xml(path: Path):
         text = "\n".join(parts)
     except Exception:
         import re
-        raw = path.read_text(errors="ignore")
+        raw = _read_text_any(path)
         text = re.sub(r"<[^>]+>", " ", raw)
     if text.strip():
         yield {"text": text, "page": None}
@@ -1056,7 +1092,7 @@ def _load_xml(path: Path):
 def _load_json(path: Path):
     """JSON — плоское текстовое представление пар ключ/значение."""
     import json
-    data = json.loads(path.read_text(errors="ignore"))
+    data = json.loads(_read_text_any(path))
 
     def walk(obj, prefix=""):
         if isinstance(obj, dict):
@@ -1078,7 +1114,7 @@ def _load_json(path: Path):
 def _load_url(path: Path):
     """Ярлык .url (Windows Internet Shortcut) — извлекаем адрес ссылки."""
     import re
-    data = path.read_text(errors="ignore")
+    data = _read_text_any(path)
     m = re.search(r"URL\s*=\s*(\S+)", data, flags=re.IGNORECASE)
     url = m.group(1).strip() if m else ""
     text = f"Ссылка ({path.stem}): {url}".strip()
@@ -1142,6 +1178,46 @@ def _load_msg(path: Path):
         yield {"text": text, "page": None}
 
 
+class _ArchiveAbort(Exception):
+    """Распаковка прервана из соображений безопасности (превышен лимит объёма или
+    небезопасный путь члена). В отличие от прочих ошибок НЕ приводит к фолбэку на
+    системные утилиты — иначе защита обходилась бы через `7z x`/`bsdtar`."""
+
+
+def _safe_member_path(dest: Path, name: str) -> Path:
+    """Целевой путь члена архива внутри dest. Отказ при абсолютных путях и '..'
+    (path traversal). Возвращает нормализованный путь под dest."""
+    droot = dest.resolve()
+    target = (dest / name).resolve()
+    if target != droot and droot not in target.parents:
+        raise _ArchiveAbort(f"небезопасный путь в архиве: {name!r}")
+    return target
+
+
+def _copy_capped(src, dst, budget: list) -> None:
+    """Потоковое копирование src→dst с учётом остатка бюджета байт (budget[0]).
+    При превышении — _ArchiveAbort (прерывание распаковки без фолбэка)."""
+    while True:
+        block = src.read(1 << 20)
+        if not block:
+            break
+        budget[0] -= len(block)
+        if budget[0] < 0:
+            raise _ArchiveAbort("распакованный объём превышает лимит")
+        dst.write(block)
+
+
+def _dir_size(dest: Path) -> int:
+    total = 0
+    for p in Path(dest).rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except Exception:
+            pass
+    return total
+
+
 def _extract_archive(path: Path, dest: Path) -> bool:
     """Распаковать архив в каталог dest. Сначала пробуем библиотеки Python,
     затем системные утилиты (7z/bsdtar/unar). Возвращает True при успехе."""
@@ -1153,16 +1229,37 @@ def _extract_archive(path: Path, dest: Path) -> bool:
     try:
         if ext == ".zip":
             import zipfile
+            budget = [_ARCHIVE_MAX_BYTES]
             with zipfile.ZipFile(path) as z:
                 total = sum(i.file_size for i in z.infolist())
                 if total > _ARCHIVE_MAX_BYTES:
-                    raise RuntimeError("распакованный объём превышает лимит")
-                z.extractall(dest)
+                    raise _ArchiveAbort("распакованный объём превышает лимит")
+                for info in z.infolist():
+                    if info.is_dir():
+                        _safe_member_path(dest, info.filename).mkdir(parents=True, exist_ok=True)
+                        continue
+                    target = _safe_member_path(dest, info.filename)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with z.open(info) as src, open(target, "wb") as dst:
+                        _copy_capped(src, dst, budget)
             return True
         if ext == ".7z":
             import py7zr
             with py7zr.SevenZipFile(path, "r") as z:
+                # py7zr извлекает потоково на диск, но не даёт удобного пофайлового
+                # счётчика — оцениваем распакованный объём заранее по заголовкам.
+                try:
+                    total = sum((getattr(fi, "uncompressed", 0) or 0) for fi in z.list())
+                except Exception:
+                    total = 0
+                if total > _ARCHIVE_MAX_BYTES:
+                    raise _ArchiveAbort("распакованный объём превышает лимит")
                 z.extractall(dest)
+            # backstop: фактический объём на диске (на случай неверных заголовков)
+            # FIXME(review): для 7z нет истинного потокового счётчика — контроль по
+            # заголовкам + пост-проверка размера каталога, бомба может кратко лечь на диск.
+            if _dir_size(dest) > _ARCHIVE_MAX_BYTES:
+                raise _ArchiveAbort("распакованный объём превышает лимит")
             return True
         if ext == ".rar":
             import rarfile
@@ -1175,16 +1272,36 @@ def _extract_archive(path: Path, dest: Path) -> bool:
                     except Exception:
                         pass
                     break
+            budget = [_ARCHIVE_MAX_BYTES]
             with rarfile.RarFile(path) as r:
-                r.extractall(dest)
+                for info in r.infolist():
+                    if info.isdir():
+                        _safe_member_path(dest, info.filename).mkdir(parents=True, exist_ok=True)
+                        continue
+                    target = _safe_member_path(dest, info.filename)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with r.open(info) as src, open(target, "wb") as dst:
+                        _copy_capped(src, dst, budget)
             return True
         if ext in {".tar", ".tgz"} or (ext in {".gz", ".bz2"} and ".tar" in path.name.lower()):
             import tarfile
+            budget = [_ARCHIVE_MAX_BYTES]
             with tarfile.open(path) as t:
-                try:
-                    t.extractall(dest, filter="data")  # защита от path-traversal (3.12+)
-                except TypeError:
-                    t.extractall(dest)  # старые версии Python без параметра filter
+                # Ручная валидация членов (отказ при абсолютных путях/'..') вместо
+                # молчаливого фолбэка на небезопасный extractall на Python < 3.11.4.
+                for m in t:
+                    if m.isdir():
+                        _safe_member_path(dest, m.name).mkdir(parents=True, exist_ok=True)
+                        continue
+                    if not m.isfile():
+                        continue   # симлинки/устройства/hardlink — пропускаем (безопасность)
+                    target = _safe_member_path(dest, m.name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    src = t.extractfile(m)
+                    if src is None:
+                        continue
+                    with src, open(target, "wb") as dst:
+                        _copy_capped(src, dst, budget)
             return True
         if ext in {".gz", ".bz2"}:
             # одиночный поток (не tar-архив) — распаковываем в один файл
@@ -1192,13 +1309,15 @@ def _extract_archive(path: Path, dest: Path) -> bool:
             import gzip
             opener = gzip.open if ext == ".gz" else bz2.open
             out = Path(dest) / path.stem  # отбрасываем .gz/.bz2
+            budget = [_ARCHIVE_MAX_BYTES]
             with opener(path, "rb") as src, open(out, "wb") as dst:
-                while True:
-                    block = src.read(1 << 20)
-                    if not block:
-                        break
-                    dst.write(block)
+                _copy_capped(src, dst, budget)
             return True
+    except _ArchiveAbort as e:
+        # лимит объёма/небезопасный член — НЕ пробуем системные утилиты (иначе обойдём
+        # защиту от «архивных бомб» и path traversal), помечаем архив как нераспакованный.
+        print(f"  ! {path.name}: распаковка прервана ({e})")
+        return False
     except ImportError:
         pass  # нужной библиотеки нет — пробуем системные утилиты
     except Exception as e:

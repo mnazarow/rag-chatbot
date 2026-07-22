@@ -42,6 +42,7 @@ _FRAME = 320           # байт = 20 мс при 8 кГц/16 бит/моно
 _thread = None
 _srv = None
 _stop = threading.Event()
+_calls_lock = threading.Lock()   # защищает счётчики calls/active (гонка потоков звонков)
 _state = {"running": False, "calls": 0, "active": 0, "error": None}
 
 
@@ -112,10 +113,14 @@ def _tts_pcm(text: str) -> bytes:
     text = (text or "").strip()
     if not text:
         return b""
-    ogg = tempfile.mktemp(suffix=".ogg")
+    fd, ogg = tempfile.mkstemp(suffix=".ogg")
+    os.close(fd)
     try:
         import tts
-        if not tts.synthesize(text, ogg) or not os.path.exists(ogg):
+        import activity
+        with activity.heavy_slot():                 # TTS — тяжёлая стадия конвейера
+            ok = tts.synthesize(text, ogg)
+        if not ok or not os.path.exists(ogg):
             return b""
         r = subprocess.run(
             ["ffmpeg", "-y", "-i", ogg, "-ar", str(_RATE), "-ac", "1",
@@ -135,7 +140,8 @@ def _stt(pcm: bytes) -> str:
     """Распознать накопленный PCM (8 кГц/16 бит/моно) через Whisper."""
     if len(pcm) < _RATE:          # меньше ~0.5 с — пропускаем
         return ""
-    wav = tempfile.mktemp(suffix=".wav")
+    fd, wav = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
     try:
         with wave.open(wav, "wb") as w:
             w.setnchannels(1)
@@ -143,7 +149,9 @@ def _stt(pcm: bytes) -> str:
             w.setframerate(_RATE)
             w.writeframes(pcm)
         import loaders
-        return (loaders.transcribe_audio(wav) or "").strip()
+        import activity
+        with activity.heavy_slot():                 # STT (Whisper) — тяжёлая стадия
+            return (loaders.transcribe_audio(wav) or "").strip()
     except Exception as e:
         print(f"[sip] STT: {e}")
         return ""
@@ -221,8 +229,9 @@ def _handle(sock) -> None:
         aid = activity.start("telephony", "Звонок (SIP/АТС)", "соединение")
     except Exception:
         aid = None
-    _state["calls"] += 1
-    _state["active"] += 1
+    # счётчики calls/active увеличиваются при допуске соединения в _serve (под локом)
+    expected_uuid = str(_cfg("SIP_AUDIOSOCKET_UUID", "")
+                        or _cfg("SIP_AUDIOSOCKET_SECRET", "") or "").strip()
     silence_ms = int(_cfg("SIP_SILENCE_MS", 700))
     silence_rms = float(_cfg("SIP_SILENCE_RMS", 500))
     max_utter = float(_cfg("SIP_MAX_UTTER_SEC", 15))
@@ -242,6 +251,18 @@ def _handle(sock) -> None:
             if kind is None or kind == KIND_HANGUP:
                 break
             if kind == KIND_ID:
+                # аутентификация: если задан ожидаемый UUID/секрет — сверяем с payload
+                # кадра идентификации (AudioSocket шлёт UUID звонка). Не совпал — рвём.
+                if expected_uuid:
+                    try:
+                        import uuid as _uuid
+                        got = (str(_uuid.UUID(bytes=payload)) if len(payload) == 16
+                               else payload.decode("utf-8", "ignore").strip())
+                    except Exception:
+                        got = payload.decode("utf-8", "ignore").strip()
+                    if got.replace("-", "").lower() != expected_uuid.replace("-", "").lower():
+                        print("[sip] отказ: UUID/секрет соединения не совпал")
+                        break
                 if not greeted:
                     greeted = True
                     g = _cfg("SIP_GREETING",
@@ -326,20 +347,30 @@ def _handle(sock) -> None:
                 apcm = _tts_pcm(speak)
                 if apcm:
                     _send_audio(sock, apcm)
-                # сбрасываем накопившееся за время ответа, чтобы не принять эхо за реплику
+                # Сброс накопившегося эха ограничиваем по «стенным часам»: Asterisk шлёт
+                # кадр каждые 20 мс непрерывно, поэтому без лимита цикл никогда не выйдет и
+                # «съест» речь абонента. Также ловим отбой (KIND_HANGUP), чтобы не потерять его.
+                drain_end = time.time() + float(_cfg("SIP_ECHO_DRAIN_SEC", 0.3) or 0.3)
                 sock.settimeout(0.05)
+                hung = False
                 try:
-                    while True:
+                    while time.time() < drain_end and not _stop.is_set():
                         k, _p = _read_msg(sock)
                         if k is None:
+                            break
+                        if k == KIND_HANGUP:
+                            hung = True
                             break
                 except Exception:
                     pass
                 sock.settimeout(60)
+                if hung:
+                    break
     except Exception as e:
         print(f"[sip] звонок: {e}")
     finally:
-        _state["active"] = max(0, _state["active"] - 1)
+        with _calls_lock:
+            _state["active"] = max(0, _state["active"] - 1)
         try:
             sock.close()
         except Exception:
@@ -368,6 +399,11 @@ def _serve(host: str, port: int) -> None:
         _state["running"] = False
         print(f"[sip] не удалось открыть {host}:{port}: {e}")
         return
+    # allowlist IP (если задан) и лимит одновременных сессий — базовая защита сервиса,
+    # который принимает медиапоток без собственной аутентификации транспорта.
+    allow_raw = str(_cfg("SIP_AUDIOSOCKET_ALLOW", "") or "").strip()
+    allowset = {a.strip() for a in allow_raw.split(",") if a.strip()} or None
+    max_sessions = int(_cfg("SIP_MAX_CONCURRENT", 8) or 8)
     while not _stop.is_set():
         try:
             conn, _addr = _srv.accept()
@@ -375,6 +411,29 @@ def _serve(host: str, port: int) -> None:
             continue
         except Exception:
             break
+        peer_ip = (_addr[0] if _addr else "") or ""
+        if allowset is not None and peer_ip not in allowset:
+            print(f"[sip] отклонён IP {peer_ip} (нет в SIP_AUDIOSOCKET_ALLOW)")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            continue
+        # атомарный допуск: увеличиваем active только если не превышен лимит
+        with _calls_lock:
+            if _state["active"] >= max_sessions:
+                admit = False
+            else:
+                _state["active"] += 1
+                _state["calls"] += 1
+                admit = True
+        if not admit:
+            print(f"[sip] отклонён звонок: лимит одновременных сессий {max_sessions}")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            continue
         threading.Thread(target=_handle, args=(conn,), daemon=True).start()
     try:
         _srv.close()
@@ -389,7 +448,9 @@ def start() -> dict:
         return {"ok": False, "msg": "телефония выключена (SIP_ENABLED)"}
     if _thread and _thread.is_alive():
         return {"ok": True, "msg": "уже запущен"}
-    host = str(_cfg("SIP_BRIDGE_HOST", "0.0.0.0"))
+    # По умолчанию слушаем ТОЛЬКО localhost (сервис без аутентификации транспорта).
+    # Для доступа с Asterisk на другом хосте — задать SIP_AUDIOSOCKET_HOST/allowlist явно.
+    host = str(_cfg("SIP_AUDIOSOCKET_HOST", None) or _cfg("SIP_BRIDGE_HOST", "127.0.0.1"))
     port = int(_cfg("SIP_BRIDGE_PORT", 8090))
     _stop.clear()
     _thread = threading.Thread(target=_serve, args=(host, port), daemon=True)
@@ -419,7 +480,8 @@ def restart() -> dict:
 def status() -> dict:
     have_ff = bool(__import__("shutil").which("ffmpeg"))
     return {"enabled": bool(_cfg("SIP_ENABLED")), "running": _state.get("running", False),
-            "host": str(_cfg("SIP_BRIDGE_HOST", "0.0.0.0")),
+            "host": str(_cfg("SIP_AUDIOSOCKET_HOST", None)
+                        or _cfg("SIP_BRIDGE_HOST", "127.0.0.1")),
             "port": int(_cfg("SIP_BRIDGE_PORT", 8090)),
             "calls": _state.get("calls", 0), "active": _state.get("active", 0),
             "error": _state.get("error"), "ffmpeg": have_ff,

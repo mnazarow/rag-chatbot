@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -128,7 +129,26 @@ def delete_host(name: str) -> dict:
 def _ssh(h: dict):
     import paramiko
     c = paramiko.SSHClient()
-    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # M28: НЕ доверяем незнакомым ключам автоматически (AutoAddPolicy = уязвимость к MITM:
+    # подменённый хост принимался бы молча вместе с паролем). Загружаем известные ключи из
+    # системного и пользовательского known_hosts и по умолчанию отклоняем неизвестные (Reject).
+    try:
+        c.load_system_host_keys()
+    except Exception:
+        pass
+    try:
+        c.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+    except Exception:
+        pass
+    # Осознанный TOFU (trust-on-first-use) — ТОЛЬКО если для хоста явно выставлен флаг
+    # insecure_auto_add (напр. при первом деплое на доверенный хост в закрытой сети). По
+    # умолчанию флага нет → RejectPolicy. Первый коннект к хосту без записи в known_hosts
+    # завершится ошибкой — добавьте ключ (ssh-keyscan >> ~/.ssh/known_hosts) или флаг.
+    if h.get("insecure_auto_add"):
+        # FIXME(review): AutoAddPolicy небезопасен (MITM). Оставлен как явная opt-in опция.
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    else:
+        c.set_missing_host_key_policy(paramiko.RejectPolicy())
     c.connect(h["host"], port=int(h.get("port", 22)), username=h["user"],
               password=h.get("password", ""), timeout=25)
     return c

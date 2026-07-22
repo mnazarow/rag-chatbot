@@ -11,6 +11,8 @@ set -euo pipefail
 TARGET_DIR="${TARGET_DIR:-/opt/rag}"
 BRANCH="${BRANCH:-main}"
 REINDEX="${REINDEX:-0}"
+RUN_USER="${SUDO_USER:-$(whoami)}"
+FORCE="${FORCE:-0}"          # FORCE=1 — затирать локальные изменения без stash (неинтерактивно)
 
 log(){ printf "\033[1;36m[update]\033[0m %s\n" "$*"; }
 cd "${TARGET_DIR}"
@@ -26,6 +28,16 @@ fi
 OLD="$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
 log "Обновляю код до origin/${BRANCH}..."
 git fetch --all -q
+# git reset --hard затирает локальные правки. Проверяем рабочее дерево и сохраняем изменения.
+if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+  if [[ "${FORCE}" == "1" ]]; then
+    log "Локальные изменения в ${TARGET_DIR} будут ЗАТЁРТЫ (FORCE=1)."
+  else
+    log "Обнаружены локальные изменения — сохраняю их в git stash (запустите с FORCE=1, чтобы затереть)."
+    git stash push -u -q -m "update.sh auto $(date +%F_%T)" || {
+      echo "Не удалось сохранить локальные изменения (git stash). Прерываю. FORCE=1 для перезаписи."; exit 1; }
+  fi
+fi
 git reset --hard "origin/${BRANCH}"
 NEW="$(git rev-parse --short HEAD)"
 
@@ -35,8 +47,18 @@ apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-rus libredwg-tools antiwor
 bash "${TARGET_DIR}/scripts/install_oda.sh" "${TARGET_DIR}" || true
 
 log "Обновляю Python-зависимости..."
-./.venv/bin/pip install -q -r gpu_variant/requirements-gpu.txt || true
-./.venv/bin/pip install -q ezdxf rawpy pytesseract Pillow matplotlib extract-msg py7zr rarfile psutil xlrd python-multipart paramiko || true   # новые зависимости
+# Обязательный шаг: код уже обновлён до NEW, зависимости должны соответствовать ему.
+# Если pip -r падает — откатываем код к OLD (иначе сервис перезапустится на новом коде
+# со старыми зависимостями) и выходим с ошибкой.
+if ! ./.venv/bin/pip install -q -r gpu_variant/requirements-gpu.txt; then
+  log "ОШИБКА установки зависимостей — откатываю код к ${OLD} и прерываю обновление."
+  git reset --hard "${OLD}" -q || true
+  chown -R "${RUN_USER}:${RUN_USER}" "${TARGET_DIR}" 2>/dev/null || true
+  exit 1
+fi
+./.venv/bin/pip install -q ezdxf rawpy pytesseract Pillow matplotlib extract-msg py7zr rarfile psutil xlrd python-multipart paramiko || true   # доп. (необязательные) зависимости
+# вернуть владельца файлов рабочему пользователю (как в deploy.sh)
+chown -R "${RUN_USER}:${RUN_USER}" "${TARGET_DIR}" 2>/dev/null || true
 
 log "Перезапускаю контейнеры (vLLM + Qdrant)..."
 docker compose --env-file gpu_variant/.env -f gpu_variant/docker-compose.gpu.yml up -d

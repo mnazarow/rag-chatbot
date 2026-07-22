@@ -175,23 +175,38 @@ def _anssem_key() -> str:
     return f"rag:anssem:{_ver('index')}"
 
 
-def answer_sem_add(payload_key: str, emb) -> None:
-    """Запомнить, что на вопрос с эмбеддингом emb есть ответ под ключом payload_key."""
+def _flt_sig(flt) -> str:
+    """Каноническая подпись фильтров для сопоставления (порядок ключей не важен)."""
+    if not flt:
+        return ""
+    try:
+        return json.dumps(flt, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(flt)
+
+
+def answer_sem_add(payload_key: str, emb, flt=None) -> None:
+    """Запомнить, что на вопрос с эмбеддингом emb (и фильтрами flt) есть ответ под ключом
+    payload_key. Фильтры сохраняются рядом, чтобы семантический поиск не смешивал ответы,
+    полученные под разными фильтрами."""
     c = client()
     if not c or not emb or not payload_key:
         return
     try:
         emb = [round(float(x), 6) for x in emb]
         k = _anssem_key()
-        c.lpush(k, json.dumps({"k": payload_key, "e": emb}, ensure_ascii=False))
+        c.lpush(k, json.dumps({"k": payload_key, "e": emb, "f": _flt_sig(flt)},
+                              ensure_ascii=False))
         c.ltrim(k, 0, _ANS_SEM_MAX - 1)
         c.expire(k, 7 * 86400)
     except Exception:
         pass
 
 
-def answer_sem_find(emb, threshold: float):
-    """Найти ключ похожего вопроса (косинус ≥ threshold) или None. → {key, sim}."""
+def answer_sem_find(emb, threshold: float, flt=None):
+    """Найти ключ похожего вопроса (косинус ≥ threshold) с ТЕМИ ЖЕ фильтрами flt, или None.
+    → {key, sim}. Записи с иными фильтрами игнорируются, чтобы ответ под одними условиями
+    не «утекал» на вопрос с другими/без фильтров."""
     c = client()
     if not c or not emb:
         return None
@@ -200,6 +215,7 @@ def answer_sem_find(emb, threshold: float):
     except Exception:
         return None
     n = len(emb)
+    want = _flt_sig(flt)
     best, bkey = 0.0, None
     for r in rows:
         try:
@@ -208,6 +224,9 @@ def answer_sem_find(emb, threshold: float):
         except Exception:
             continue
         if not e or len(e) != n:
+            continue
+        # старые записи без поля "f" считаем «без фильтров» (обратная совместимость)
+        if d.get("f", "") != want:
             continue
         dot = 0.0
         for i in range(n):

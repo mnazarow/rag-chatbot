@@ -62,6 +62,54 @@ def _safe_rel(rel: str) -> str:
     return "/".join(parts)
 
 
+def _allowed_root_rel(rel: str) -> bool:
+    """kind=root: восстанавливаем ТОЛЬКО служебные файлы/папки из белого списка,
+    чтобы вредоносная/повреждённая копия не переписала исходники (*.py и пр.) в ROOT."""
+    r = str(rel).replace("\\", "/")
+    if r in _SERVICE_FILES:
+        return True
+    for d in _SERVICE_DIRS:
+        dd = d.replace("\\", "/").rstrip("/")
+        if r == dd or r.startswith(dd + "/"):
+            return True
+    return False
+
+
+def _sqlite_snapshot(src: Path):
+    """Согласованный снимок SQLite-БД через VACUUM INTO. Возвращает (tmp_path, tmp_dir)
+    или (None, None). Нужен, потому что при активной записи (WAL) сырой файл БД в архиве
+    может оказаться несогласованным (часть данных ещё в -wal)."""
+    import shutil as _sh
+    import sqlite3
+    import tempfile
+    tdir = Path(tempfile.mkdtemp(prefix="ragdbbak_"))
+    tmp = tdir / src.name
+    try:
+        conn = sqlite3.connect(str(src), timeout=30)
+        try:
+            conn.execute("VACUUM INTO ?", (str(tmp),))   # SQLite ≥ 3.27
+        finally:
+            conn.close()
+        return tmp, tdir
+    except Exception:
+        # фолбэк: backup API (для очень старых SQLite без VACUUM INTO)
+        try:
+            _sh.rmtree(tdir, ignore_errors=True)
+            tdir = Path(tempfile.mkdtemp(prefix="ragdbbak_"))
+            tmp = tdir / src.name
+            conn = sqlite3.connect(str(src), timeout=30)
+            dst = sqlite3.connect(str(tmp))
+            try:
+                conn.backup(dst)
+            finally:
+                dst.close()
+                conn.close()
+            return tmp, tdir
+        except Exception:
+            _sh.rmtree(tdir, ignore_errors=True)
+            return None, None
+
+
 def _iter_files(scope: str):
     """Перечислить (kind, relpath, abspath) для выбранной области."""
     root_files = _SETTINGS_FILES if scope == "settings" else _SERVICE_FILES
@@ -101,16 +149,30 @@ def create(scope: str, progress=None) -> dict:
         # dereference=True — символьные ссылки (.env может быть симлинком) кладём как файлы
         with tarfile.open(arc, "w:gz", dereference=True) as tar:
             for i, (kind, rel, p) in enumerate(files, 1):
+                # SQLite-журнал архивируем как согласованный снимок (VACUUM INTO), а не
+                # сырой файл — иначе при активной записи (WAL) копия может быть битой.
+                snap_dir = None
+                src_path = p
+                if kind == "root" and rel == "rag_logs.db":
+                    _snap, snap_dir = _sqlite_snapshot(p)
+                    if _snap is not None:
+                        src_path = _snap
                 try:
-                    sha = _sha256(p)
-                    sz = p.stat().st_size
+                    sha = _sha256(src_path)
+                    sz = src_path.stat().st_size
                 except Exception as e:
                     manifest["files"].append({"kind": kind, "path": rel,
                                               "error": str(e)[:120]})
+                    if snap_dir is not None:
+                        import shutil as _sh
+                        _sh.rmtree(snap_dir, ignore_errors=True)
                     continue
                 manifest["files"].append({"kind": kind, "path": rel,
                                           "sha256": sha, "size": sz})
-                tar.add(str(p), arcname=f"{kind}/{rel}", recursive=False)
+                tar.add(str(src_path), arcname=f"{kind}/{rel}", recursive=False)
+                if snap_dir is not None:
+                    import shutil as _sh
+                    _sh.rmtree(snap_dir, ignore_errors=True)
                 if progress:
                     progress(i, total, rel)
             data = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
@@ -205,6 +267,11 @@ def restore(path, progress=None) -> dict:
                 rel = _safe_rel(e["path"])
                 if not rel:
                     skipped.append(e.get("path"))
+                    continue
+                # kind=root: только служебные файлы/папки из белого списка — вредоносный
+                # архив не должен переписать исходники (*.py) или иные файлы внутри ROOT.
+                if e["kind"] == "root" and not _allowed_root_rel(rel):
+                    skipped.append(rel)
                     continue
                 base = root if e["kind"] == "root" else docs
                 dest = (base / Path(*rel.split("/"))).resolve()

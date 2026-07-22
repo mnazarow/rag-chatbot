@@ -16,6 +16,7 @@ backend=qdrant поведение идентично прежнему. Milvus �
 (режимы Lite и Standalone, индексы CPU HNSW / GPU CAGRA), импортируется лениво.
 """
 from __future__ import annotations
+import re
 import threading
 import time
 from pathlib import Path
@@ -23,6 +24,9 @@ from pathlib import Path
 import httpx
 
 import settings
+
+# Разрешённые имена полей для выражений Milvus: буквы/цифры/подчёркивание, не с цифры.
+_FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # ------------------------------------------------------------------ выбор бэкенда
 
@@ -170,7 +174,15 @@ def _q_upsert(points, wait) -> None:
             r = httpx.put(url, json=body, timeout=to)
             r.raise_for_status()
             return
-        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.TransportError) as e:
+        except httpx.HTTPStatusError as e:
+            # ретраим только серверные ошибки/перегрузку (5xx); клиентские (4xx, напр. кривой
+            # payload/имя коллекции) повторять бессмысленно — сразу наверх.
+            if e.response is not None and e.response.status_code < 500:
+                raise
+            last = e
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))   # 2с, 4с
+        except (httpx.TimeoutException, httpx.TransportError) as e:
             last = e
             if attempt < 2:
                 time.sleep(2 * (attempt + 1))   # 2с, 4с
@@ -179,8 +191,14 @@ def _q_upsert(points, wait) -> None:
 
 def _q_delete(flt) -> None:
     base, coll = _qbase(), _qcoll()
-    httpx.post(f"{base}/collections/{coll}/points/delete", timeout=30,
-               json={"filter": _q_filter(flt)})
+    qf = _q_filter(flt)
+    if not qf:
+        # без валидного фильтра НЕ шлём {"filter": null} — это либо ошибка Qdrant, либо
+        # (в иных API) риск снести всю коллекцию. Пустой фильтр → нечего удалять.
+        return
+    r = httpx.post(f"{base}/collections/{coll}/points/delete", timeout=30,
+                   json={"filter": qf})
+    r.raise_for_status()
 
 
 def _q_info() -> dict:
@@ -256,19 +274,26 @@ def _m_metric() -> str:
 
 
 def _m_expr(flt: dict | None) -> str:
-    """Нейтральный фильтр → булево выражение Milvus (динамические поля по имени)."""
+    """Нейтральный фильтр → булево выражение Milvus (динамические поля по имени).
+
+    Безопасность: имена полей валидируются по allow-list (_FIELD_RE) — недопустимые
+    пропускаются (защита от инъекции в выражение). Строковые значения экранируются
+    в правильном порядке: СНАЧАЛА обратный слэш, ПОТОМ кавычки, иначе значение вроде
+    `\\"` могло бы «выйти» из строкового литерала."""
     if not flt:
         return ""
     parts = []
     for k, v in flt.items():
         if v is None:
             continue
+        if not (isinstance(k, str) and _FIELD_RE.match(k)):
+            continue                      # небезопасное имя поля — пропускаем
         if isinstance(v, bool):
             parts.append(f'{k} == {"true" if v else "false"}')
         elif isinstance(v, (int, float)):
             parts.append(f"{k} == {v}")
         else:
-            s = str(v).replace('"', '\\"')
+            s = str(v).replace("\\", "\\\\").replace('"', '\\"')
             parts.append(f'{k} == "{s}"')
     return " and ".join(parts)
 

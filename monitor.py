@@ -140,10 +140,11 @@ def _reindex_tick():
         last = float(db.kv_get("reindex_last") or 0)
         if time.time() - last < iv:
             return
+        # помечаем время СРАЗУ (до запуска), чтобы даже при исключении в reindex не
+        # долбить переиндексацию каждую минуту цикла монитора
+        db.kv_set("reindex_last", str(time.time()))
         import admin_ops
         r = admin_ops.reindex(reset=False)
-        # помечаем время независимо от исхода запуска, чтобы не долбить каждую минуту
-        db.kv_set("reindex_last", str(time.time()))
         print(f"[reindex] авто-переиндексация по расписанию: {r.get('msg', r)}")
     except Exception as e:
         print(f"[reindex] tick: {e}")
@@ -180,6 +181,7 @@ def _alerts_tick():
 def _loop(interval: int):
     import db
     last_prune = 0.0
+    sample_warned = False    # чтобы не спамить в лог каждую итерацию (напр. нет psutil)
     while not _stop.is_set():
         try:
             db.server_sample_save(*_sample())
@@ -187,8 +189,11 @@ def _loop(interval: int):
             if now - last_prune > 6 * 3600:      # прунинг раз в 6 часов
                 db.server_prune(PRUNE_DAYS)
                 last_prune = now
+            sample_warned = False
         except Exception as e:
-            print(f"[monitor] выборка не удалась: {e}")
+            if not sample_warned:
+                print(f"[monitor] выборка не удалась (далее подавляю повтор): {e}")
+                sample_warned = True
         _org_tick()                              # ежечасная синхронизация справочника
         _web_tick()                              # ежедневный переспарсинг сайтов (00:05)
         _web_sched_tick()                        # пер-сайтовые расписания автопарсинга

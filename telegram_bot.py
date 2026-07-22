@@ -10,9 +10,11 @@
 """
 from __future__ import annotations
 import os
+import re
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
@@ -29,7 +31,40 @@ _thread: threading.Thread | None = None
 _stop = threading.Event()
 _state = {"running": False, "error": None, "username": None, "started": None}
 _offset = None
-_pending_comment: dict = {}   # chat_id -> req_id (ждём текст комментария к ответу)
+# chat_id -> (req_id, ts): ждём текст комментария к ответу; запись живёт _PENDING_TTL секунд
+_pending_comment: dict = {}
+_PENDING_TTL = 900.0
+
+# Пул воркеров: поллер только читает getUpdates и раскидывает апдейты сюда. Обработка
+# одного chat_id сериализуется отдельным локом (сообщения чата идут по порядку), а
+# тяжёлые стадии (LLM) ограничены общим семафором (activity.heavy_slot).
+_pool: ThreadPoolExecutor | None = None
+_chat_locks: dict = {}
+_chat_locks_guard = threading.Lock()
+
+# Маскировка токена бота в текстах ошибок/логов (bot<digits>:<token> → bot***).
+_TOKEN_RE = re.compile(r"bot\d+:[\w-]+")
+
+
+def _mask(s) -> str:
+    try:
+        return _TOKEN_RE.sub("bot***", str(s))
+    except Exception:
+        return str(s)
+
+
+def _chat_lock(chat_id) -> threading.Lock:
+    with _chat_locks_guard:
+        lk = _chat_locks.get(chat_id)
+        if lk is None:
+            lk = threading.Lock()
+            # мягкая уборка, чтобы словарь не рос бесконечно (берём только свободные локи)
+            if len(_chat_locks) > 2000:
+                for k in [k for k, v in _chat_locks.items() if v.acquire(blocking=False)]:
+                    _chat_locks[k].release()
+                    _chat_locks.pop(k, None)
+            _chat_locks[chat_id] = lk
+        return lk
 
 
 def _token() -> str:
@@ -51,7 +86,7 @@ def _call(method: str, http_timeout: float = 40, **params):
             r = c.post(_API.format(token=token, method=method), json=params)
         return r.json()
     except Exception as e:
-        _state["error"] = str(e)
+        _state["error"] = _mask(str(e))
         return None
 
 
@@ -65,7 +100,12 @@ def send(chat_id: int, text: str, reply_markup: dict | None = None) -> None:
         params = {"chat_id": chat_id, "text": ch, "disable_web_page_preview": True}
         if reply_markup is not None and idx == len(chunks) - 1:
             params["reply_markup"] = reply_markup
-        _call("sendMessage", **params)
+        r = _call("sendMessage", **params)
+        # уважаем лимит Telegram (429): ждём retry_after и повторяем один раз
+        if isinstance(r, dict) and not r.get("ok") and r.get("error_code") == 429:
+            ra = int((r.get("parameters") or {}).get("retry_after") or 1)
+            time.sleep(min(ra, 30) + 0.5)
+            _call("sendMessage", **params)
 
 
 def _send_ok(chat_id: int, text: str) -> bool:
@@ -118,6 +158,22 @@ def broadcast(chat_ids, text: str) -> dict:
     return {"ok": True, "sent": sent, "failed": failed, "total": len(ids)}
 
 
+def _owns_request(chat_id, rid) -> bool:
+    """Проверка владения: запись rid в tg_requests принадлежит этому chat_id.
+    Защищает callback-оценки/комментарии от подстановки чужого rid.
+    NB: публичного геттера в db нет — используем db._one (см. отчёт, нужен db.tg_request_owner)."""
+    try:
+        row = db._one("SELECT chat_id FROM tg_requests WHERE id=?", (int(rid),))
+    except Exception:
+        return False
+    if not row:
+        return False
+    try:
+        return int(row.get("chat_id")) == int(chat_id)
+    except Exception:
+        return False
+
+
 def _feedback_kb(rid: int) -> dict:
     """Инлайн-клавиатура оценки ответа: 👍 / 👎 / 💬 Комментарий."""
     return {"inline_keyboard": [[
@@ -139,7 +195,8 @@ def _download_file(file_id: str) -> str | None:
     if not fp:
         return None
     suffix = os.path.splitext(fp)[1] or ".oga"
-    out = tempfile.mktemp(suffix=suffix)
+    fd, out = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
     try:
         url = f"https://api.telegram.org/file/bot{token}/{fp}"
         with httpx.Client(proxy=_proxy(), timeout=120) as c:
@@ -150,7 +207,7 @@ def _download_file(file_id: str) -> str | None:
             f.write(resp.content)
         return out
     except Exception as e:
-        print(f"[tg] загрузка файла не удалась: {e}")
+        print(f"[tg] загрузка файла не удалась: {_mask(e)}")
         return None
 
 
@@ -408,10 +465,12 @@ def _answer(question: str, trace: list | None = None):
     messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")},
                 {"role": "user", "content": prompts.build_user_message(question, context)}]
     t = time.time()
-    text = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
-                            model=settings.active_model(),
-                            kind="telegram", label=question,
-                            hide_think=bool(settings.get("HIDE_THINK_TELEGRAM")))
+    import activity
+    with activity.heavy_slot():                 # LLM — тяжёлая стадия (общий лимит)
+        text = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
+                                model=settings.active_model(),
+                                kind="telegram", label=question,
+                                hide_think=bool(settings.get("HIDE_THINK_TELEGRAM")))
     trace.append({"key": "generate", "ms": int((time.time() - t) * 1000),
                   "info": {"model": settings.active_model(),
                            "backend": settings.get("LLM_BACKEND"),
@@ -590,10 +649,12 @@ def _answer_attachment(path: str, name: str, question: str, trace: list | None =
     messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")},
                 {"role": "user", "content": prompts.build_user_message(q, context)}]
     t = time.time()
-    text = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
-                            model=settings.active_model(),
-                            kind="telegram", label=q,
-                            hide_think=bool(settings.get("HIDE_THINK_TELEGRAM")))
+    import activity
+    with activity.heavy_slot():                 # LLM — тяжёлая стадия (общий лимит)
+        text = llm_backend.chat(messages, temperature=settings.get("TEMPERATURE"),
+                                model=settings.active_model(),
+                                kind="telegram", label=q,
+                                hide_think=bool(settings.get("HIDE_THINK_TELEGRAM")))
     trace.append({"key": "generate", "ms": int((time.time() - t) * 1000),
                   "info": {"model": settings.active_model(),
                            "backend": settings.get("LLM_BACKEND"),
@@ -644,11 +705,12 @@ def _handle(msg: dict) -> None:
 
     # ждём комментарий к ответу (после нажатия «💬 Комментарий»)?
     if text and not text.startswith("/") and chat_id in _pending_comment:
-        rid = _pending_comment.pop(chat_id, None)
-        if rid:
+        rid, ts = _pending_comment.pop(chat_id, (None, 0.0))
+        if rid and (time.time() - ts) <= _PENDING_TTL and _owns_request(chat_id, rid):
             db.tg_set_comment(rid, text)
             send(chat_id, "✅ Спасибо, комментарий сохранён.")
             return
+        # просрочено/чужой rid — не глотаем сообщение, обрабатываем его как обычный вопрос
 
     # команды переключения режима обучения
     if text:
@@ -698,6 +760,10 @@ def _handle(msg: dict) -> None:
             if res.get("chunks"):
                 send(chat_id, f"✅ «{res['name']}»: добавлено {res['chunks']} фрагментов в базу знаний. "
                               "Пришлите ещё документы или /ask — выйти из обучения.")
+            elif res.get("error"):
+                # индексация упала (не «нет текста») — файл сохранён, можно повторить
+                send(chat_id, f"⚠ Не удалось обработать «{fname}»: {str(res['error'])[:300]}. "
+                              "Файл сохранён — попробуйте позже ещё раз.")
             else:
                 send(chat_id, f"⚠ Из «{fname}» не удалось извлечь текст (пустой/неподдерживаемый "
                               "формат). В базу не добавлено.")
@@ -802,8 +868,8 @@ def _handle(msg: dict) -> None:
         if can_train:
             detail = ("⚠️ Ошибка при обработке запроса (подробности видны вам как "
                       "пользователю с правом обучения):\n\n"
-                      f"{type(e).__name__}: {e}\n\n"
-                      f"{tb[-3200:]}")
+                      f"{type(e).__name__}: {_mask(e)}\n\n"
+                      f"{_mask(tb[-3200:])}")
             send(chat_id, detail[:4000])
         else:
             send(chat_id, "Произошла ошибка при обработке запроса. Попробуйте позже.")
@@ -850,8 +916,12 @@ def _handle(msg: dict) -> None:
     if show_answer and voice_in and settings.get("TELEGRAM_VOICE_OUT") and ans:
         try:
             import tts
-            ogg = tempfile.mktemp(suffix=".ogg")
-            if tts.synthesize(ans, ogg):
+            import activity
+            fd, ogg = tempfile.mkstemp(suffix=".ogg")
+            os.close(fd)
+            with activity.heavy_slot():             # TTS — тяжёлая стадия (общий лимит)
+                ok = tts.synthesize(ans, ogg)
+            if ok:
                 send_voice(chat_id, ogg)
             try:
                 os.remove(ogg)
@@ -878,10 +948,23 @@ def _handle_callback(cq: dict) -> None:
     def ack(text=""):
         _call("answerCallbackQuery", callback_query_id=cq_id, text=text)
 
+    # доступ: только подтверждённые пользователи могут оценивать/комментировать
+    if chat_id is None:
+        ack()
+        return
+    user = db.tg_user(chat_id)
+    if not user or user.get("status") != "approved":
+        ack("Доступ не подтверждён")
+        return
+
     try:
         if data.startswith("rate:"):
             _, srid, sval = data.split(":")
             rid, v = int(srid), int(sval)
+            # владение: rid должен принадлежать этому chat_id
+            if not _owns_request(chat_id, rid):
+                ack("Оценка недоступна")
+                return
             db.tg_set_rating(rid, v)
             ack("Спасибо за оценку!")
             chosen = "👍" if v > 0 else "👎"
@@ -891,15 +974,46 @@ def _handle_callback(cq: dict) -> None:
                       {"text": "💬 Комментарий", "callback_data": f"cmt:{rid}"}]]})
         elif data.startswith("cmt:"):
             _, srid = data.split(":")
-            if chat_id is not None:
-                _pending_comment[chat_id] = int(srid)
+            rid = int(srid)
+            if not _owns_request(chat_id, rid):
+                ack("Комментарий недоступен")
+                return
+            _pending_comment[chat_id] = (rid, time.time())
             ack("Напишите комментарий сообщением")
             send(chat_id, "💬 Напишите комментарий к ответу одним сообщением.")
         else:
             ack()
     except Exception as e:
-        print(f"[tg] callback error: {e}")
+        print(f"[tg] callback error: {_mask(e)}")
         ack()
+
+
+def _dispatch(upd: dict) -> None:
+    """Обработать один апдейт в воркере пула. Сообщения одного chat_id сериализуются
+    отдельным локом (порядок в рамках чата сохраняется); тяжёлые стадии (LLM) —
+    под общим семафором внутри _handle/_answer."""
+    try:
+        m = upd.get("message") or upd.get("edited_message")
+        if m:
+            chat_id = (m.get("chat") or {}).get("id")
+            lk = _chat_lock(chat_id) if chat_id is not None else None
+            if lk:
+                lk.acquire()
+            try:
+                _handle(m)
+            except Exception as e:
+                print(f"  ! telegram handle error: {_mask(e)}")
+            finally:
+                if lk:
+                    lk.release()
+        cq = upd.get("callback_query")
+        if cq:
+            try:
+                _handle_callback(cq)
+            except Exception as e:
+                print(f"  ! telegram callback error: {_mask(e)}")
+    except Exception as e:
+        print(f"  ! telegram dispatch error: {_mask(e)}")
 
 
 def _loop() -> None:
@@ -913,7 +1027,9 @@ def _loop() -> None:
         # long-poll: Telegram держит соединение до 25 с; httpx-таймаут 40 с
         r = _call("getUpdates", http_timeout=40, offset=_offset, timeout=25)
         if not r or not r.get("ok"):
-            _state["running"] = bool(_token()) and r is not None
+            _state["running"] = False
+            if r and r.get("description"):
+                _state["error"] = _mask(str(r.get("description")))
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
             continue
@@ -921,19 +1037,17 @@ def _loop() -> None:
         _state["running"] = True
         _state["error"] = None
         for upd in r.get("result", []):
+            # offset двигаем сразу после чтения — апдейт передан воркеру, повторной
+            # доставки не нужно (поллер не блокируется тяжёлой обработкой).
             _offset = upd["update_id"] + 1
-            m = upd.get("message") or upd.get("edited_message")
-            if m:
+            pool = _pool
+            if pool is not None:
                 try:
-                    _handle(m)
-                except Exception as e:
-                    print(f"  ! telegram handle error: {e}")
-            cq = upd.get("callback_query")
-            if cq:
-                try:
-                    _handle_callback(cq)
-                except Exception as e:
-                    print(f"  ! telegram callback error: {e}")
+                    pool.submit(_dispatch, upd)
+                except Exception:
+                    _dispatch(upd)      # пул недоступен — обрабатываем синхронно
+            else:
+                _dispatch(upd)
     _state["running"] = False
 
 
@@ -947,8 +1061,11 @@ def _drain() -> None:
 
 def start() -> dict:
     """Запустить поллер, если задан токен и он ещё не запущен."""
-    global _thread
-    if _thread and _thread.is_alive():
+    global _thread, _pool
+    # «уже запущен» — только если поток жив И мы не в процессе остановки (_stop не взведён).
+    # Иначе после stop() старый поток ещё дренажится в long-poll, а мы бы вернули «запущен»
+    # и не подняли новый — бот молча остался бы мёртвым (см. баг restart()).
+    if _thread and _thread.is_alive() and not _stop.is_set():
         return {"ok": True, "msg": "бот уже запущен"}
     if not _token():
         return {"ok": False, "msg": "не задан TELEGRAM_BOT_TOKEN"}
@@ -957,8 +1074,18 @@ def start() -> dict:
         _state["username"] = me["result"].get("username")
     else:
         return {"ok": False, "msg": "неверный токен бота (getMe не прошёл)"}
+    # дождёмся фактического завершения прежнего поллера (он мог висеть в getUpdates до ~40 с),
+    # чтобы не плодить два поллера на один токен
+    if _thread and _thread.is_alive():
+        _thread.join(timeout=45)
     _drain()
     _stop.clear()
+    if _pool is None:
+        try:
+            n = int(settings.get("TELEGRAM_WORKERS") or 4)
+        except Exception:
+            n = 4
+        _pool = ThreadPoolExecutor(max_workers=max(1, n), thread_name_prefix="tg-worker")
     _thread = threading.Thread(target=_loop, daemon=True)
     _thread.start()
     _state["started"] = time.time()
@@ -966,13 +1093,22 @@ def start() -> dict:
 
 
 def stop() -> None:
+    global _pool
     _stop.set()
     _state["running"] = False
+    p = _pool
+    _pool = None
+    if p is not None:
+        try:
+            p.shutdown(wait=False)   # даём доработать уже запущенным задачам
+        except Exception:
+            pass
 
 
 def restart() -> dict:
+    """Останов + запуск. start() сам дожидается завершения прежнего поллера (join),
+    поэтому короткого sleep недостаточно — полагаемся на join внутри start()."""
     stop()
-    time.sleep(0.6)
     return start()
 
 

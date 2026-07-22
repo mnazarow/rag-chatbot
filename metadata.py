@@ -22,9 +22,20 @@ _AV_EXT = {".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov", ".mkv", ".webm"}
 _TABLE_EXT = {".xlsx", ".xls", ".csv"}
 
 # даты в имени файла: 2024, 2024-05, 05.2024, 12.03.2024
+
+
+def _fmt_ym(year: str, month: int) -> str:
+    """YYYY-MM только при валидном месяце (1..12); иначе '' — совпадение пропускается
+    (чтобы «2024-13» не давало «2024-13», а версии вроде «v2023.2» — не считались датой)."""
+    return f"{year}-{month:02d}" if 1 <= month <= 12 else ""
+
+
 _DATE_PATTERNS = [
-    (re.compile(r"(20\d{2})[-_.](\d{1,2})"), lambda m: f"{m.group(1)}-{int(m.group(2)):02d}"),
-    (re.compile(r"(\d{1,2})[.\-_](\d{1,2})[.\-_](20\d{2})"), lambda m: f"{m.group(3)}-{int(m.group(2)):02d}"),
+    # год-месяц, но не часть слова/версии (перед годом не буква: «v2023.2» — не дата)
+    (re.compile(r"(?<![A-Za-zА-Яа-яёЁ])(20\d{2})[-_.](\d{1,2})"),
+     lambda m: _fmt_ym(m.group(1), int(m.group(2)))),
+    (re.compile(r"(\d{1,2})[.\-_](\d{1,2})[.\-_](20\d{2})"),
+     lambda m: _fmt_ym(m.group(3), int(m.group(2)))),
     (re.compile(r"\b(20\d{2})\b"), lambda m: f"{m.group(1)}-01"),
 ]
 
@@ -48,9 +59,11 @@ def _category(path: Path) -> str:
 def _date(path: Path) -> str:
     name = path.name
     for pat, fmt in _DATE_PATTERNS:
-        m = pat.search(name)
-        if m:
-            return fmt(m)
+        # finditer: если первое совпадение с невалидным месяцем — пробуем следующие
+        for m in pat.finditer(name):
+            val = fmt(m)
+            if val:
+                return val
     # из времени модификации файла (если файла нет на диске — текущий месяц)
     try:
         return time.strftime("%Y-%m", time.localtime(path.stat().st_mtime))

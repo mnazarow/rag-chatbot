@@ -55,7 +55,9 @@ async def _decompose(question: str, max_hops: int) -> list:
             continue
         seen.add(s.lower())
         uniq.append(s)
-    return uniq[:max_hops + 1]
+    # max_hops = общее число хопов поиска (включая исходный вопрос). Раньше было
+    # [:max_hops + 1] — на один хоп больше заявленного (напр. max_hops=1 давал 2 поиска).
+    return uniq[:max(1, max_hops)]
 
 
 async def _graph_knowledge(question: str) -> str:
@@ -94,14 +96,19 @@ async def _answer_impl(question: str, history=None, trace=None) -> dict:
         trace.append({"key": "kag_decompose", "ms": int((time.time() - t0) * 1000),
                       "info": {"sub": subs, "hops": len(subs)}})
 
-    # 2) мультихоп-поиск + 3) объединение пула
+    # 2) мультихоп-поиск (под-вопросы ищем ПАРАЛЛЕЛЬНО) + 3) объединение пула
     t = time.time()
-    pool, seen = [], set()
-    for sq in subs:
+
+    async def _one(sq):
         try:
-            hits = await asyncio.to_thread(retriever.search, sq) or []
+            return await asyncio.to_thread(retriever.search, sq) or []
         except Exception:
-            hits = []
+            return []
+
+    results = await asyncio.gather(*[_one(sq) for sq in subs])
+    # слияние детерминированное (в порядке subs), дедуп по (источник, стр., начало текста)
+    pool, seen = [], set()
+    for hits in results:
         for h in hits[:per_hop]:
             key = (h.get("source"), h.get("page"), (h.get("text") or "")[:60])
             if key in seen:

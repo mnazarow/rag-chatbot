@@ -16,27 +16,24 @@ import threading
 import time
 from collections import Counter
 
-import httpx
 import settings
+import vectorstore
 
 _JOB = {"running": False, "stage": "", "scrolled": 0, "total": 0,
         "result": None, "error": None, "ts": 0.0}
+_LOCK = threading.Lock()   # защита проверки-и-установки running (см. evaluate)
 
 
 def _total_points() -> int:
+    # Через фасад vectorstore.count() — работает и на Qdrant, и на Milvus
+    # (прямой REST к Qdrant раньше всегда давал 0 на Milvus-бэкенде).
     try:
-        r = httpx.get(f"{settings.get('QDRANT_URL')}/collections/"
-                      f"{settings.get('QDRANT_COLLECTION')}", timeout=4)
-        if r.status_code == 200:
-            return int((r.json().get("result", {}) or {}).get("points_count", 0) or 0)
+        return int(vectorstore.count() or 0)
     except Exception:
-        pass
-    return 0
+        return 0
 
 
 def _gather(sample_per_cat: int = 2, max_samples: int = 24) -> dict:
-    base = settings.get("QDRANT_URL")
-    coll = settings.get("QDRANT_COLLECTION")
     total = 0
     cats: Counter = Counter()
     ftypes: Counter = Counter()
@@ -52,22 +49,18 @@ def _gather(sample_per_cat: int = 2, max_samples: int = 24) -> dict:
     samples: list = []
     samples_cat: Counter = Counter()
     next_off = None
-    _JOB["total"] = _total_points()
+    expected = _total_points()
+    _JOB["total"] = expected
+    incomplete = False                 # True, если обход оборвался/собрано меньше ожидаемого
     for _ in range(200000):
-        body = {"limit": 256, "with_payload": True, "with_vector": False}
-        if next_off is not None:
-            body["offset"] = next_off
         try:
-            r = httpx.post(f"{base}/collections/{coll}/points/scroll",
-                           json=body, timeout=60)
+            pts, next_off = vectorstore.scroll(limit=256, offset=next_off,
+                                               with_vectors=False, with_payload=True)
         except Exception as e:
             _JOB["error"] = str(e)[:160]
+            incomplete = True
             break
-        if r.status_code != 200:
-            _JOB["error"] = f"Qdrant HTTP {r.status_code}"
-            break
-        res = r.json().get("result", {}) or {}
-        for p in res.get("points", []):
+        for p in pts:
             pl = p.get("payload") or {}
             txt = (pl.get("text") or "")
             total += 1
@@ -102,13 +95,16 @@ def _gather(sample_per_cat: int = 2, max_samples: int = 24) -> dict:
                                 "text": txt.strip()[:280]})
                 samples_cat[cat] += 1
         _JOB["scrolled"] = total
-        next_off = res.get("next_page_offset")
         if next_off is None:
             break
 
+    # Отметка неполноты: обход прерван ошибкой ИЛИ собрано меньше, чем count() (N из M).
+    if expected and total < expected:
+        incomplete = True
     avg = round(char_sum / total) if total else 0
     return {
         "chunks": total, "files": len(sources),
+        "incomplete": incomplete, "scanned": total, "expected": expected,
         "categories": cats.most_common(),
         "file_types": ftypes.most_common(),
         "metadata_coverage_pct": {k: (round(v * 100 / total, 1) if total else 0)
@@ -155,6 +151,10 @@ def _fmt_profile(p: dict) -> str:
         f"температура={s['temperature']}, умный_фильтр={s['smart_filter']}, "
         f"авто_фильтр={s['auto_filter']}",
     ]
+    if p.get("incomplete"):
+        lines.insert(0, f"⚠ ДАННЫЕ НЕПОЛНЫЕ: просканировано {p.get('scanned', 0)} из "
+                        f"{p.get('expected', 0)} точек (обход прерван или неполон) — "
+                        f"оценки ниже приблизительные.")
     if p["samples"]:
         lines.append("\nПримеры фрагментов:")
         for i, sm in enumerate(p["samples"][:24], 1):
@@ -200,12 +200,17 @@ def _run():
 
 
 def evaluate(force: bool = False) -> dict:
-    if _JOB["running"]:
-        return {"running": True, "stage": _JOB["stage"],
-                "progress": {"scrolled": _JOB["scrolled"], "total": _JOB["total"]}}
-    if _JOB["result"] and not force:
-        return {"running": False, "cached": True,
-                "age_sec": int(time.time() - _JOB["ts"]), **_JOB["result"]}
+    # Проверка «не запущено» и установка running=True — атомарно под локом, иначе два
+    # параллельных вызова могли стартовать по _run одновременно (check-then-act гонка).
+    with _LOCK:
+        if _JOB["running"]:
+            return {"running": True, "stage": _JOB["stage"],
+                    "progress": {"scrolled": _JOB["scrolled"], "total": _JOB["total"]}}
+        if _JOB["result"] and not force:
+            return {"running": False, "cached": True,
+                    "age_sec": int(time.time() - _JOB["ts"]), **_JOB["result"]}
+        _JOB["running"] = True
+        _JOB["stage"] = "запуск"
     threading.Thread(target=_run, daemon=True).start()
     return {"running": True, "stage": "запуск", "progress": {"scrolled": 0, "total": 0}}
 

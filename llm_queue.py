@@ -279,18 +279,28 @@ _ACQ_LUA = ("redis.call('zremrangebyscore', KEYS[1], '-inf', ARGV[1]) "
 
 
 def _try_acquire(c, tok: str, m: int) -> bool:
-    """Атомарно занять слот, если активных < m. True — занято, False — мест нет."""
+    """Атомарно занять слот, если активных < m. True — занято, False — мест нет.
+
+    H7: при сбое ОБЩЕГО бэкенда (Redis/SQLite) НЕЛЬЗЯ проваливаться в локальный счётчик
+    процесса (`_local_active`) — он почти всегда пуст (реальные слоты живут в общем месте),
+    и такой фолбэк выдал бы токен в обход лимита (лимит переставал работать). Поэтому: если
+    есть общий бэкенд, но операция упала — трактуем как «слот не получен» (False) и логируем
+    деградацию. Локальный путь используется ТОЛЬКО когда общего бэкенда нет вовсе."""
     now = time.time()
     if c is not None:
         try:
             c.zremrangebyscore(_ACTIVE, "-inf", now)   # снять истёкшие
             _prune_dead(c, _ACTIVE)                     # и осиротевшие (процесс убит) — иначе затор
             return int(c.eval(_ACQ_LUA, 1, _ACTIVE, now, m, now + _HOLD_TTL, tok)) == 1
-        except Exception:
-            pass
-    else:
-        conn = _sql()
-        if conn is not None:
+        except Exception as e:
+            # H7: не выдаём токен из локального счётчика — иначе обход лимита
+            print(f"[llmq] Redis деградация в _try_acquire ({e}) — слот не выдан")
+            return False
+    conn = _sql()
+    if conn is not None:
+        # SQLite: BEGIN IMMEDIATE может упасть на 'database is locked' при конкуренции —
+        # ретраим несколько раз (busy_timeout уже помогает, но подстрахуемся).
+        for _attempt in range(5):
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute("DELETE FROM llm_queue WHERE expire < ?", (now,))
@@ -302,12 +312,22 @@ def _try_acquire(c, tok: str, m: int) -> bool:
                     return True
                 conn.execute("COMMIT")
                 return False
-            except Exception:
+            except Exception as e:
                 try:
                     conn.execute("ROLLBACK")
                 except Exception:
                     pass
-    with _lock:                                 # локально в пределах процесса — атомарно
+                msg = str(e).lower()
+                if ("locked" in msg or "busy" in msg) and _attempt < 4:
+                    time.sleep(0.05 * (_attempt + 1))   # backoff и ретрай BEGIN IMMEDIATE
+                    continue
+                # H7: прочий сбой SQLite — не проваливаемся в локальный обход лимита
+                print(f"[llmq] SQLite деградация в _try_acquire ({e}) — слот не выдан")
+                return False
+        print("[llmq] SQLite BEGIN IMMEDIATE не удался (BUSY) — слот не выдан")
+        return False
+    # общего бэкенда нет — истинно локальный режим (память процесса), атомарно под _lock
+    with _lock:
         _prune_local(_local_active)
         if len(_local_active) < m:
             _local_active[tok] = now + _HOLD_TTL
@@ -321,8 +341,12 @@ def acquire() -> str:
     c = _redis()
     m = _limit()
     if m <= 0:
-        _add_active(c, tok)              # учитываем для отображения/счётчика
-        _pace()                          # пауза между запросами (если задана)
+        # M26: сначала выдерживаем паузу пейсинга, и ТОЛЬКО ПОТОМ помечаем слот активным —
+        # иначе слот «висел» бы занятым всё время sleep (искажая счётчик «выполняется» и, при
+        # переключении лимита на лету, отъедая место). Пейсинг сериализует СТАРТЫ (общий для
+        # всех процессов), но при LLM_MAX_CONCURRENCY=0 не ограничивает число запросов «в полёте».
+        _pace()                          # пауза между запросами (если задана) — слот ещё не занят
+        _add_active(c, tok)              # учитываем для отображения/счётчика (уже на старте)
         return tok
     deadline = None
     to = _timeout()

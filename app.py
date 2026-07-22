@@ -3,10 +3,13 @@
 Запуск:  uvicorn app:app --host 0.0.0.0 --port 8000
 """
 from __future__ import annotations
+import asyncio
 import hashlib
+import hmac
 import json
 import os
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -20,7 +23,6 @@ from starlette.background import BackgroundTask
 import activity
 import dns_override
 from pydantic import BaseModel
-from qdrant_client import QdrantClient
 
 import config
 import prompts
@@ -60,16 +62,30 @@ import telegram_bot
 import calibrate
 import kag
 import integrations
+import vectorstore
 from ingest import chunk_text, SUPPORTED
 from retriever import search, infer_category
 
 app = FastAPI(title="Корпоративный RAG-чатбот")
-_qdrant = QdrantClient(url=settings.get("QDRANT_URL"))
 
-# CORS — чтобы встраиваемый веб-виджет чата работал с других доменов (сайт компании).
+# CORS — встраиваемый веб-виджет чата с других доменов (сайт компании).
+# Безопасно по умолчанию: НИКОГДА не "*". Разрешённые origin берём из настройки
+# CORS_ORIGINS (список или строка через запятую/перенос строки). Если пусто —
+# allow_origins=[] (кросс-доменный доступ закрыт). Флаг CORS_ALLOW_LOCALHOST
+# добавляет локальные адреса для разработки. Админ-пути и так защищены токеном.
 try:
     from fastapi.middleware.cors import CORSMiddleware
-    app.add_middleware(CORSMiddleware, allow_origins=["*"],
+    _cors_raw = settings.get("CORS_ORIGINS") or ""
+    if isinstance(_cors_raw, (list, tuple)):
+        _origins = [str(o).strip() for o in _cors_raw if str(o).strip()]
+    else:
+        _origins = [o.strip() for o in str(_cors_raw).replace("\n", ",").split(",")
+                    if o.strip()]
+    if settings.get("CORS_ALLOW_LOCALHOST"):
+        _origins += ["http://localhost", "http://127.0.0.1",
+                     "http://localhost:8000", "http://127.0.0.1:8000"]
+    _origins = list(dict.fromkeys(_origins))          # дедуп, сохраняя порядок
+    app.add_middleware(CORSMiddleware, allow_origins=_origins,
                        allow_methods=["*"], allow_headers=["*"])
 except Exception as _e:
     print(f"[cors] не подключён: {_e}")
@@ -204,9 +220,32 @@ def _debug_chunks(hits: list) -> list:
     return out
 
 
+def _clean_history(history, limit: int = 6) -> list:
+    """Санитизация истории диалога от клиента: только dict с role in (user, assistant)
+    и строковым непустым content; отбрасываем system и любые не-dict; ограничиваем длину
+    и обрезаем слишком длинные реплики. Защита от инъекции чужих ролей/мусора в контекст."""
+    out = []
+    for h in (history or []):
+        if not isinstance(h, dict):
+            continue
+        role = h.get("role")
+        content = h.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            out.append({"role": role, "content": content[:4000]})
+    return out[-limit:] if limit else out
+
+
 def _check_admin(token: str | None):
     current = settings.get("ADMIN_TOKEN")
-    if current and token != current:
+    # fail-closed: если токен админа НЕ задан — админ-доступ закрыт (401), а не открыт всем.
+    # Явная лазейка для локальной отладки — настройка ADMIN_ALLOW_NO_TOKEN (по умолч. off).
+    if not current:
+        if settings.get("ADMIN_ALLOW_NO_TOKEN"):
+            return
+        raise HTTPException(status_code=401,
+                            detail="Админ-доступ не настроен (ADMIN_TOKEN не задан)")
+    # constant-time сравнение токена
+    if not token or not hmac.compare_digest(str(token), str(current)):
         raise HTTPException(status_code=401, detail="Неверный токен администратора")
 
 
@@ -268,6 +307,23 @@ def _ndjson(gen, aid: int | None = None):
     return StreamingResponse(gen, media_type="application/x-ndjson", background=bg)
 
 
+# --- единые сериализаторы NDJSON (чтобы не дублировать формат по веткам /chat) ---
+def _visible_sources(answer_text: str, sources: list) -> list:
+    """Скрыть источники под честным «нет точного ответа», если так настроено.
+    Единая замена ~6 копий этой ветки в /chat (KAG/граф/кэш/вектор/приложенный документ)."""
+    if settings.get("HIDE_SOURCES_IF_NO_ANSWER") and prompts.is_no_answer(answer_text or ""):
+        return []
+    return sources
+
+
+def _answer_chunks(text: str, size: int = 40):
+    """NDJSON-чанки ответа (по size символов) — единый сериализатор для не-стримовых веток.
+    Байт-в-байт совпадает с прежними инлайн-циклами `for i in range(0, len(t), 40)`."""
+    for i in range(0, len(text or ""), size):
+        yield json.dumps({"type": "answer", "text": text[i:i + size]},
+                         ensure_ascii=False) + "\n"
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest):
     t0 = time.time()
@@ -281,7 +337,8 @@ async def chat(req: ChatRequest):
     if engine == "kag" and req.filters is None:
         try:
             ktrace = []
-            kres = await kag.answer(req.question, history=req.history, trace=ktrace)
+            kres = await kag.answer(req.question, history=_clean_history(req.history),
+                                    trace=ktrace)
             ktext = kres["text"]
             khits = kres.get("hits", [])
             ksources = [media.cite(h["source"], page=h.get("page"),
@@ -296,12 +353,10 @@ async def chat(req: ChatRequest):
                     "engine": "KAG (знание-усиленная генерация)",
                     "hops": len(kres.get("sub", [])), "graph": kres.get("graph"),
                     "model": settings.active_model()})
-                for i in range(0, len(ktext), 40):
-                    yield json.dumps({"type": "answer", "text": ktext[i:i + 40]},
-                                     ensure_ascii=False) + "\n"
-                _ksrc = ([] if (settings.get("HIDE_SOURCES_IF_NO_ANSWER")
-                                and prompts.is_no_answer(ktext)) else ksources)
-                yield json.dumps({"type": "sources", "items": _ksrc},
+                for _chunk in _answer_chunks(ktext):
+                    yield _chunk
+                yield json.dumps({"type": "sources",
+                                  "items": _visible_sources(ktext, ksources)},
                                  ensure_ascii=False) + "\n"
                 lat = int((time.time() - t0) * 1000)
                 top = round(khits[0].get("score", 0.0), 3) if khits else 0.0
@@ -337,12 +392,10 @@ async def chat(req: ChatRequest):
                     "engine": "LightRAG (граф)" if use_lightrag_all
                     else "граф (hybrid, сводный вопрос)",
                     "mode": settings.get("GRAPH_MODE"), "model": settings.active_model()})
-                for i in range(0, len(text), 40):
-                    yield json.dumps({"type": "answer", "text": text[i:i + 40]},
-                                     ensure_ascii=False) + "\n"
-                _gsrc = ([] if (settings.get("HIDE_SOURCES_IF_NO_ANSWER")
-                                and prompts.is_no_answer(text))
-                         else [{"source": "граф знаний (LightRAG)", "page": None}])
+                for _chunk in _answer_chunks(text):
+                    yield _chunk
+                _gsrc = _visible_sources(
+                    text, [{"source": "граф знаний (LightRAG)", "page": None}])
                 yield json.dumps({"type": "sources", "items": _gsrc},
                                  ensure_ascii=False) + "\n"
                 lat = int((time.time() - t0) * 1000)
@@ -353,7 +406,8 @@ async def chat(req: ChatRequest):
                         "backend": settings.get("LLM_BACKEND"),
                         "timings": {"retrieve_ms": 0, "gen_ms": lat, "total_ms": lat},
                         "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
-                rid = db.log_request(req.question, cat, 1, 1.0, lat, len(text), True, [],
+                rid = db.log_request(req.question, cat, 1, 1.0, lat, len(text),
+                                     not prompts.is_no_answer(text), [],
                                      retrieve_ms=0, gen_ms=lat,
                                      session_id=req.session_id, answer=text)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
@@ -378,12 +432,15 @@ async def chat(req: ChatRequest):
             cached = cache.get_json(acache_key, ns="index")
         except Exception:
             cached = None
-        # семантический кэш: на похожий по смыслу вопрос — тот же ответ
+        # семантический кэш: на похожий по смыслу вопрос — тот же ответ.
+        # ВАЖНО: сопоставление учитывает req.filters — иначе ответ, полученный под одними
+        # фильтрами, мог бы «утечь» на похожий вопрос с другими/без фильтров.
         if not cached and settings.get("ANSWER_CACHE_SEMANTIC"):
             try:
                 import cache
-                q_emb = retriever._embed_query(req.question)
-                hit = cache.answer_sem_find(q_emb, settings.get("ANSWER_CACHE_SIM"))
+                q_emb = await asyncio.to_thread(retriever._embed_query, req.question)
+                hit = cache.answer_sem_find(q_emb, settings.get("ANSWER_CACHE_SIM"),
+                                            flt=req.filters)
                 if hit:
                     cached = cache.get_json(hit["key"], ns="index")
             except Exception:
@@ -393,12 +450,10 @@ async def chat(req: ChatRequest):
                 yield _stg("answer_cache", "done", {"hit": True})
                 # совместимость с кэшем из Телеграма/VoIP: там текст лежит в "text"
                 txt = cached.get("answer") or cached.get("text") or ""
-                for i in range(0, len(txt), 40):
-                    yield json.dumps({"type": "answer", "text": txt[i:i + 40]},
-                                     ensure_ascii=False) + "\n"
-                _csrc = ([] if (settings.get("HIDE_SOURCES_IF_NO_ANSWER")
-                                and prompts.is_no_answer(txt)) else cached.get("sources", []))
-                yield json.dumps({"type": "sources", "items": _csrc},
+                for _chunk in _answer_chunks(txt):
+                    yield _chunk
+                yield json.dumps({"type": "sources",
+                                  "items": _visible_sources(txt, cached.get("sources", []))},
                                  ensure_ascii=False) + "\n"
                 lat = int((time.time() - t0) * 1000)
                 if req.debug:
@@ -410,7 +465,8 @@ async def chat(req: ChatRequest):
                         "params": _debug_params(), "chunks": []}}, ensure_ascii=False) + "\n"
                 rid = db.log_request(req.question, cached.get("category"),
                                      cached.get("n_hits", 0), cached.get("top_score", 0.0),
-                                     lat, len(txt), True, cached.get("sources", []),
+                                     lat, len(txt), not prompts.is_no_answer(txt),
+                                     cached.get("sources", []),
                                      retrieve_ms=0, gen_ms=0, session_id=req.session_id,
                                      answer=txt)
                 yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
@@ -424,17 +480,20 @@ async def chat(req: ChatRequest):
     search_q = req.question
     if req.history:
         try:
-            search_q = retriever.standalone_question(req.question, req.history)
+            # синхронный вызов с обращением к LLM — уводим с event loop
+            search_q = await asyncio.to_thread(
+                retriever.standalone_question, req.question, _clean_history(req.history))
             if search_q != req.question:
                 trace.append({"key": "dialog_rewrite", "ms": 0,
                               "info": {"standalone": search_q[:120]}})
         except Exception:
             search_q = req.question
-    hits = search(search_q, filters=req.filters, trace=trace)
+    hits = await asyncio.to_thread(search, search_q, filters=req.filters, trace=trace)
     # расширенный поиск, если ничего не нашлось (опционально): лексический → глубокий
     if not hits and settings.get("NO_ANSWER_FALLBACK"):
         try:
-            hits = retriever.no_answer_fallback(search_q, trace=trace) or []
+            hits = await asyncio.to_thread(
+                retriever.no_answer_fallback, search_q, trace=trace) or []
         except Exception as e:
             print(f"  ! фолбэк-поиск не удался: {e}")
     # прайс-папка: на «ценовых» вопросах подмешиваем контекст из папки прайсов
@@ -463,7 +522,7 @@ async def chat(req: ChatRequest):
 
     context = prompts.build_context(hits)
     messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")}]
-    messages += req.history[-6:]
+    messages += _clean_history(req.history)
     messages.append({"role": "user",
                      "content": prompts.build_user_message(req.question, context)})
 
@@ -513,8 +572,7 @@ async def chat(req: ChatRequest):
         # уводим их с event loop через run_in_executor.
         _vmode = settings.get("ANSWER_VERIFY")
         if _vmode in ("warn", "strict") and acc:
-            import asyncio as _aio
-            _loop = _aio.get_event_loop()
+            _loop = asyncio.get_running_loop()
             _ans = "".join(acc)
             try:
                 import verify
@@ -527,9 +585,8 @@ async def chat(req: ChatRequest):
                     acc = [final]
                     yield _stg("verify", "done", {"grounded": (vr or {}).get("grounded"),
                                                   "changed": (vr or {}).get("changed")})
-                    for i in range(0, len(final), 40):
-                        yield json.dumps({"type": "answer", "text": final[i:i + 40]},
-                                         ensure_ascii=False) + "\n"
+                    for _chunk in _answer_chunks(final):
+                        yield _chunk
                 else:  # warn — как раньше: дописываем пометку, если не обосновано
                     grounded = await _loop.run_in_executor(
                         None, verify.is_grounded, req.question, _ans, context)
@@ -541,12 +598,9 @@ async def chat(req: ChatRequest):
                 print(f"[chat] проверка обоснованности не удалась: {_ve}")
                 # strict: мы ещё ничего не отдали — отдаём исходный ответ
                 if _strict and _ans:
-                    for i in range(0, len(_ans), 40):
-                        yield json.dumps({"type": "answer", "text": _ans[i:i + 40]},
-                                         ensure_ascii=False) + "\n"
-        out_sources = sources
-        if settings.get("HIDE_SOURCES_IF_NO_ANSWER") and prompts.is_no_answer("".join(acc)):
-            out_sources = []
+                    for _chunk in _answer_chunks(_ans):
+                        yield _chunk
+        out_sources = _visible_sources("".join(acc), sources)
         yield json.dumps({"type": "sources", "items": out_sources}, ensure_ascii=False) + "\n"
         # «что попало в контекст» — фрагменты, реально поданные модели (сворачиваемый блок)
         try:
@@ -568,8 +622,9 @@ async def chat(req: ChatRequest):
                             "total_ms": latency},
                 "params": _debug_params(), "chunks": _debug_chunks(hits)}}, ensure_ascii=False) + "\n"
         full = "".join(acc)
+        answered = not prompts.is_no_answer(full)
         rid = db.log_request(req.question, category, len(hits), hits[0]["score"],
-                             latency, len(full), True, sources,
+                             latency, len(full), answered, sources,
                              retrieve_ms=retrieve_ms, gen_ms=max(0, latency - retrieve_ms),
                              session_id=req.session_id, answer=full)
         if acache_key and acc:
@@ -579,10 +634,10 @@ async def chat(req: ChatRequest):
                     "answer": "".join(acc), "text": "".join(acc),  # "text" — для кросс-канального кэша
                     "sources": sources, "category": category,
                     "n_hits": len(hits), "top_score": hits[0]["score"]}, ns="index")
-                # семантический кэш: связываем эмбеддинг вопроса с ключом ответа
+                # семантический кэш: связываем эмбеддинг вопроса (и фильтры) с ключом ответа
                 if settings.get("ANSWER_CACHE_SEMANTIC"):
                     _qe = q_emb or retriever._embed_query(req.question)
-                    cache.answer_sem_add(acache_key, _qe)
+                    cache.answer_sem_add(acache_key, _qe, flt=req.filters)
             except Exception:
                 pass
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
@@ -663,19 +718,26 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
             yield json.dumps({"type": "sources", "items": []}, ensure_ascii=False) + "\n"
         return _ndjson(bad(), aid)
 
-    # сохраняем во временный файл и парсим теми же загрузчиками
-    tmp = Path(tempfile.gettempdir()) / f"rag_attach_{int(time.time())}_{name}"
+    # сохраняем во временный файл (уникальное имя, без коллизий по одинаковой mtime)
+    # и парсим теми же загрузчиками. Разбор/чанкинг/реранк — синхронные и тяжёлые,
+    # уводим их с event loop в пул потоков.
+    tmp = Path(tempfile.gettempdir()) / f"rag_attach_{uuid.uuid4().hex}_{name}"
     tmp.write_bytes(await file.read())
-    items = []
-    try:
-        for part in loaders.load_file(tmp):
-            for ch in chunk_text(part["text"], settings.get("CHUNK_SIZE"),
-                                 settings.get("CHUNK_OVERLAP")):
-                items.append({"text": ch, "source": name, "page": part["page"]})
-    finally:
-        tmp.unlink(missing_ok=True)
 
-    hits = retriever.rerank_texts(question, items)
+    def _parse_attach():
+        out = []
+        try:
+            for part in loaders.load_file(tmp):
+                for ch in chunk_text(part["text"], settings.get("CHUNK_SIZE"),
+                                     settings.get("CHUNK_OVERLAP")):
+                    out.append({"text": ch, "source": name, "page": part["page"]})
+        finally:
+            tmp.unlink(missing_ok=True)
+        return out
+
+    items = await asyncio.to_thread(_parse_attach)
+
+    hits = await asyncio.to_thread(retriever.rerank_texts, question, items)
     if not hits:
         async def empty():
             msg = "Не удалось извлечь данные из файла или он пуст."
@@ -689,7 +751,7 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
 
     context = prompts.build_context(hits)
     messages = [{"role": "system", "content": settings.get("SYSTEM_PROMPT")}]
-    messages += hist[-6:]
+    messages += _clean_history(hist)
     messages.append({"role": "user",
                      "content": prompts.build_user_message(question, context)})
     sources = [{"source": h["source"], "page": h.get("page"),
@@ -712,9 +774,9 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
             acc.append(tok)
             yield json.dumps({"type": "answer", "text": tok}, ensure_ascii=False) + "\n"
         yield _stg("generate", "done", {"chars": len("".join(acc))})
-        _dsrc = ([] if (settings.get("HIDE_SOURCES_IF_NO_ANSWER")
-                        and prompts.is_no_answer("".join(acc))) else sources)
-        yield json.dumps({"type": "sources", "items": _dsrc}, ensure_ascii=False) + "\n"
+        yield json.dumps({"type": "sources",
+                          "items": _visible_sources("".join(acc), sources)},
+                         ensure_ascii=False) + "\n"
         latency = int((time.time() - t0) * 1000)
         if debug in ("1", "true", "on", "yes"):
             yield json.dumps({"type": "debug", "info": {
@@ -724,7 +786,7 @@ async def chat_doc(file: UploadFile = File(...), question: str = Form(...),
                 "params": _debug_params(), "chunks": _debug_chunks(hits)}}, ensure_ascii=False) + "\n"
         full = "".join(acc)
         rid = db.log_request(question, "attached", len(hits), hits[0]["score"],
-                             latency, len(full), True, sources,
+                             latency, len(full), not prompts.is_no_answer(full), sources,
                              session_id=session_id, answer=full)
         yield json.dumps({"type": "meta", "id": rid}, ensure_ascii=False) + "\n"
 
@@ -737,10 +799,12 @@ async def api_transcribe(file: UploadFile = File(...)):
     (тот же бэкенд, что и для индексации аудио/видео). Данные не покидают сервер."""
     name = file.filename or "voice.webm"
     ext = os.path.splitext(name)[1].lower() or ".webm"
-    tmp = Path(tempfile.gettempdir()) / f"rag_voice_{int(time.time())}{ext}"
+    tmp = Path(tempfile.gettempdir()) / f"rag_voice_{uuid.uuid4().hex}{ext}"
     try:
         tmp.write_bytes(await file.read())
-        text = " ".join(p.get("text", "") for p in loaders.load_file(tmp)).strip()
+        # распознавание (Whisper) — синхронное и тяжёлое, уводим с event loop
+        text = (await asyncio.to_thread(
+            lambda: " ".join(p.get("text", "") for p in loaders.load_file(tmp)))).strip()
         if not text:
             return {"ok": False, "msg": "речь не распознана (тихо или пусто)"}
         return {"ok": True, "text": text}
@@ -755,7 +819,7 @@ async def api_transcribe(file: UploadFile = File(...)):
 def api_stats():
     s = db.stats()
     try:
-        s["chunks"] = _qdrant.count(settings.get("QDRANT_COLLECTION"), exact=True).count
+        s["chunks"] = vectorstore.count()
     except Exception:
         s["chunks"] = 0
     s["model"] = settings.active_model()

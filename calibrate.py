@@ -31,6 +31,7 @@ from pathlib import Path
 import settings
 import db
 import retriever
+import vectorstore
 
 _KV_KEY = "calib_testset"
 
@@ -133,22 +134,29 @@ def _mode_filter(question: str, flags: dict | None):
 def _candidates(question: str, pool: int, flags: dict | None = None) -> list:
     """Широкий пул кандидатов с реранк-оценкой и плотным рангом (один раз на вопрос).
     Фильтр плотного поиска воспроизводит поведение выбранного режима работы."""
-    qvec = retriever._embed_query(question)
+    # Воспроизводим боевой конвейер (_search_raw): вектор считаем не по СЫРОМУ вопросу, а
+    # после расширения синонимами (_expand) и, если включён QUERY_REWRITE/HyDE,
+    # переформулировки (_rewrite_query). Реранк — по оригинальному вопросу (как в бою).
+    q_rewrite = retriever._rewrite_query(question)
+    q_for_embed = q_rewrite or retriever._expand(question)
+    qvec = retriever._embed_query(q_for_embed)
     qv = qvec.tolist() if hasattr(qvec, "tolist") else qvec
     qfilter = retriever._build_filter(_mode_filter(question, flags))
-    pts = retriever._client.query_points(
-        retriever._COLLECTION, query=qv, query_filter=qfilter, limit=pool,
-        with_payload=True).points
+    # Фасад vectorstore.search -> list[dict] с ключами payload/score (нейтральный dict-фильтр).
+    pts = vectorstore.search(qv, limit=pool, flt=qfilter, with_payload=True)
     if len(pts) < 3 and qfilter is not None:   # фолбэк без фильтра, как в конвейере
-        pts = retriever._client.query_points(
-            retriever._COLLECTION, query=qv, query_filter=None, limit=pool,
-            with_payload=True).points
+        pts = vectorstore.search(qv, limit=pool, flt=None, with_payload=True)
     cands = []
-    for rank, p in enumerate(pts):
-        pl = p.payload or {}
+    rank = 0
+    for p in pts:
+        pl = p.get("payload") or {}
+        txt = pl.get("text") or ""
+        if not txt:                            # как в _dense_search: точки без text отбрасываем
+            continue
         cands.append({"source": pl.get("source"), "page": pl.get("page"),
-                      "text": pl.get("text", ""), "dense_rank": rank,
-                      "dense": p.score})
+                      "text": txt, "dense_rank": rank,
+                      "dense": p.get("score")})
+        rank += 1
     if not cands:
         return []
     scores = retriever._reranker().compute_score(
@@ -1479,6 +1487,9 @@ def _set_variant(engine, mode):
 
 
 def _optimize_run(max_iter, deviation, engine, mode) -> None:
+    _snap = None            # снимок прод-настроек ДО экспериментов (B4/H14)
+    _snap_mode = None
+    applied_best = False     # True только после явного «применить лучшее»
     try:
         items = auto_load()
         if not items:
@@ -1489,6 +1500,13 @@ def _optimize_run(max_iter, deviation, engine, mode) -> None:
         except Exception:
             mode = mode or "basic"
         thr = max(0.0, min(100.0, float(deviation)))
+        # снимок живых настроек ДО мутаций (ENGINE/режим/тюнинг-параметры): при отмене,
+        # исключении или если лучшее не применяется — откат в finally.
+        _snap = {k: settings.get(k) for k in list(_OPT_CATALOG.keys()) + ["ENGINE"]}
+        try:
+            _snap_mode = settings.current_mode()
+        except Exception:
+            _snap_mode = None
         _set_variant(engine, mode)                 # активируем выбранный вариант работы
         keys = _opt_keys(engine, mode)
         files = sorted({it.get("source", "") for it in items if it.get("source")})
@@ -1525,12 +1543,18 @@ def _optimize_run(max_iter, deviation, engine, mode) -> None:
                 _logline(_opt, f"  применены параметры: " + ", ".join(f"{k}={v}" for k, v in ch.items()))
             else:
                 _logline(_opt, "  LLM не предложила валидных параметров — повтор с текущими")
+            # FIXME(review): критерий сходимости сравнивает НАБОР ПРЕДЛОЖЕННЫХ изменений (ch),
+            # а не фактическое состояние настроек. Если LLM просто повторяет тот же ответ,
+            # ch==last_ch срабатывает как «сходимость», хотя реального улучшения может не быть.
+            # Надёжнее сравнивать фактические значения keys до/после применения. Не меняю логику
+            # без ревью, чтобы не задеть условия останова автокалибровки.
             if ch and ch == last_ch:
                 _logline(_opt, "  параметры стабилизировались — останов (сходимость)")
                 break
             last_ch = ch or last_ch
         if best:
             _apply_opt_params(best["params"], keys)
+            applied_best = True                    # явное «применить лучшее» — снимок НЕ откатываем
             _logline(_opt, f"✓ применён лучший набор (итер {best['iter']}, "
                            f"{best['accuracy'] * 100:.1f}%)")
         report = _opt_report(engine, mode, thr, best, _opt["points"], keys)
@@ -1551,6 +1575,24 @@ def _optimize_run(max_iter, deviation, engine, mode) -> None:
         _opt["error"] = str(e)
         _logline(_opt, f"ОШИБКА: {e}")
     finally:
+        # Откат экспериментальных настроек к снимку, если лучшее не применялось
+        # (отмена/исключение/пустой результат) — иначе в проде остаются пробные значения.
+        if _snap is not None and not applied_best:
+            try:
+                settings.update(_snap)
+                if _snap_mode:
+                    try:
+                        settings.set_mode(_snap_mode)
+                    except Exception:
+                        pass
+                try:
+                    import cache
+                    cache.bump("index")
+                except Exception:
+                    pass
+                _logline(_opt, "  ↩ настройки восстановлены из снимка (изменения отменены)")
+            except Exception as e:
+                _logline(_opt, f"  не удалось восстановить настройки из снимка: {e}")
         _opt["running"] = False
         _opt["finished"] = time.time()
         _opt["phase"] = ("Остановлено" if _opt.get("cancelled")

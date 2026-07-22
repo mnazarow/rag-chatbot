@@ -202,11 +202,14 @@ def report_up(key: str, subject: str, body: str = "") -> dict:
         st = _state_get(key)
         if st.get("status") != "down":
             return {"sent": False, "reason": "не был в падении"}
+        # Проверяем ALERTS_ENABLED ДО удаления состояния: иначе при выключенных
+        # алертах мы бы стёрли запись о падении и потеряли переход down→up
+        # (после включения алертов «восстановление» уже не отправится).
+        if not settings.get("ALERTS_ENABLED"):
+            return {"sent": False, "reason": "alerts выключены"}
         now = time.time()
         dur = int(now - (st.get("since") or now))
         _state_del(key)
-    if not settings.get("ALERTS_ENABLED"):
-        return {"sent": False, "reason": "alerts выключены"}
     text = body or f"Компонент снова доступен (недоступен был ~{dur} с)."
     channels = _dispatch(f"🟢 {subject}", text)
     _log_add({"ts": now, "key": key, "level": "ok",

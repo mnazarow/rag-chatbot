@@ -19,14 +19,39 @@ import vectorstore
 # Модели грузятся один раз при старте процесса из текущих настроек.
 
 
-@lru_cache(maxsize=1)
+# Модели кэшируются ПО ПАРАМЕТРАМ (модель/устройство), а не в единственном слоте —
+# иначе при смене модели в настройках старый синглтон продолжал бы обслуживать запросы
+# («отравление» кэша). Публичные обёртки _embedder()/_reranker() читают текущие настройки,
+# поэтому смена модели автоматически даёт новый инстанс; reset_models() сбрасывает кэш явно.
+@lru_cache(maxsize=4)
+def _embedder_for(model: str, device: str) -> SentenceTransformer:
+    return SentenceTransformer(model, device=device)
+
+
 def _embedder() -> SentenceTransformer:
-    return SentenceTransformer(settings.get("EMBED_MODEL"), device=settings.device())
+    return _embedder_for(settings.get("EMBED_MODEL"), settings.device())
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=4)
+def _reranker_for(model: str) -> FlagReranker:
+    return FlagReranker(model, use_fp16=True)
+
+
 def _reranker() -> FlagReranker:
-    return FlagReranker(settings.get("RERANK_MODEL"), use_fp16=True)
+    return _reranker_for(settings.get("RERANK_MODEL"))
+
+
+def reset_models() -> None:
+    """Сбросить кэш моделей эмбеддера/реранкера (после смены EMBED_MODEL/RERANK_MODEL/DEVICE).
+    settings.update может вызывать retriever.reset_models(), чтобы не обслуживать запросы
+    старой моделью. Также чистит внутрипроцессный LRU векторов запросов."""
+    _embedder_for.cache_clear()
+    _reranker_for.cache_clear()
+    try:
+        with _QEMB_LOCK:
+            _QEMB_LRU.clear()
+    except Exception:
+        pass
 
 
 def _rerank(pairs):
@@ -38,6 +63,33 @@ def _rerank(pairs):
 
 def _tokenize(text: str) -> list[str]:
     return [t for t in text.lower().split() if t]
+
+
+def _apply_hybrid(cands: list) -> None:
+    """Гибрид «плотный+лексический»: подмешать НОРМИРОВАННЫЙ BM25 к оценке кросс-энкодера
+    прямо в c['score']. Требует уже заполненных c['ce'] (кросс-энкодер, 0..1) и c['bm25'].
+
+    Коэффициенты из настроек: HYBRID_BM25_WEIGHT (по умолчанию 0.0 — гибрид выключен,
+    поведение НЕ меняется), HYBRID_CE_WEIGHT (по умолчанию 1.0). При включении:
+        score = w_ce*ce + w_bm*bm25_norm,  где bm25_norm = min-max нормировка по пулу.
+    Так BM25 реально влияет на ранжирование, а не только вычисляется впустую."""
+    try:
+        w_bm = float(settings.get("HYBRID_BM25_WEIGHT") or 0.0)
+    except Exception:
+        w_bm = 0.0
+    if w_bm <= 0 or not cands:
+        return
+    try:
+        w_ce = float(settings.get("HYBRID_CE_WEIGHT") or 1.0)
+    except Exception:
+        w_ce = 1.0
+    bvals = [float(c.get("bm25", 0.0)) for c in cands]
+    lo, hi = min(bvals), max(bvals)
+    rng = (hi - lo) or 1.0
+    for c in cands:
+        bm_norm = (float(c.get("bm25", 0.0)) - lo) / rng
+        c["bm25_norm"] = bm_norm
+        c["score"] = w_ce * float(c.get("ce", c.get("score", 0.0))) + w_bm * bm_norm
 
 
 def _expand(question: str) -> str:
@@ -234,17 +286,23 @@ def search(question: str, filters: dict | None = None,
         settings.get("MIN_SCORE"), settings.get("SMART_FILTER"),
         settings.get("QUERY_REWRITE"), syn_sig])
     ckey = "search:" + hashlib.sha1(keyparts.encode("utf-8")).hexdigest()
+    # try сужён ТОЛЬКО вокруг операций кэша: при сбое чтения/записи кэша не должен
+    # выполняться _search_raw дважды (ранее ошибка внутри _search_raw ловилась общим
+    # except и запускала поиск повторно).
     try:
         hit = cache.get_json(ckey, ns="index")
-        if hit is not None:
-            if trace is not None:
-                trace.append({"key": "cache", "ms": 0, "info": {"hit": True}})
-            return hit
-        res = _search_raw(question, filters, auto_filter, trace)
-        cache.set_json(ckey, int(settings.get("CACHE_SEARCH_TTL") or 21600), res, ns="index")
-        return res
     except Exception:
-        return _search_raw(question, filters, auto_filter, trace)
+        hit = None
+    if hit is not None:
+        if trace is not None:
+            trace.append({"key": "cache", "ms": 0, "info": {"hit": True}})
+        return hit
+    res = _search_raw(question, filters, auto_filter, trace)
+    try:
+        cache.set_json(ckey, int(settings.get("CACHE_SEARCH_TTL") or 21600), res, ns="index")
+    except Exception:
+        pass
+    return res
 
 
 def _search_raw(question: str, filters: dict | None = None,
@@ -308,7 +366,10 @@ def _search_raw(question: str, filters: dict | None = None,
     if not isinstance(scores, list):
         scores = [scores]
     for c, s in zip(cands, scores):
-        c["score"] = float(s)
+        c["ce"] = float(s)        # чистая оценка кросс-энкодера
+        c["score"] = float(s)     # по умолчанию итоговая == ce
+    # гибрид: если включён (HYBRID_BM25_WEIGHT>0), подмешать нормированный BM25 в score
+    _apply_hybrid(cands)
 
     cands.sort(key=lambda c: c["score"], reverse=True)
     min_score = settings.get("MIN_SCORE")
@@ -382,7 +443,9 @@ def _rerank_keep(question: str, cands: list, relaxed: bool = True) -> list:
     if not isinstance(scores, list):
         scores = [scores]
     for c, s in zip(cands, scores):
+        c["ce"] = float(s)
         c["score"] = float(s)
+    _apply_hybrid(cands)          # тот же гибрид, что и в основном поиске (по умолчанию off)
     cands.sort(key=lambda c: c["score"], reverse=True)
     # в режиме фолбэка порог не применяем: возвращаем лучшие фрагменты найденных
     # файлов и отдаём их LLM (он сам ответит по контексту или честно скажет «нет»).

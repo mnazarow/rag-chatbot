@@ -30,6 +30,7 @@ _FRAME = 160          # 20 мс при 8 кГц/8 бит unsigned/моно
 _phone = None
 _stop = threading.Event()
 _lock = threading.Lock()
+_calls_lock = threading.Lock()   # защищает счётчики calls/active (гонка потоков звонков)
 _state = {"running": False, "registered": False, "calls": 0, "active": 0, "error": None}
 
 
@@ -62,10 +63,14 @@ def _tts_u8(text: str) -> bytes:
     text = (text or "").strip()
     if not text:
         return b""
-    ogg = tempfile.mktemp(suffix=".ogg")
+    fd, ogg = tempfile.mkstemp(suffix=".ogg")
+    os.close(fd)
     try:
         import tts
-        if not tts.synthesize(text, ogg) or not os.path.exists(ogg):
+        import activity
+        with activity.heavy_slot():                 # TTS — тяжёлая стадия конвейера
+            ok = tts.synthesize(text, ogg)
+        if not ok or not os.path.exists(ogg):
             return b""
         r = subprocess.run(
             ["ffmpeg", "-y", "-i", ogg, "-ar", str(_RATE), "-ac", "1",
@@ -175,8 +180,9 @@ def _on_call(call) -> None:
         print(f"[sip-reg] pyVoIP недоступен в колбэке: {e}")
         return
 
-    _state["calls"] += 1
-    _state["active"] += 1
+    with _calls_lock:
+        _state["calls"] += 1
+        _state["active"] += 1
     aid = None
     try:
         import activity
@@ -316,7 +322,8 @@ def _on_call(call) -> None:
     except Exception as e:
         print(f"[sip-reg] звонок: {e}")
     finally:
-        _state["active"] = max(0, _state["active"] - 1)
+        with _calls_lock:
+            _state["active"] = max(0, _state["active"] - 1)
         try:
             call.hangup()
         except Exception:

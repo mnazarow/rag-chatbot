@@ -15,23 +15,30 @@ LightRAG и тяжёлые зависимости импортируются Л�
 """
 from __future__ import annotations
 import asyncio
+import re
 from pathlib import Path
 
 import settings
 
 WORKING_DIR = Path(__file__).resolve().parent / "graph_storage"
 
-# вопросы, для которых граф обычно полезнее вектора
+# вопросы, для которых граф обычно полезнее вектора (подстроки-основы)
 _GLOBAL_KW = [
-    "сравни", "сравнен", "обзор", "все ", "всех", "суммируй", "сводк", "итого",
+    "сравни", "сравнен", "обзор", "суммируй", "сводк", "итого",
     "тенденц", "динамик", "связь", "связан", "соотнос", "перечисли все",
     "в целом", "общая картина", "across", "overview", "summary",
 ]
 
+# «обобщающие» ЦЕЛЫЕ слова — проверяем по границам слов, чтобы «все»/«всех» не срабатывали
+# внутри других слов («всесторонний», «известен», «навсегда» и т.п. — ложные срабатывания).
+_GLOBAL_WORDS_RE = re.compile(r"(?<!\w)(?:все|всех|всё|весь|всем|всеми|всей)(?!\w)")
+
 
 def is_global(question: str) -> bool:
     q = question.lower()
-    return any(k in q for k in _GLOBAL_KW)
+    if any(k in q for k in _GLOBAL_KW):
+        return True
+    return bool(_GLOBAL_WORDS_RE.search(q))
 
 
 # ----- ленивое построение экземпляра LightRAG на нашем стеке -----
